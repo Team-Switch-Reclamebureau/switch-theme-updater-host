@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.8
+ * Version: 0.0.9
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -281,7 +281,7 @@ PHP;
 
 	public static function get_settings(): array {
 		$opt = get_option( STUH_OPTION_SETTINGS, [] );
-		return wp_parse_args( $opt, [ 'token' => '' ] );
+		return wp_parse_args( $opt, [ 'token' => '', 'allow_unverified' => false ] );
 	}
 
 	public static function get_clients(): array {
@@ -465,11 +465,8 @@ PHP;
 	// --------------------------------------------------------
 
 	public function rest_permission( WP_REST_Request $req ) {
-		$key = $req->get_header( 'X-STU-Key' );
-		if ( empty( $key ) ) {
-			self::record_unverified( $req, 'missing_key' );
-			return new WP_Error( 'missing_key', 'API key required', [ 'status' => 401 ] );
-		}
+		$s    = self::get_settings();
+		$key  = $req->get_header( 'X-STU-Key' );
 
 		// Extract the site URL from the WordPress User-Agent header.
 		// WP sends: "WordPress/6.5; https://example.com"
@@ -479,8 +476,19 @@ PHP;
 			$site_url = esc_url_raw( rtrim( $m[1], '/' ) );
 		}
 
+		if ( empty( $key ) ) {
+			self::record_unverified( $req, 'missing_key' );
+			if ( ! empty( $s['allow_unverified'] ) ) {
+				return true;
+			}
+			return new WP_Error( 'missing_key', 'API key required', [ 'status' => 401 ] );
+		}
+
 		if ( ! self::authenticate_client( $key, $site_url ) ) {
 			self::record_unverified( $req, 'invalid_key' );
+			if ( ! empty( $s['allow_unverified'] ) ) {
+				return true;
+			}
 			return new WP_Error( 'invalid_key', 'Invalid or disabled API key', [ 'status' => 403 ] );
 		}
 		return true;
@@ -696,8 +704,9 @@ PHP;
 				exit;
 
 			case 'save_settings':
-				$token = sanitize_text_field( $_POST['token'] ?? '' );
-				update_option( STUH_OPTION_SETTINGS, [ 'token' => $token ] );
+				$token            = sanitize_text_field( $_POST['token'] ?? '' );
+				$allow_unverified = ! empty( $_POST['allow_unverified'] );
+				update_option( STUH_OPTION_SETTINGS, [ 'token' => $token, 'allow_unverified' => $allow_unverified ] );
 				wp_safe_redirect( add_query_arg( 'stuh_saved', '1', admin_url( 'admin.php?page=stuh-settings' ) ) );
 				exit;
 
@@ -1028,6 +1037,21 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 								   autocomplete="new-password">
 							<p class="description">
 								<?php esc_html_e( 'Token requires repo scope. Never stored in client sites.', 'stuh' ); ?>
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row">
+							<?php esc_html_e( 'Allow Unverified Updates', 'stuh' ); ?>
+						</th>
+						<td>
+							<label>
+								<input type="checkbox" name="allow_unverified" value="1"
+									<?php checked( $s['allow_unverified'] ?? false ); ?>>
+								<?php esc_html_e( 'Allow sites without a registered API key to fetch updates', 'stuh' ); ?>
+							</label>
+							<p class="description">
+								<?php esc_html_e( 'When enabled, any site can access the update endpoints without authentication. Unverified requests are still logged. Use with caution.', 'stuh' ); ?>
 							</p>
 						</td>
 					</tr>
