@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.3
+ * Version: 0.0.4
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -34,6 +34,10 @@ class STUH_Plugin {
 		add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
 		add_action( 'admin_notices', [ $this, 'maybe_notice_no_token' ] );
 		add_action( 'plugins_loaded', [ $this, 'ensure_mu_plugin' ] );
+
+		// Intercept our own plugin update before WordPress tries to HTTP-download
+		// from our REST API — which would hit maintenance mode on this same server.
+		add_filter( 'upgrader_pre_download', [ $this, 'intercept_self_upgrade' ], 5, 4 );
 	}
 
 	// --------------------------------------------------------
@@ -90,6 +94,69 @@ PHP;
 		if ( file_exists( $mu_file ) ) {
 			unlink( $mu_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 		}
+	}
+
+	// --------------------------------------------------------
+	// Self-upgrade: bypass maintenance mode by downloading
+	// directly from GitHub instead of via our own REST API
+	// --------------------------------------------------------
+
+	/**
+	 * Intercepts the WordPress plugin upgrader before it makes an HTTP request
+	 * to download this plugin's own zip (which would hit this server while it is
+	 * in maintenance mode and return a 503).
+	 *
+	 * When the plugin being upgraded is this one, we parse the REST API URL that
+	 * the client plugin placed in the update transient, extract the repo/ref/path
+	 * parameters, and download the zip directly from GitHub — staying entirely
+	 * within the current PHP process.
+	 *
+	 * Priority 5 (lower than the client plugin's filter at 10) ensures we run
+	 * first. If another filter already handled the download we pass through.
+	 *
+	 * @param false|string|\WP_Error $reply      The current reply (false = not yet handled).
+	 * @param string                 $package    The package URL from the update transient.
+	 * @param \WP_Upgrader           $upgrader   The upgrader instance.
+	 * @param array                  $hook_extra Extra args (includes 'plugin' key for plugin upgrades).
+	 * @return false|string|\WP_Error  Local temp-file path on success; false to pass through.
+	 */
+	public function intercept_self_upgrade( $reply, $package, $upgrader, $hook_extra ) {
+		// Already handled by another filter — pass through.
+		if ( false !== $reply ) {
+			return $reply;
+		}
+
+		// Only act when this exact plugin is the one being updated.
+		$upgrading_plugin = $hook_extra['plugin'] ?? '';
+		if ( plugin_basename( __FILE__ ) !== $upgrading_plugin ) {
+			return false;
+		}
+
+		// The client plugin stores a REST API URL like:
+		//   https://host.test/wp-json/stu-host/v1/download?repo=owner/repo&ref=v1.2&path=/&pack=slug
+		$parsed = wp_parse_url( $package );
+		if ( empty( $parsed['query'] ) ) {
+			return false; // Unexpected format — let WordPress handle it normally.
+		}
+
+		wp_parse_str( $parsed['query'], $params );
+		$repo = sanitize_text_field( $params['repo'] ?? '' );
+		$ref  = sanitize_text_field( $params['ref']  ?? '' );
+		$path = sanitize_text_field( $params['path'] ?? '/' );
+		$pack = sanitize_file_name( $params['pack'] ?? basename( $repo ) );
+
+		if ( ! $repo || ! $ref ) {
+			return false;
+		}
+
+		// Download straight from GitHub — no HTTP request to this server.
+		$zip = $this->github()->download_zipball( $repo, $ref, $path, $pack );
+
+		if ( is_wp_error( $zip ) ) {
+			return $zip;
+		}
+
+		return $zip; // Local temp-file path; upgrader unpacks from here.
 	}
 
 	public function maybe_notice_no_token(): void {
