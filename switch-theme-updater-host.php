@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.6
+ * Version: 0.0.7
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -684,6 +684,21 @@ PHP;
 				wp_safe_redirect( add_query_arg( 'stuh_saved', '1', admin_url( 'admin.php?page=stuh-settings' ) ) );
 				exit;
 
+			case 'check_for_updates':
+				// Delete the cached transient so WordPress re-checks immediately.
+				delete_site_transient( 'update_plugins' );
+				// Trigger the check synchronously so the result is ready when we redirect.
+				wp_update_plugins();
+				$slug    = plugin_basename( __FILE__ );
+				$updates = get_site_transient( 'update_plugins' );
+				if ( isset( $updates->response[ $slug ] ) ) {
+					$status = 'update_available';
+				} else {
+					$status = 'up_to_date';
+				}
+				wp_safe_redirect( add_query_arg( 'stuh_update_check', $status, admin_url( 'admin.php?page=stuh-settings' ) ) );
+				exit;
+
 			case 'delete_unverified':
 				$id      = sanitize_text_field( $_POST['unverified_id'] ?? '' );
 				$records = array_values( array_filter( self::get_unverified(), fn( $r ) => $r['id'] !== $id ) );
@@ -978,6 +993,23 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 			</div>
 			<?php endif; ?>
 
+		<?php if ( isset( $_GET['stuh_update_check'] ) ) : ?>
+			<?php if ( 'update_available' === $_GET['stuh_update_check'] ) : ?>
+			<div class="notice notice-warning is-dismissible">
+				<p>
+					<?php esc_html_e( 'An update is available for Switch Updater Host.', 'stuh' ); ?>
+					<a href="<?php echo esc_url( admin_url( 'update-core.php' ) ); ?>">
+						<?php esc_html_e( 'Go to Updates &rarr;', 'stuh' ); ?>
+					</a>
+				</p>
+			</div>
+			<?php else : ?>
+			<div class="notice notice-success is-dismissible">
+				<p><?php esc_html_e( 'Switch Updater Host is up to date.', 'stuh' ); ?></p>
+			</div>
+			<?php endif; ?>
+		<?php endif; ?>
+
 			<form method="post">
 				<?php wp_nonce_field( 'stuh_admin' ); ?>
 				<input type="hidden" name="stuh_action" value="save_settings">
@@ -997,6 +1029,21 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 					</tr>
 				</table>
 				<?php submit_button( __( 'Save Settings', 'stuh' ) ); ?>
+			</form>
+
+			<hr>
+			<h2><?php esc_html_e( 'Plugin Updates', 'stuh' ); ?></h2>
+			<p>
+				<?php
+				$plugin_data = get_plugin_data( __FILE__ );
+				/* translators: %s: current version number */
+				printf( esc_html__( 'Current version: %s', 'stuh' ), '<strong>' . esc_html( $plugin_data['Version'] ) . '</strong>' );
+				?>
+			</p>
+			<form method="post">
+				<?php wp_nonce_field( 'stuh_admin' ); ?>
+				<input type="hidden" name="stuh_action" value="check_for_updates">
+				<?php submit_button( __( 'Check for Updates Now', 'stuh' ), 'secondary' ); ?>
 			</form>
 
 			<hr>
