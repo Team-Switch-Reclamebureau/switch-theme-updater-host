@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.15
+ * Version: 0.0.16
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -890,10 +890,10 @@ PHP;
 				<thead>
 					<tr>
 						<th scope="col" style="width: 15%;">URL</th>
-						<th scope="col" style="width: 10%;">Status</th>
-						<th scope="col" style="width: 10%;">Created</th>
-						<th scope="col" style="width: 15%;">Last Seen</th>
-						<th scope="col" style="width: 20%;">Actions</th>
+						<th scope="col" style="width: 8%;">Status</th>
+						<th scope="col" style="width: 8%;">Created</th>
+						<th scope="col" style="width: 12%;">Last Seen</th>
+						<th scope="col" style="width: 25%;">Actions</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -910,7 +910,7 @@ PHP;
 					<tr>
 						<td>
 							<a href="<?php echo esc_url( $c['site_url'] ); ?>" target="_blank" rel="noopener">
-								<?php echo esc_html( $c['site_url'] ); ?>
+								<?php echo esc_html( preg_replace( '#^https?://#', '', $c['site_url'] ) ); ?>
 							</a>
 						</td>
 						<td>
