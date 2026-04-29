@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.13
+ * Version: 0.0.14
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -704,6 +704,7 @@ PHP;
 					$clients[] = [
 						'id'           => uniqid( 'stuh_', true ),
 						'site_url'     => $url,
+						'api_key'      => $raw_key,
 						'api_key_hash' => wp_hash_password( $raw_key ),
 						'enabled'      => true,
 						'created_at'   => time(),
@@ -881,10 +882,6 @@ PHP;
 				<h3 style="margin-top: 0;">&#128274; New API Key</h3>
 				<p><strong>This key is shown only once. Copy it before leaving this page.</strong></p>
 				<code id="stuh-api-key" style="display:block;font-size:14px;background:#f0f0f1;padding:10px 14px;border-radius:4px;word-break:break-all;user-select:all;margin-bottom:12px;"><?php echo esc_html( $new_key['key'] ); ?></code>
-				<p>Add the following constants to the client site's <code>wp-config.php</code>:</p>
-				<pre style="background:#f0f0f1;padding:12px;border-radius:4px;overflow:auto;font-size:13px;">define( 'GHTU_HOST_URL',   '<?php echo esc_html( rtrim( get_site_url(), '/' ) ); ?>' );
-define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
-				<p style="margin-top:8px;"><em>Once these constants are set the client site will route all update checks and downloads through this host — the GitHub token never leaves this server.</em></p>
 			</div>
 			<?php endif; ?>
 
@@ -943,16 +940,19 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 									<?php echo $enabled ? esc_html__( 'Disable', 'stuh' ) : esc_html__( 'Enable', 'stuh' ); ?>
 								</button>
 							</form>
-							<!-- Regenerate key -->
-							<form method="post" style="display:inline-block;margin-right:4px;"
-								  onsubmit="return confirm('Regenerate API key? The old key will stop working immediately.');">
-								<?php wp_nonce_field( 'stuh_admin' ); ?>
-								<input type="hidden" name="stuh_action" value="regenerate_key">
-								<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
-								<button type="submit" class="button">
-									<?php esc_html_e( 'New Key', 'stuh' ); ?>
-								</button>
-							</form>
+							<?php if ( ! empty( $c['api_key'] ) ) : ?>
+							<!-- Copy Key -->
+							<button type="button" class="button" style="margin-right:4px;"
+									data-key="<?php echo esc_attr( $c['api_key'] ); ?>"
+									onclick="(function(btn){
+										navigator.clipboard.writeText(btn.dataset.key).then(function(){
+											btn.textContent='Copied!';
+											setTimeout(function(){ btn.textContent='Copy Key'; }, 2000);
+										});
+									})(this)">
+								<?php esc_html_e( 'Copy Key', 'stuh' ); ?>
+							</button>
+							<?php endif; ?>
 							<!-- Delete -->
 							<form method="post" style="display:inline-block;"
 								  onsubmit="return confirm('Permanently delete this client site?');">
