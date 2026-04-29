@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.1
+ * Version: 0.0.2
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -15,9 +15,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'STUH_OPTION_CLIENTS',  'stuh_clients' );
-define( 'STUH_OPTION_SETTINGS', 'stuh_settings' );
-define( 'STUH_REST_NS',         'stu-host/v1' );
+define( 'STUH_OPTION_CLIENTS',    'stuh_clients' );
+define( 'STUH_OPTION_SETTINGS',   'stuh_settings' );
+define( 'STUH_OPTION_UNVERIFIED', 'stuh_unverified' );
+define( 'STUH_REST_NS',           'stu-host/v1' );
 
 // ============================================================
 // Main plugin class
@@ -63,6 +64,76 @@ class STUH_Plugin {
 
 	private static function save_clients( array $clients ): void {
 		update_option( STUH_OPTION_CLIENTS, array_values( $clients ) );
+	}
+
+	public static function get_unverified(): array {
+		return (array) get_option( STUH_OPTION_UNVERIFIED, [] );
+	}
+
+	private static function save_unverified( array $records ): void {
+		update_option( STUH_OPTION_UNVERIFIED, array_values( $records ) );
+	}
+
+	/**
+	 * Record an unauthenticated or invalid-key request.
+	 * Deduplicates by IP; throttles DB writes to once per 5 minutes per IP.
+	 *
+	 * @param WP_REST_Request $req  The failed request.
+	 * @param string          $reason  'missing_key' or 'invalid_key'.
+	 */
+	public static function record_unverified( WP_REST_Request $req, string $reason ): void {
+		$ip       = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
+		$endpoint = sanitize_text_field( $req->get_route() );
+
+		// Try to parse the WordPress site URL from the User-Agent.
+		// WordPress sets UA like: "WordPress/6.5; https://example.com"
+		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
+		$site_url = '';
+		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
+			$site_url = esc_url_raw( rtrim( $m[1], '/' ) );
+		}
+
+		if ( ! $ip ) {
+			return;
+		}
+
+		$records = self::get_unverified();
+		$now     = time();
+		$found   = false;
+
+		foreach ( $records as &$r ) {
+			if ( $r['ip'] !== $ip ) {
+				continue;
+			}
+			$found = true;
+			$r['attempts']++;
+			$r['last_reason'] = $reason;
+			$r['last_endpoint'] = $endpoint;
+			if ( $site_url ) {
+				$r['site_url'] = $site_url;
+			}
+			// Throttle write: only update last_seen once per 5 minutes.
+			if ( ( $now - ( $r['last_seen'] ?? 0 ) ) > 300 ) {
+				$r['last_seen'] = $now;
+				self::save_unverified( $records );
+			}
+			break;
+		}
+		unset( $r );
+
+		if ( ! $found ) {
+			$records[] = [
+				'id'            => uniqid( 'stuh_uv_', true ),
+				'ip'            => $ip,
+				'site_url'      => $site_url,
+				'first_seen'    => $now,
+				'last_seen'     => $now,
+				'attempts'      => 1,
+				'last_reason'   => $reason,
+				'last_endpoint' => $endpoint,
+			];
+			self::save_unverified( $records );
+		}
 	}
 
 	// --------------------------------------------------------
@@ -160,9 +231,11 @@ class STUH_Plugin {
 	public function rest_permission( WP_REST_Request $req ) {
 		$key = $req->get_header( 'X-STU-Key' );
 		if ( empty( $key ) ) {
+			self::record_unverified( $req, 'missing_key' );
 			return new WP_Error( 'missing_key', 'API key required', [ 'status' => 401 ] );
 		}
 		if ( ! self::authenticate_client( $key ) ) {
+			self::record_unverified( $req, 'invalid_key' );
 			return new WP_Error( 'invalid_key', 'Invalid or disabled API key', [ 'status' => 403 ] );
 		}
 		return true;
@@ -384,6 +457,52 @@ class STUH_Plugin {
 				update_option( STUH_OPTION_SETTINGS, [ 'token' => $token ] );
 				wp_safe_redirect( add_query_arg( 'stuh_saved', '1', admin_url( 'admin.php?page=stuh-settings' ) ) );
 				exit;
+
+			case 'delete_unverified':
+				$id      = sanitize_text_field( $_POST['unverified_id'] ?? '' );
+				$records = array_values( array_filter( self::get_unverified(), fn( $r ) => $r['id'] !== $id ) );
+				self::save_unverified( $records );
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
+			case 'clear_unverified':
+				delete_option( STUH_OPTION_UNVERIFIED );
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
+			case 'promote_unverified':
+				$id      = sanitize_text_field( $_POST['unverified_id'] ?? '' );
+				$records = self::get_unverified();
+				$entry   = null;
+				foreach ( $records as $r ) {
+					if ( $r['id'] === $id ) { $entry = $r; break; }
+				}
+				if ( $entry ) {
+					$raw_key   = bin2hex( random_bytes( 24 ) );
+					$site_name = $entry['site_url'] ?: $entry['ip'];
+					$clients   = self::get_clients();
+					$clients[] = [
+						'id'           => uniqid( 'stuh_', true ),
+						'site_name'    => $site_name,
+						'site_url'     => $entry['site_url'] ?: '',
+						'api_key_hash' => wp_hash_password( $raw_key ),
+						'enabled'      => true,
+						'created_at'   => time(),
+						'last_seen'    => null,
+						'last_seen_ip' => null,
+					];
+					self::save_clients( $clients );
+					// Remove from unverified.
+					$records = array_values( array_filter( $records, fn( $r ) => $r['id'] !== $id ) );
+					self::save_unverified( $records );
+					set_transient(
+						'stuh_new_key_' . get_current_user_id(),
+						[ 'key' => $raw_key, 'site' => $site_name ],
+						120
+					);
+				}
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
 		}
 	}
 
@@ -503,38 +622,115 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 				</tbody>
 			</table>
 
-			<hr>
-			<h2><?php esc_html_e( 'Add Client Site', 'stuh' ); ?></h2>
-			<form method="post">
-				<?php wp_nonce_field( 'stuh_admin' ); ?>
-				<input type="hidden" name="stuh_action" value="add_client">
-				<table class="form-table" role="presentation">
-					<tr>
-						<th scope="row">
-							<label for="site_name"><?php esc_html_e( 'Site Name', 'stuh' ); ?></label>
-						</th>
-						<td>
-							<input type="text" id="site_name" name="site_name"
-								   class="regular-text" placeholder="e.g. Client Website" required>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row">
-							<label for="site_url"><?php esc_html_e( 'Site URL', 'stuh' ); ?></label>
-						</th>
-						<td>
-							<input type="url" id="site_url" name="site_url"
-								   class="regular-text" placeholder="https://example.com" required>
-							<p class="description">
-								<?php esc_html_e( 'Used for display only; it does not affect authentication.', 'stuh' ); ?>
-							</p>
-						</td>
-					</tr>
-				</table>
-				<?php submit_button( __( 'Add Site &amp; Generate Key', 'stuh' ) ); ?>
-			</form>
-		</div>
 		<?php
+		$unverified = self::get_unverified();
+		if ( ! empty( $unverified ) ) :
+		?>
+		<hr>
+		<h2 style="color:#d63638;">&#9888; Unverified Access Attempts</h2>
+		<p>These sites contacted the update host without a valid API key. You can grant them access by clicking <strong>Register &amp; Generate Key</strong>, or dismiss them.</p>
+		<table class="wp-list-table widefat fixed striped">
+			<thead>
+				<tr>
+					<th style="width:20%;">Detected Site URL</th>
+					<th style="width:14%;">IP Address</th>
+					<th style="width:10%;">Attempts</th>
+					<th style="width:12%;">First Seen</th>
+					<th style="width:12%;">Last Seen</th>
+					<th style="width:14%;">Reason</th>
+					<th>Actions</th>
+				</tr>
+			</thead>
+			<tbody>
+			<?php foreach ( $unverified as $uv ) : ?>
+				<tr>
+					<td>
+						<?php if ( $uv['site_url'] ) : ?>
+							<a href="<?php echo esc_url( $uv['site_url'] ); ?>" target="_blank" rel="noopener">
+								<?php echo esc_html( $uv['site_url'] ); ?>
+							</a>
+						<?php else : ?>
+							<em>Unknown</em>
+						<?php endif; ?>
+					</td>
+					<td><code><?php echo esc_html( $uv['ip'] ); ?></code></td>
+					<td><?php echo (int) $uv['attempts']; ?></td>
+					<td><?php echo esc_html( date_i18n( 'Y-m-d H:i', $uv['first_seen'] ) ); ?></td>
+					<td><?php echo esc_html( date_i18n( 'Y-m-d H:i', $uv['last_seen'] ) ); ?></td>
+					<td>
+						<?php
+						$reason_label = 'missing_key' === $uv['last_reason']
+							? '<span title="No key was sent">No key</span>'
+							: '<span title="A key was sent but did not match any registered site">Invalid key</span>';
+						echo wp_kses( $reason_label, [ 'span' => [ 'title' => [] ] ] );
+						?>
+						<br><small><code><?php echo esc_html( $uv['last_endpoint'] ?? '' ); ?></code></small>
+					</td>
+					<td style="white-space:nowrap;">
+						<!-- Promote to registered client -->
+						<form method="post" style="display:inline-block;margin-right:4px;"
+							  onsubmit="return confirm('Register this site and generate an API key?');">
+							<?php wp_nonce_field( 'stuh_admin' ); ?>
+							<input type="hidden" name="stuh_action" value="promote_unverified">
+							<input type="hidden" name="unverified_id" value="<?php echo esc_attr( $uv['id'] ); ?>">
+							<button type="submit" class="button button-primary">
+								<?php esc_html_e( 'Register &amp; Generate Key', 'stuh' ); ?>
+							</button>
+						</form>
+						<!-- Dismiss -->
+						<form method="post" style="display:inline-block;">
+							<?php wp_nonce_field( 'stuh_admin' ); ?>
+							<input type="hidden" name="stuh_action" value="delete_unverified">
+							<input type="hidden" name="unverified_id" value="<?php echo esc_attr( $uv['id'] ); ?>">
+							<button type="submit" class="button" style="color:#d63638;border-color:#d63638;">
+								<?php esc_html_e( 'Dismiss', 'stuh' ); ?>
+							</button>
+						</form>
+					</td>
+				</tr>
+			<?php endforeach; ?>
+			</tbody>
+		</table>
+		<form method="post" style="margin-top:8px;"
+			  onsubmit="return confirm('Clear all unverified records?');">
+			<?php wp_nonce_field( 'stuh_admin' ); ?>
+			<input type="hidden" name="stuh_action" value="clear_unverified">
+			<button type="submit" class="button"><?php esc_html_e( 'Clear All Unverified', 'stuh' ); ?></button>
+		</form>
+		<?php endif; ?>
+
+		<hr>
+		<h2><?php esc_html_e( 'Add Client Site', 'stuh' ); ?></h2>
+		<form method="post">
+			<?php wp_nonce_field( 'stuh_admin' ); ?>
+			<input type="hidden" name="stuh_action" value="add_client">
+			<table class="form-table" role="presentation">
+				<tr>
+					<th scope="row">
+						<label for="site_name"><?php esc_html_e( 'Site Name', 'stuh' ); ?></label>
+					</th>
+					<td>
+						<input type="text" id="site_name" name="site_name"
+							   class="regular-text" placeholder="e.g. Client Website" required>
+					</td>
+				</tr>
+				<tr>
+					<th scope="row">
+						<label for="site_url"><?php esc_html_e( 'Site URL', 'stuh' ); ?></label>
+					</th>
+					<td>
+						<input type="url" id="site_url" name="site_url"
+							   class="regular-text" placeholder="https://example.com" required>
+						<p class="description">
+							<?php esc_html_e( 'Used for display only; it does not affect authentication.', 'stuh' ); ?>
+						</p>
+					</td>
+				</tr>
+			</table>
+			<?php submit_button( __( 'Add Site &amp; Generate Key', 'stuh' ) ); ?>
+		</form>
+	</div>
+	<?php
 	}
 
 	// --------------------------------------------------------
@@ -556,34 +752,20 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 			</div>
 			<?php endif; ?>
 
-			<?php if ( defined( 'STUH_TOKEN' ) && STUH_TOKEN ) : ?>
-			<div class="notice notice-info">
-				<p>
-					<?php esc_html_e( 'GitHub token is provided via the ', 'stuh' ); ?>
-					<code>STUH_TOKEN</code>
-					<?php esc_html_e( ' constant in wp-config.php (the field below is ignored).', 'stuh' ); ?>
-				</p>
-			</div>
-			<?php endif; ?>
-
 			<form method="post">
 				<?php wp_nonce_field( 'stuh_admin' ); ?>
 				<input type="hidden" name="stuh_action" value="save_settings">
 				<table class="form-table" role="presentation">
 					<tr>
 						<th scope="row">
-							<label for="token">
-								<?php esc_html_e( 'GitHub Personal Access Token', 'stuh' ); ?>
-							</label>
+							<label for="token"><?php esc_html_e( 'GitHub Personal Access Token', 'stuh' ); ?></label>
 						</th>
 						<td>
 							<input type="password" id="token" name="token"
-								   value="<?php echo esc_attr( $s['token'] ); ?>"
-								   class="regular-text" autocomplete="off">
+								   class="regular-text" value="<?php echo esc_attr( $s['token'] ?? '' ); ?>"
+								   autocomplete="new-password">
 							<p class="description">
-								<?php esc_html_e( 'Requires repo scope for private repositories.', 'stuh' ); ?><br>
-								<?php esc_html_e( 'Alternatively, define in wp-config.php:', 'stuh' ); ?>
-								<code>define( 'STUH_TOKEN', 'ghp_...' );</code>
+								<?php esc_html_e( 'Token requires repo scope. Never stored in client sites.', 'stuh' ); ?>
 							</p>
 						</td>
 					</tr>
