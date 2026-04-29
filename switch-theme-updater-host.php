@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.4
+ * Version: 0.0.5
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -126,13 +126,15 @@ PHP;
 			return $reply;
 		}
 
-		// Only act when this exact plugin is the one being updated.
-		$upgrading_plugin = $hook_extra['plugin'] ?? '';
-		if ( plugin_basename( __FILE__ ) !== $upgrading_plugin ) {
+		// Intercept any download URL that points to our own REST API download endpoint.
+		// Checking the URL (not the plugin slug) avoids false negatives when the plugin
+		// file is symlinked and __FILE__ returns the real path instead of the plugins-dir path.
+		// This also handles updates to switch-theme-updater itself on the host site.
+		if ( ! str_contains( $package, '/wp-json/' . STUH_REST_NS . '/download' ) ) {
 			return false;
 		}
 
-		// The client plugin stores a REST API URL like:
+		// Parse repo/ref/path/pack from the REST API URL:
 		//   https://host.test/wp-json/stu-host/v1/download?repo=owner/repo&ref=v1.2&path=/&pack=slug
 		$parsed = wp_parse_url( $package );
 		if ( empty( $parsed['query'] ) ) {
@@ -150,13 +152,7 @@ PHP;
 		}
 
 		// Download straight from GitHub — no HTTP request to this server.
-		$zip = $this->github()->download_zipball( $repo, $ref, $path, $pack );
-
-		if ( is_wp_error( $zip ) ) {
-			return $zip;
-		}
-
-		return $zip; // Local temp-file path; upgrader unpacks from here.
+		return $this->github()->download_zipball( $repo, $ref, $path, $pack );
 	}
 
 	public function maybe_notice_no_token(): void {
