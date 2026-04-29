@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.22
+ * Version: 0.0.23
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -515,7 +515,7 @@ PHP;
 		register_rest_route( STUH_REST_NS, '/validate', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'rest_validate' ],
-			'permission_callback' => $auth,
+			'permission_callback' => '__return_true',
 		] );
 
 		register_rest_route( STUH_REST_NS, '/download', [
@@ -590,7 +590,6 @@ PHP;
 
 		// Whitelisted IPs are always valid, no key required.
 		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
-			error_log( sprintf( '[STUH validate] PASS ip_whitelist | ip=%s', $ip ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			return rest_ensure_response( [
 				'valid'  => true,
 				'method' => 'ip_whitelist',
@@ -617,8 +616,7 @@ PHP;
 
 		// Determine whether this is a self-request (same logic as rest_permission).
 		$home    = rtrim( home_url(), '/' );
-		$is_self = in_array( $ip, [ '127.0.0.1', '::1' ], true )
-		           || ( $site_url && $site_url === $home );
+		$is_self = ( $site_url && $site_url === $home );
 
 		$reason = $key ? 'invalid_key' : 'missing_key';
 		error_log( sprintf( '[STUH validate] FAIL %s | ip=%s site=%s self=%s', $reason, $ip, $site_url ?: '(unknown)', $is_self ? 'yes' : 'no' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
