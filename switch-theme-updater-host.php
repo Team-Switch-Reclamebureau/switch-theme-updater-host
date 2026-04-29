@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.7
+ * Version: 0.0.8
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -373,7 +373,7 @@ PHP;
 	 * @param string $raw_key  The plaintext key sent by the client.
 	 * @return array|false     The matching client record, or false on failure.
 	 */
-	public static function authenticate_client( string $raw_key ) {
+	public static function authenticate_client( string $raw_key, string $site_url = '' ) {
 		if ( empty( $raw_key ) ) {
 			return false;
 		}
@@ -382,15 +382,25 @@ PHP;
 		$matched = false;
 		$idx     = null;
 
+		// Normalise the incoming URL for comparison (lowercase, no trailing slash).
+		$norm_url = strtolower( rtrim( $site_url, '/' ) );
+
 		foreach ( $clients as $i => $client ) {
 			if ( ! ( $client['enabled'] ?? true ) ) {
 				continue;
 			}
-			if ( wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
-				$matched = $client;
-				$idx     = $i;
-				break;
+			if ( ! wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
+				continue;
 			}
+			// Key matches — now verify the site URL if one is stored.
+			$stored_url = strtolower( rtrim( $client['site_url'] ?? '', '/' ) );
+			if ( $stored_url !== '' && $stored_url !== $norm_url ) {
+				// Key is valid but the URL doesn't match — reject.
+				return false;
+			}
+			$matched = $client;
+			$idx     = $i;
+			break;
 		}
 
 		if ( false === $matched ) {
@@ -460,7 +470,16 @@ PHP;
 			self::record_unverified( $req, 'missing_key' );
 			return new WP_Error( 'missing_key', 'API key required', [ 'status' => 401 ] );
 		}
-		if ( ! self::authenticate_client( $key ) ) {
+
+		// Extract the site URL from the WordPress User-Agent header.
+		// WP sends: "WordPress/6.5; https://example.com"
+		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
+		$site_url = '';
+		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
+			$site_url = esc_url_raw( rtrim( $m[1], '/' ) );
+		}
+
+		if ( ! self::authenticate_client( $key, $site_url ) ) {
 			self::record_unverified( $req, 'invalid_key' );
 			return new WP_Error( 'invalid_key', 'Invalid or disabled API key', [ 'status' => 403 ] );
 		}
@@ -611,13 +630,11 @@ PHP;
 		switch ( $action ) {
 
 			case 'add_client':
-				$name = sanitize_text_field( $_POST['site_name'] ?? '' );
-				$url  = esc_url_raw( trim( $_POST['site_url'] ?? '' ) );
-				if ( $name && $url ) {
+				$url = esc_url_raw( trim( $_POST['site_url'] ?? '' ) );
+				if ( $url ) {
 					$raw_key   = bin2hex( random_bytes( 24 ) ); // 48 hex chars, 192 bits
 					$clients[] = [
 						'id'           => uniqid( 'stuh_', true ),
-						'site_name'    => $name,
 						'site_url'     => $url,
 						'api_key_hash' => wp_hash_password( $raw_key ),
 						'enabled'      => true,
@@ -628,7 +645,7 @@ PHP;
 					self::save_clients( $clients );
 					set_transient(
 						'stuh_new_key_' . get_current_user_id(),
-						[ 'key' => $raw_key, 'site' => $name ],
+						[ 'key' => $raw_key, 'site' => $url ],
 						120 // shown for 2 minutes max
 					);
 				}
@@ -656,22 +673,22 @@ PHP;
 				exit;
 
 			case 'regenerate_key':
-				$id        = sanitize_text_field( $_POST['client_id'] ?? '' );
-				$site_name = '';
+				$id       = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$site_url = '';
 				foreach ( $clients as &$c ) {
 					if ( $c['id'] === $id ) {
 						$raw_key          = bin2hex( random_bytes( 24 ) );
 						$c['api_key_hash'] = wp_hash_password( $raw_key );
-						$site_name         = $c['site_name'];
+						$site_url          = $c['site_url'];
 						break;
 					}
 				}
 				unset( $c );
 				self::save_clients( $clients );
-				if ( $site_name ) {
+				if ( $site_url ) {
 					set_transient(
 						'stuh_new_key_' . get_current_user_id(),
-						[ 'key' => $raw_key, 'site' => $site_name ],
+						[ 'key' => $raw_key, 'site' => $site_url ],
 						120
 					);
 				}
@@ -719,12 +736,10 @@ PHP;
 					if ( $r['id'] === $id ) { $entry = $r; break; }
 				}
 				if ( $entry ) {
-					$raw_key   = bin2hex( random_bytes( 24 ) );
-					$site_name = $entry['site_url'] ?: $entry['ip'];
-					$clients   = self::get_clients();
+					$raw_key = bin2hex( random_bytes( 24 ) );
+					$clients = self::get_clients();
 					$clients[] = [
 						'id'           => uniqid( 'stuh_', true ),
-						'site_name'    => $site_name,
 						'site_url'     => $entry['site_url'] ?: '',
 						'api_key_hash' => wp_hash_password( $raw_key ),
 						'enabled'      => true,
@@ -738,7 +753,7 @@ PHP;
 					self::save_unverified( $records );
 					set_transient(
 						'stuh_new_key_' . get_current_user_id(),
-						[ 'key' => $raw_key, 'site' => $site_name ],
+						[ 'key' => $raw_key, 'site' => $entry['site_url'] ?: $entry['ip'] ],
 						120
 					);
 				}
@@ -768,7 +783,7 @@ PHP;
 
 			<?php if ( $new_key ) : ?>
 			<div class="notice notice-success" style="padding: 16px 16px 8px;">
-				<h3 style="margin-top: 0;">&#128274; API Key for <em><?php echo esc_html( $new_key['site'] ); ?></em></h3>
+				<h3 style="margin-top: 0;">&#128274; New API Key</h3>
 				<p><strong>This key is shown only once. Copy it before leaving this page.</strong></p>
 				<code id="stuh-api-key" style="display:block;font-size:14px;background:#f0f0f1;padding:10px 14px;border-radius:4px;word-break:break-all;user-select:all;margin-bottom:12px;"><?php echo esc_html( $new_key['key'] ); ?></code>
 				<p>Add the following constants to the client site's <code>wp-config.php</code>:</p>
@@ -781,18 +796,17 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 			<table class="wp-list-table widefat fixed striped" style="margin-top: 20px;">
 				<thead>
 					<tr>
-						<th scope="col" style="width: 18%;">Name</th>
-						<th scope="col" style="width: 28%;">URL</th>
+						<th scope="col" style="width: 15%;">URL</th>
 						<th scope="col" style="width: 10%;">Status</th>
-						<th scope="col" style="width: 12%;">Created</th>
-						<th scope="col" style="width: 16%;">Last Seen</th>
-						<th scope="col">Actions</th>
+						<th scope="col" style="width: 10%;">Created</th>
+						<th scope="col" style="width: 15%;">Last Seen</th>
+						<th scope="col" style="width: 20%;">Actions</th>
 					</tr>
 				</thead>
 				<tbody>
 					<?php if ( empty( $clients ) ) : ?>
 					<tr>
-						<td colspan="6" style="padding: 16px;">
+						<td colspan="5" style="padding: 16px;">
 							<em><?php esc_html_e( 'No client sites registered yet. Add one below.', 'stuh' ); ?></em>
 						</td>
 					</tr>
@@ -801,7 +815,6 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 						$enabled = (bool) ( $c['enabled'] ?? true );
 					?>
 					<tr>
-						<td><strong><?php echo esc_html( $c['site_name'] ); ?></strong></td>
 						<td>
 							<a href="<?php echo esc_url( $c['site_url'] ); ?>" target="_blank" rel="noopener">
 								<?php echo esc_html( $c['site_url'] ); ?>
@@ -948,22 +961,13 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">
-						<label for="site_name"><?php esc_html_e( 'Site Name', 'stuh' ); ?></label>
-					</th>
-					<td>
-						<input type="text" id="site_name" name="site_name"
-							   class="regular-text" placeholder="e.g. Client Website" required>
-					</td>
-				</tr>
-				<tr>
-					<th scope="row">
 						<label for="site_url"><?php esc_html_e( 'Site URL', 'stuh' ); ?></label>
 					</th>
 					<td>
 						<input type="url" id="site_url" name="site_url"
 							   class="regular-text" placeholder="https://example.com" required>
 						<p class="description">
-							<?php esc_html_e( 'Used for display only; it does not affect authentication.', 'stuh' ); ?>
+							<?php esc_html_e( 'Must match the WordPress site URL of the client. Used together with the API key to authenticate requests.', 'stuh' ); ?>
 						</p>
 					</td>
 				</tr>
