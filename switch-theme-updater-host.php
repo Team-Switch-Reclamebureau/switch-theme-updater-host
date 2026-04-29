@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.23
+ * Version: 0.0.24
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -131,10 +131,15 @@ PHP;
 			return $reply;
 		}
 
-		// Intercept any download URL that points to our own REST API download endpoint.
-		// Checking the URL (not the plugin slug) avoids false negatives when the plugin
-		// file is symlinked and __FILE__ returns the real path instead of the plugins-dir path.
-		// This also handles updates to switch-theme-updater itself on the host site.
+		// Only intercept updates for this plugin itself.
+		// Other plugins updated via the REST endpoint (e.g. themes/plugins on client sites
+		// that happen to share this host) are left to the client plugin's own filter.
+		$upgrading_plugin = $hook_extra['plugin'] ?? '';
+		if ( $upgrading_plugin !== $this->self_plugin_basename() ) {
+			return false;
+		}
+
+		// Confirm the download URL actually points to our own REST API endpoint.
 		if ( ! str_contains( $package, '/wp-json/' . STUH_REST_NS . '/download' ) ) {
 			return false;
 		}
