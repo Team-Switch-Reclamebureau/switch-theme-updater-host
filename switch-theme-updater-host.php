@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.19
+ * Version: 0.0.20
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -450,15 +450,12 @@ PHP;
 		// Normalise the incoming URL for comparison (lowercase, no trailing slash).
 		$norm_url = strtolower( rtrim( $site_url, '/' ) );
 
-		$key_is_disabled = false;
-
+		// First pass: only check enabled clients (bcrypt is expensive — skip disabled early).
 		foreach ( $clients as $i => $client ) {
-			if ( ! wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
+			if ( ! ( $client['enabled'] ?? true ) ) {
 				continue;
 			}
-			// Key matches — check if the client is disabled.
-			if ( ! ( $client['enabled'] ?? true ) ) {
-				$key_is_disabled = true;
+			if ( ! wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
 				continue;
 			}
 			// Key matches and client is enabled — verify the site URL if one is stored.
@@ -473,7 +470,16 @@ PHP;
 		}
 
 		if ( false === $matched ) {
-			return $key_is_disabled ? 'disabled' : false;
+			// Second pass: check disabled clients so we can return a specific error.
+			foreach ( $clients as $client ) {
+				if ( $client['enabled'] ?? true ) {
+					continue; // Already checked above.
+				}
+				if ( wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
+					return 'disabled';
+				}
+			}
+			return false;
 		}
 
 		// Throttle last_seen writes to once per 5 minutes.
