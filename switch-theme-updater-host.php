@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.12
+ * Version: 0.0.13
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -337,7 +337,7 @@ PHP;
 		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
 		$site_url = '';
 		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
-			$site_url = esc_url_raw( rtrim( $m[1], '/' ) );
+			$site_url = self::strip_language_prefix( esc_url_raw( rtrim( $m[1], '/' ) ) );
 		}
 
 		if ( ! $ip ) {
@@ -386,6 +386,29 @@ PHP;
 	// --------------------------------------------------------
 	// Authentication
 	// --------------------------------------------------------
+
+	/**
+	 * Strip a WPML-style language-code path segment from a site URL so that
+	 * https://example.com/en and https://example.com are treated as the same site.
+	 * Only a single path segment that is 2-3 ASCII alpha characters is removed;
+	 * subdirectory installs (e.g. https://example.com/blog) are left untouched.
+	 */
+	private static function strip_language_prefix( string $url ): string {
+		$parsed = wp_parse_url( $url );
+		if ( empty( $parsed['host'] ) ) {
+			return $url;
+		}
+		$path = trim( $parsed['path'] ?? '', '/' );
+		// Strip only when the whole path looks like a 2- or 3-letter ISO language code.
+		if ( $path !== '' && preg_match( '#^[a-z]{2,3}$#i', $path ) ) {
+			$clean = ( $parsed['scheme'] ?? 'https' ) . '://' . $parsed['host'];
+			if ( ! empty( $parsed['port'] ) ) {
+				$clean .= ':' . $parsed['port'];
+			}
+			return $clean;
+		}
+		return $url;
+	}
 
 	/**
 	 * Validate a raw API key against stored (hashed) client records.
@@ -500,7 +523,7 @@ PHP;
 		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
 		$site_url = '';
 		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
-			$site_url = esc_url_raw( rtrim( $m[1], '/' ) );
+			$site_url = self::strip_language_prefix( esc_url_raw( rtrim( $m[1], '/' ) ) );
 		}
 
 		// Detect requests originating from this site itself (e.g. self-update).
