@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.21
+ * Version: 0.0.22
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -512,6 +512,12 @@ PHP;
 			],
 		] );
 
+		register_rest_route( STUH_REST_NS, '/validate', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_validate' ],
+			'permission_callback' => $auth,
+		] );
+
 		register_rest_route( STUH_REST_NS, '/download', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'rest_download' ],
@@ -573,6 +579,56 @@ PHP;
 			return new WP_Error( 'invalid_key', 'Invalid or disabled API key', [ 'status' => 403 ] );
 		}
 		return true;
+	}
+
+	// --------------------------------------------------------
+	// REST endpoint: validate licence / API key
+	// --------------------------------------------------------
+
+	public function rest_validate( WP_REST_Request $req ) {
+		$ip = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
+
+		// Whitelisted IPs are always valid, no key required.
+		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
+			error_log( sprintf( '[STUH validate] PASS ip_whitelist | ip=%s', $ip ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return rest_ensure_response( [
+				'valid'  => true,
+				'method' => 'ip_whitelist',
+			] );
+		}
+
+		$key      = $req->get_header( 'X-STU-Key' );
+		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
+		$site_url = '';
+		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
+			$site_url = self::strip_language_prefix( esc_url_raw( rtrim( $m[1], '/' ) ) );
+		}
+
+		$client = $key ? self::authenticate_client( $key, $site_url ) : false;
+
+		if ( $client ) {
+			error_log( sprintf( '[STUH validate] PASS api_key | ip=%s site=%s', $ip, $client['site_url'] ?? $site_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return rest_ensure_response( [
+				'valid'    => true,
+				'method'   => 'api_key',
+				'site_url' => $client['site_url'] ?? '',
+			] );
+		}
+
+		// Determine whether this is a self-request (same logic as rest_permission).
+		$home    = rtrim( home_url(), '/' );
+		$is_self = in_array( $ip, [ '127.0.0.1', '::1' ], true )
+		           || ( $site_url && $site_url === $home );
+
+		$reason = $key ? 'invalid_key' : 'missing_key';
+		error_log( sprintf( '[STUH validate] FAIL %s | ip=%s site=%s self=%s', $reason, $ip, $site_url ?: '(unknown)', $is_self ? 'yes' : 'no' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+
+		if ( ! $is_self ) {
+			self::record_unverified( $req, $reason );
+		}
+
+		// allow_unverified let this request through, but the licence is not valid.
+		return rest_ensure_response( [ 'valid' => false ] );
 	}
 
 	// --------------------------------------------------------
