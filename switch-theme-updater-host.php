@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.5
+ * Version: 0.0.6
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -38,6 +38,10 @@ class STUH_Plugin {
 		// Intercept our own plugin update before WordPress tries to HTTP-download
 		// from our REST API — which would hit maintenance mode on this same server.
 		add_filter( 'upgrader_pre_download', [ $this, 'intercept_self_upgrade' ], 5, 4 );
+
+		// Self-update: check GitHub for new releases and inject into WP update system.
+		add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'self_update_check' ] );
+		add_filter( 'plugins_api', [ $this, 'self_plugins_api' ], 10, 3 );
 	}
 
 	// --------------------------------------------------------
@@ -153,6 +157,105 @@ PHP;
 
 		// Download straight from GitHub — no HTTP request to this server.
 		return $this->github()->download_zipball( $repo, $ref, $path, $pack );
+	}
+
+	// --------------------------------------------------------
+	// Self-update: version check + download directly from GitHub
+	// --------------------------------------------------------
+
+	/** Slug used in WordPress's update transient. */
+	private function self_plugin_basename(): string {
+		// Use the WP_PLUGIN_DIR-relative path WordPress registered this plugin under.
+		// plugin_basename() resolves symlinks, so we derive it from the registered slug
+		// via the plugin headers instead.
+		return plugin_basename( __FILE__ );
+	}
+
+	/** The GitHub repo this plugin lives in (from plugin header). */
+	private function self_github_repo(): string {
+		return 'Team-Switch-Reclamebureau/switch-theme-updater-host';
+	}
+
+	/**
+	 * Checks GitHub for a newer release and, if found, injects an update record
+	 * into the WordPress update transient so the Dashboard shows the update.
+	 */
+	public function self_update_check( $transient ) {
+		if ( empty( $transient->checked ) ) {
+			return $transient;
+		}
+
+		$slug     = $this->self_plugin_basename();
+		$current  = $transient->checked[ $slug ] ?? '0.0.0';
+		$repo     = $this->self_github_repo();
+		$gh       = $this->github();
+		$result   = $gh->get_latest_version( $repo, null, '/', 'releases' );
+
+		if ( ! $result || empty( $result['version'] ) || empty( $result['ref'] ) ) {
+			return $transient;
+		}
+
+		if ( version_compare( $result['version'], $current, '<=' ) ) {
+			return $transient;
+		}
+
+		// Build a download URL that points to our own REST endpoint —
+		// intercept_self_upgrade will catch it and download from GitHub directly.
+		$pack        = 'switch-theme-updater-host';
+		$download    = add_query_arg(
+			[
+				'repo' => $repo,
+				'ref'  => $result['ref'],
+				'path' => '/',
+				'pack' => $pack,
+			],
+			get_rest_url( null, STUH_REST_NS . '/download' )
+		);
+
+		$transient->response[ $slug ] = (object) [
+			'slug'        => dirname( $slug ),
+			'plugin'      => $slug,
+			'new_version' => $result['version'],
+			'package'     => $download,
+			'url'         => 'https://github.com/' . $repo,
+		];
+
+		return $transient;
+	}
+
+	/**
+	 * Supplies plugin information for the "View details" modal in wp-admin.
+	 */
+	public function self_plugins_api( $result, $action, $args ) {
+		if ( 'plugin_information' !== $action ) {
+			return $result;
+		}
+		if ( ( $args->slug ?? '' ) !== dirname( $this->self_plugin_basename() ) ) {
+			return $result;
+		}
+
+		$repo   = $this->self_github_repo();
+		$latest = $this->github()->get_latest_version( $repo, null, '/', 'releases' );
+
+		return (object) [
+			'name'          => 'Team Switch - Theme Updater Host',
+			'slug'          => dirname( $this->self_plugin_basename() ),
+			'version'       => $latest['version'] ?? '',
+			'author'        => 'Team Switch',
+			'homepage'      => 'https://github.com/' . $repo,
+			'download_link' => add_query_arg(
+				[
+					'repo' => $repo,
+					'ref'  => $latest['ref'] ?? '',
+					'path' => '/',
+					'pack' => 'switch-theme-updater-host',
+				],
+				get_rest_url( null, STUH_REST_NS . '/download' )
+			),
+			'sections'      => [
+				'description' => 'Central update proxy. Authenticates client sites and relays GitHub releases without exposing the GitHub token.',
+			],
+		];
 	}
 
 	public function maybe_notice_no_token(): void {
