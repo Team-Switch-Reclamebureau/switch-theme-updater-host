@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.9
+ * Version: 0.0.10
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -18,6 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'STUH_OPTION_CLIENTS',    'stuh_clients' );
 define( 'STUH_OPTION_SETTINGS',   'stuh_settings' );
 define( 'STUH_OPTION_UNVERIFIED', 'stuh_unverified' );
+define( 'STUH_OPTION_WHITELIST',  'stuh_whitelist' );
 define( 'STUH_REST_NS',           'stu-host/v1' );
 
 // ============================================================
@@ -300,6 +301,26 @@ PHP;
 		update_option( STUH_OPTION_UNVERIFIED, array_values( $records ) );
 	}
 
+	public static function get_whitelist(): array {
+		return (array) get_option( STUH_OPTION_WHITELIST, [] );
+	}
+
+	private static function save_whitelist( array $entries ): void {
+		update_option( STUH_OPTION_WHITELIST, array_values( $entries ) );
+	}
+
+	/**
+	 * Returns true if the given IP is in the whitelist.
+	 */
+	public static function ip_is_whitelisted( string $ip ): bool {
+		foreach ( self::get_whitelist() as $entry ) {
+			if ( ( $entry['ip'] ?? '' ) === $ip ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/**
 	 * Record an unauthenticated or invalid-key request.
 	 * Deduplicates by IP; throttles DB writes to once per 5 minutes per IP.
@@ -467,6 +488,12 @@ PHP;
 	public function rest_permission( WP_REST_Request $req ) {
 		$s    = self::get_settings();
 		$key  = $req->get_header( 'X-STU-Key' );
+		$ip   = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
+
+		// Whitelisted IPs always pass through, no key required.
+		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
+			return true;
+		}
 
 		// Extract the site URL from the WordPress User-Agent header.
 		// WP sends: "WordPress/6.5; https://example.com"
@@ -735,6 +762,32 @@ PHP;
 			case 'clear_unverified':
 				delete_option( STUH_OPTION_UNVERIFIED );
 				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
+			case 'add_whitelist':
+				$wl_ip   = sanitize_text_field( trim( $_POST['wl_ip']   ?? '' ) );
+				$wl_name = sanitize_text_field( trim( $_POST['wl_name'] ?? '' ) );
+				if ( $wl_ip && $wl_name ) {
+					// Basic IP validation (IPv4 and IPv6).
+					if ( filter_var( $wl_ip, FILTER_VALIDATE_IP ) ) {
+						$whitelist   = self::get_whitelist();
+						$whitelist[] = [
+							'id'         => uniqid( 'stuh_wl_', true ),
+							'ip'         => $wl_ip,
+							'label'      => $wl_name,
+							'created_at' => time(),
+						];
+						self::save_whitelist( $whitelist );
+					}
+				}
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh-settings' ) );
+				exit;
+
+			case 'delete_whitelist':
+				$wl_id     = sanitize_text_field( $_POST['wl_id'] ?? '' );
+				$whitelist = array_values( array_filter( self::get_whitelist(), fn( $e ) => $e['id'] !== $wl_id ) );
+				self::save_whitelist( $whitelist );
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh-settings' ) );
 				exit;
 
 			case 'promote_unverified':
@@ -1057,6 +1110,73 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 					</tr>
 				</table>
 				<?php submit_button( __( 'Save Settings', 'stuh' ) ); ?>
+			</form>
+
+			<hr>
+			<h2><?php esc_html_e( 'IP Whitelist', 'stuh' ); ?></h2>
+			<p><?php esc_html_e( 'IPs listed here always have access to the update endpoints, even without an API key.', 'stuh' ); ?></p>
+
+			<?php $whitelist = self::get_whitelist(); ?>
+			<?php if ( ! empty( $whitelist ) ) : ?>
+			<table class="wp-list-table widefat fixed striped" style="max-width:700px;margin-bottom:16px;">
+				<thead>
+					<tr>
+						<th style="width:30%;"><?php esc_html_e( 'Label', 'stuh' ); ?></th>
+						<th style="width:30%;"><?php esc_html_e( 'IP Address', 'stuh' ); ?></th>
+						<th style="width:20%;"><?php esc_html_e( 'Added', 'stuh' ); ?></th>
+						<th><?php esc_html_e( 'Actions', 'stuh' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+				<?php foreach ( $whitelist as $wl ) : ?>
+					<tr>
+						<td><strong><?php echo esc_html( $wl['label'] ); ?></strong></td>
+						<td><code><?php echo esc_html( $wl['ip'] ); ?></code></td>
+						<td><?php echo esc_html( date_i18n( 'Y-m-d', $wl['created_at'] ) ); ?></td>
+						<td>
+							<form method="post" style="display:inline-block;"
+								  onsubmit="return confirm('Remove this IP from the whitelist?');">
+								<?php wp_nonce_field( 'stuh_admin' ); ?>
+								<input type="hidden" name="stuh_action" value="delete_whitelist">
+								<input type="hidden" name="wl_id" value="<?php echo esc_attr( $wl['id'] ); ?>">
+								<button type="submit" class="button" style="color:#d63638;border-color:#d63638;">
+									<?php esc_html_e( 'Remove', 'stuh' ); ?>
+								</button>
+							</form>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<?php else : ?>
+			<p><em><?php esc_html_e( 'No IPs whitelisted yet.', 'stuh' ); ?></em></p>
+			<?php endif; ?>
+
+			<form method="post" style="max-width:700px;">
+				<?php wp_nonce_field( 'stuh_admin' ); ?>
+				<input type="hidden" name="stuh_action" value="add_whitelist">
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row">
+							<label for="wl_name"><?php esc_html_e( 'Label', 'stuh' ); ?></label>
+						</th>
+						<td>
+							<input type="text" id="wl_name" name="wl_name"
+								   class="regular-text" placeholder="<?php esc_attr_e( 'e.g. Office', 'stuh' ); ?>" required>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row">
+							<label for="wl_ip"><?php esc_html_e( 'IP Address', 'stuh' ); ?></label>
+						</th>
+						<td>
+							<input type="text" id="wl_ip" name="wl_ip"
+								   class="regular-text" placeholder="<?php esc_attr_e( '203.0.113.1', 'stuh' ); ?>" required>
+							<p class="description"><?php esc_html_e( 'IPv4 or IPv6. Ranges are not supported.', 'stuh' ); ?></p>
+						</td>
+					</tr>
+				</table>
+				<?php submit_button( __( 'Add to Whitelist', 'stuh' ), 'secondary' ); ?>
 			</form>
 
 			<hr>
