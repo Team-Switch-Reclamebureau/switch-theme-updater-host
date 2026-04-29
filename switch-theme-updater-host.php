@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.10
+ * Version: 0.0.11
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1194,42 +1194,6 @@ define( 'GHTU_CLIENT_KEY', '<?php echo esc_html( $new_key['key'] ); ?>' );</pre>
 				<?php submit_button( __( 'Check for Updates Now', 'stuh' ), 'secondary' ); ?>
 			</form>
 
-			<hr>
-			<h2><?php esc_html_e( 'REST API Endpoint', 'stuh' ); ?></h2>
-			<p><?php esc_html_e( 'Client sites connect to this base URL:', 'stuh' ); ?></p>
-			<code><?php echo esc_html( get_rest_url( null, STUH_REST_NS ) ); ?></code>
-
-			<h3><?php esc_html_e( 'Available Endpoints', 'stuh' ); ?></h3>
-			<table class="wp-list-table widefat fixed" style="max-width:800px;">
-				<thead>
-					<tr>
-						<th><?php esc_html_e( 'Method', 'stuh' ); ?></th>
-						<th><?php esc_html_e( 'Path', 'stuh' ); ?></th>
-						<th><?php esc_html_e( 'Description', 'stuh' ); ?></th>
-					</tr>
-				</thead>
-				<tbody>
-					<tr>
-						<td><code>GET</code></td>
-						<td><code>/version</code></td>
-						<td><?php esc_html_e( 'Latest version for a repo (?repo=owner/repo&mode=releases|commits|tag&ref=)', 'stuh' ); ?></td>
-					</tr>
-					<tr>
-						<td><code>GET</code></td>
-						<td><code>/releases</code></td>
-						<td><?php esc_html_e( 'All releases for a repo (?repo=owner/repo)', 'stuh' ); ?></td>
-					</tr>
-					<tr>
-						<td><code>GET</code></td>
-						<td><code>/download</code></td>
-						<td><?php esc_html_e( 'Download zip (?repo=owner/repo&ref=v1.0&path=/&pack=slug)', 'stuh' ); ?></td>
-					</tr>
-				</tbody>
-			</table>
-			<p class="description">
-				<?php esc_html_e( 'All endpoints require the header:', 'stuh' ); ?>
-				<code>X-STU-Key: &lt;api_key&gt;</code>
-			</p>
 		</div>
 		<?php
 	}
