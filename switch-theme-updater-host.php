@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.17
+ * Version: 0.0.18
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -907,13 +907,51 @@ PHP;
 			</div>
 			<?php endif; ?>
 
+			<?php
+			// Sorting.
+			$allowed_cols = [ 'site_url', 'enabled', 'created_at', 'last_seen' ];
+			$orderby      = in_array( $_GET['orderby'] ?? '', $allowed_cols, true ) ? $_GET['orderby'] : 'site_url';
+			$order        = strtolower( $_GET['order'] ?? 'asc' ) === 'desc' ? 'desc' : 'asc';
+			$opposite     = $order === 'asc' ? 'desc' : 'asc';
+
+			usort( $clients, function( $a, $b ) use ( $orderby, $order ) {
+				$va = $a[ $orderby ] ?? '';
+				$vb = $b[ $orderby ] ?? '';
+				// Nulls last.
+				if ( $va === null || $va === '' ) return $order === 'asc' ? 1 : -1;
+				if ( $vb === null || $vb === '' ) return $order === 'asc' ? -1 : 1;
+				$cmp = is_numeric( $va ) ? ( $va <=> $vb ) : strcasecmp( (string) $va, (string) $vb );
+				return $order === 'asc' ? $cmp : -$cmp;
+			} );
+
+			$sort_url = function( string $col ) use ( $orderby, $order, $opposite ): string {
+				return esc_url( add_query_arg( [
+					'page'    => 'stuh',
+					'orderby' => $col,
+					'order'   => $orderby === $col ? $opposite : 'asc',
+				], admin_url( 'admin.php' ) ) );
+			};
+			$sort_indicator = function( string $col ) use ( $orderby, $order ): string {
+				if ( $orderby !== $col ) return '';
+				return ' <span class="dashicons dashicons-arrow-' . ( $order === 'asc' ? 'up' : 'down' ) . '" style="vertical-align:middle;font-size:14px;"></span>';
+			};
+			?>
+
 			<table class="wp-list-table widefat fixed striped" style="margin-top: 20px;">
 				<thead>
 					<tr>
-						<th scope="col" style="width: 15%;">URL</th>
-						<th scope="col" style="width: 8%;">Status</th>
-						<th scope="col" style="width: 8%;">Created</th>
-						<th scope="col" style="width: 12%;">Last Seen</th>
+						<th scope="col" style="width: 15%;">
+							<a href="<?php echo $sort_url( 'site_url' ); ?>">URL<?php echo $sort_indicator( 'site_url' ); ?></a>
+						</th>
+						<th scope="col" style="width: 8%;">
+							<a href="<?php echo $sort_url( 'enabled' ); ?>">Status<?php echo $sort_indicator( 'enabled' ); ?></a>
+						</th>
+						<th scope="col" style="width: 8%;">
+							<a href="<?php echo $sort_url( 'created_at' ); ?>">Created<?php echo $sort_indicator( 'created_at' ); ?></a>
+						</th>
+						<th scope="col" style="width: 12%;">
+							<a href="<?php echo $sort_url( 'last_seen' ); ?>">Last Seen<?php echo $sort_indicator( 'last_seen' ); ?></a>
+						</th>
 						<th scope="col" style="width: 25%;">Actions</th>
 					</tr>
 				</thead>
