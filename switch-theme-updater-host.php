@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.18
+ * Version: 0.0.19
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -450,14 +450,18 @@ PHP;
 		// Normalise the incoming URL for comparison (lowercase, no trailing slash).
 		$norm_url = strtolower( rtrim( $site_url, '/' ) );
 
+		$key_is_disabled = false;
+
 		foreach ( $clients as $i => $client ) {
-			if ( ! ( $client['enabled'] ?? true ) ) {
-				continue;
-			}
 			if ( ! wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
 				continue;
 			}
-			// Key matches — now verify the site URL if one is stored.
+			// Key matches — check if the client is disabled.
+			if ( ! ( $client['enabled'] ?? true ) ) {
+				$key_is_disabled = true;
+				continue;
+			}
+			// Key matches and client is enabled — verify the site URL if one is stored.
 			$stored_url = strtolower( rtrim( $client['site_url'] ?? '', '/' ) );
 			if ( $stored_url !== '' && $stored_url !== $norm_url ) {
 				// Key is valid but the URL doesn't match — reject.
@@ -469,7 +473,7 @@ PHP;
 		}
 
 		if ( false === $matched ) {
-			return false;
+			return $key_is_disabled ? 'disabled' : false;
 		}
 
 		// Throttle last_seen writes to once per 5 minutes.
@@ -563,14 +567,21 @@ PHP;
 			return new WP_Error( 'missing_key', 'API key required', [ 'status' => 401 ] );
 		}
 
-		if ( ! self::authenticate_client( $key, $site_url ) ) {
+		$auth = self::authenticate_client( $key, $site_url );
+
+		if ( 'disabled' === $auth ) {
+			// Key is recognised but the client has been explicitly disabled — always block.
+			return new WP_Error( 'key_disabled', 'This API key has been disabled. Please contact the host administrator.', [ 'status' => 403 ] );
+		}
+
+		if ( ! $auth ) {
 			if ( ! $is_self ) {
 				self::record_unverified( $req, 'invalid_key' );
 			}
 			if ( ! empty( $s['allow_unverified'] ) ) {
 				return true;
 			}
-			return new WP_Error( 'invalid_key', 'Invalid or disabled API key', [ 'status' => 403 ] );
+			return new WP_Error( 'invalid_key', 'Invalid API key. Please check your key in the updater settings.', [ 'status' => 403 ] );
 		}
 		return true;
 	}
