@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.24
+ * Version: 0.0.25
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -462,10 +462,12 @@ PHP;
 			if ( ! wp_check_password( $raw_key, $client['api_key_hash'] ) ) {
 				continue;
 			}
-			// Key matches — now verify the site URL if one is stored.
-			$stored_url = strtolower( rtrim( $client['site_url'] ?? '', '/' ) );
-			if ( $stored_url !== '' && $stored_url !== $norm_url ) {
-				// Key is valid but the URL doesn't match — reject.
+			// Key matches — now verify the site URL against all stored URLs.
+			// Support both legacy single site_url and the newer site_urls array.
+			$stored_raw  = $client['site_urls'] ?? ( ( $client['site_url'] ?? '' ) !== '' ? [ $client['site_url'] ] : [] );
+			$stored_norm = array_map( fn( $u ) => strtolower( rtrim( $u, '/' ) ), $stored_raw );
+			if ( ! empty( $stored_norm ) && ! in_array( $norm_url, $stored_norm, true ) ) {
+				// Key is valid but no stored URL matches — reject.
 				return false;
 			}
 			$matched = $client;
@@ -778,12 +780,17 @@ PHP;
 		switch ( $action ) {
 
 			case 'add_client':
-				$url = esc_url_raw( trim( $_POST['site_url'] ?? '' ) );
-				if ( $url ) {
+				// Parse one URL per line from the textarea; sanitize and filter empties.
+				$lines = explode( "\n", $_POST['site_url'] ?? '' );
+				$urls  = array_values( array_filter(
+					array_map( fn( $l ) => esc_url_raw( trim( $l ) ), $lines )
+				) );
+				if ( ! empty( $urls ) ) {
 					$raw_key   = bin2hex( random_bytes( 24 ) ); // 48 hex chars, 192 bits
 					$clients[] = [
 						'id'           => uniqid( 'stuh_', true ),
-						'site_url'     => $url,
+						'site_url'     => $urls[0], // primary URL (used for display/sorting)
+						'site_urls'    => $urls,
 						'api_key'      => $raw_key,
 						'api_key_hash' => wp_hash_password( $raw_key ),
 						'enabled'      => true,
@@ -794,7 +801,7 @@ PHP;
 					self::save_clients( $clients );
 					set_transient(
 						'stuh_new_key_' . get_current_user_id(),
-						[ 'key' => $raw_key, 'site' => $url ],
+						[ 'key' => $raw_key, 'site' => $urls[0] ],
 						120 // shown for 2 minutes max
 					);
 				}
@@ -817,6 +824,25 @@ PHP;
 			case 'delete_client':
 				$id      = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$clients = array_values( array_filter( $clients, fn( $c ) => $c['id'] !== $id ) );
+				self::save_clients( $clients );
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
+			case 'edit_client_urls':
+				$id    = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$lines = explode( "\n", $_POST['site_urls_raw'] ?? '' );
+				$urls  = array_values( array_filter(
+					array_map( fn( $l ) => esc_url_raw( trim( $l ) ), $lines )
+				) );
+				foreach ( $clients as &$c ) {
+					if ( $c['id'] !== $id ) {
+						continue;
+					}
+					$c['site_urls'] = $urls;
+					$c['site_url']  = $urls[0] ?? '';
+					break;
+				}
+				unset( $c );
 				self::save_clients( $clients );
 				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
 				exit;
@@ -914,9 +940,11 @@ PHP;
 				if ( $entry ) {
 					$raw_key = bin2hex( random_bytes( 24 ) );
 					$clients = self::get_clients();
+					$site    = $entry['site_url'] ?: '';
 					$clients[] = [
 						'id'           => uniqid( 'stuh_', true ),
-						'site_url'     => $entry['site_url'] ?: '',
+						'site_url'     => $site,
+						'site_urls'    => $site ? [ $site ] : [],
 						'api_key'      => $raw_key,
 						'api_key_hash' => wp_hash_password( $raw_key ),
 						'enabled'      => true,
@@ -1027,9 +1055,14 @@ PHP;
 					?>
 					<tr>
 						<td>
-							<a href="<?php echo esc_url( $c['site_url'] ); ?>" target="_blank" rel="noopener">
-								<?php echo esc_html( preg_replace( '#^https?://#', '', $c['site_url'] ) ); ?>
-							</a>
+							<?php
+							$all_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
+							foreach ( $all_urls as $u ) :
+							?>
+							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
+								<?php echo esc_html( preg_replace( '#^https?://#', '', $u ) ); ?>
+							</a><br>
+							<?php endforeach; ?>
 						</td>
 						<td>
 							<?php if ( $enabled ) : ?>
@@ -1072,6 +1105,16 @@ PHP;
 								<?php esc_html_e( 'Copy Key', 'stuh' ); ?>
 							</button>
 							<?php endif; ?>
+							<!-- Edit URLs -->
+							<button type="button" class="button" style="margin-right:4px;"
+									onclick="(function(btn){
+										var row = document.getElementById('stuh-edit-urls-<?php echo esc_js( $c['id'] ); ?>');
+										var hidden = row.style.display === 'none' || row.style.display === '';
+										row.style.display = hidden ? 'table-row' : 'none';
+										btn.textContent = hidden ? 'Cancel' : 'Edit URLs';
+									})(this)">
+								<?php esc_html_e( 'Edit URLs', 'stuh' ); ?>
+							</button>
 							<!-- Delete -->
 							<form method="post" style="display:inline-block;"
 								  onsubmit="return confirm('Permanently delete this client site?');">
@@ -1081,6 +1124,29 @@ PHP;
 								<button type="submit" class="button"
 										style="color:#d63638;border-color:#d63638;">
 									<?php esc_html_e( 'Delete', 'stuh' ); ?>
+								</button>
+							</form>
+						</td>
+					</tr>
+					<!-- Inline edit-URLs row (hidden by default) -->
+					<tr id="stuh-edit-urls-<?php echo esc_attr( $c['id'] ); ?>" style="display:none;background:#f6f7f7;">
+						<td colspan="5" style="padding:12px 16px;">
+							<form method="post">
+								<?php wp_nonce_field( 'stuh_admin' ); ?>
+								<input type="hidden" name="stuh_action" value="edit_client_urls">
+								<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+								<label style="display:block;font-weight:600;margin-bottom:6px;">
+									<?php esc_html_e( 'Allowed URLs (one per line)', 'stuh' ); ?>
+								</label>
+								<textarea name="site_urls_raw" rows="4" class="large-text code" style="max-width:600px;font-size:13px;"><?php
+									$edit_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
+									echo esc_textarea( implode( "\n", $edit_urls ) );
+								?></textarea>
+								<p class="description" style="margin-top:4px;">
+									<?php esc_html_e( 'Each line must be a full URL. The first URL is used as the primary display URL.', 'stuh' ); ?>
+								</p>
+								<button type="submit" class="button button-primary" style="margin-top:8px;">
+									<?php esc_html_e( 'Save URLs', 'stuh' ); ?>
 								</button>
 							</form>
 						</td>
@@ -1175,13 +1241,13 @@ PHP;
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">
-						<label for="site_url"><?php esc_html_e( 'Site URL', 'stuh' ); ?></label>
+						<label for="site_url"><?php esc_html_e( 'Site URLs', 'stuh' ); ?></label>
 					</th>
 					<td>
-						<input type="url" id="site_url" name="site_url"
-							   class="regular-text" placeholder="https://example.com" required>
+						<textarea id="site_url" name="site_url" rows="3"
+								  class="large-text code" placeholder="https://example.com&#10;https://example.nl&#10;https://example.de" required></textarea>
 						<p class="description">
-							<?php esc_html_e( 'Must match the WordPress site URL of the client. Used together with the API key to authenticate requests.', 'stuh' ); ?>
+							<?php esc_html_e( 'Enter one URL per line. All URLs must match the WordPress site URL of the client (without trailing slash). For multilingual sites on different TLDs, add each domain on a separate line.', 'stuh' ); ?>
 						</p>
 					</td>
 				</tr>
