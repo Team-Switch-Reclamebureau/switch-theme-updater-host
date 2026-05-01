@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.25
+ * Version: 0.0.26
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1024,7 +1024,7 @@ PHP;
 			};
 			?>
 
-			<table class="wp-list-table widefat fixed striped" style="margin-top: 20px;">
+			<table class="wp-list-table widefat fixed" style="margin-top: 20px;">
 				<thead>
 					<tr>
 						<th scope="col" style="width: 15%;">
@@ -1050,10 +1050,12 @@ PHP;
 						</td>
 					</tr>
 					<?php else : ?>
-					<?php foreach ( $clients as $c ) :
+					<?php $row_index = 0; foreach ( $clients as $c ) :
 						$enabled = (bool) ( $c['enabled'] ?? true );
+						$row_bg  = ( $row_index % 2 === 0 ) ? 'background-color:#f6f7f7;' : '';
+						$row_index++;
 					?>
-					<tr>
+					<tr style="<?php echo $row_bg; ?>">
 						<td>
 							<?php
 							$all_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
