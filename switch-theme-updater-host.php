@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.0.26
+ * Version: 0.1.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -878,6 +878,9 @@ PHP;
 				exit;
 
 			case 'check_for_updates':
+				// Bust GitHub API cache so a fresh version check is performed.
+				global $wpdb;
+				$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_stuh_gh_%' OR option_name LIKE '_transient_timeout_stuh_gh_%'" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 				// Delete the cached transient so WordPress re-checks immediately.
 				delete_site_transient( 'update_plugins' );
 				// Trigger the check synchronously so the result is ready when we redirect.
@@ -1468,6 +1471,13 @@ class STUH_GitHubClient {
 	}
 
 	public function get_latest_version( string $repo, ?string $branch, string $path = '/', string $mode = 'releases' ): ?array {
+		$cache_key = 'stuh_gh_v_' . md5( $repo . '|' . $mode . '|' . $branch . '|' . $path );
+		$ttl       = ( 'commits' === $mode ) ? 15 * MINUTE_IN_SECONDS : HOUR_IN_SECONDS;
+		$cached    = get_transient( $cache_key );
+		if ( false !== $cached ) {
+			return $cached ?: null;
+		}
+
 		if ( 'commits' === $mode && $branch ) {
 			$commits = $this->request(
 				'GET',
@@ -1480,32 +1490,49 @@ class STUH_GitHubClient {
 					'GET',
 					$this->api . '/repos/' . $repo . '/contents/' . $style_path . '?ref=' . rawurlencode( $branch )
 				);
+				$result = null;
 				if ( ! is_wp_error( $file ) && isset( $file['content'] ) ) {
 					$content = base64_decode( $file['content'] );
 					if ( preg_match( '/Version:\s*(.+?)$/m', $content, $m ) ) {
-						return [ 'version' => trim( $m[1] ), 'ref' => $sha ];
+						$result = [ 'version' => trim( $m[1] ), 'ref' => $sha ];
 					}
 				}
-				return null;
+				set_transient( $cache_key, $result ?? '', $ttl );
+				return $result;
 			}
+			// Commits API failed — fall through to releases as a safety net.
 		}
 
-		$rel = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases/latest' );
+		$result = null;
+		$rel    = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases/latest' );
 		if ( ! is_wp_error( $rel ) && isset( $rel['tag_name'] ) ) {
-			return [ 'version' => ltrim( $rel['tag_name'], 'v' ), 'ref' => $rel['tag_name'] ];
+			$result = [ 'version' => ltrim( $rel['tag_name'], 'v' ), 'ref' => $rel['tag_name'] ];
 		}
-		return null;
+		set_transient( $cache_key, $result ?? '', $ttl );
+		return $result;
 	}
 
 	public function get_version_from_tag( string $repo, string $tag, string $path = '/' ): ?array {
-		$rel = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases/tags/' . rawurlencode( $tag ) );
-		if ( is_wp_error( $rel ) || ! isset( $rel['tag_name'] ) ) {
-			return null;
+		$cache_key = 'stuh_gh_t_' . md5( $repo . '|' . $tag );
+		$cached    = get_transient( $cache_key );
+		if ( false !== $cached ) {
+			return $cached ?: null;
 		}
-		return [ 'version' => ltrim( $rel['tag_name'], 'v' ), 'ref' => $rel['tag_name'] ];
+		$rel    = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases/tags/' . rawurlencode( $tag ) );
+		$result = null;
+		if ( ! is_wp_error( $rel ) && isset( $rel['tag_name'] ) ) {
+			$result = [ 'version' => ltrim( $rel['tag_name'], 'v' ), 'ref' => $rel['tag_name'] ];
+		}
+		set_transient( $cache_key, $result ?? '', DAY_IN_SECONDS ); // Tags are immutable; cache for 24 h.
+		return $result;
 	}
 
 	public function get_releases( string $repo ): array {
+		$cache_key = 'stuh_gh_r_' . md5( $repo );
+		$cached    = get_transient( $cache_key );
+		if ( false !== $cached ) {
+			return $cached;
+		}
 		$data = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases?per_page=100' );
 		if ( is_wp_error( $data ) || ! is_array( $data ) ) {
 			return [];
@@ -1521,6 +1548,7 @@ class STUH_GitHubClient {
 				];
 			}
 		}
+		set_transient( $cache_key, $out, HOUR_IN_SECONDS );
 		return $out;
 	}
 
@@ -1540,10 +1568,12 @@ class STUH_GitHubClient {
 		@chmod( $temp_dir, 0755 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
 		$zipball_url = $this->api . '/repos/' . $repo . '/zipball/' . rawurlencode( $ref );
+		$temp_zip    = $temp_dir . '/download.zip';
 		$response    = wp_remote_get( $zipball_url, [
 			'timeout'    => 300,
 			'headers'    => $this->headers(),
-			'stream'     => false,
+			'stream'     => true,
+			'filename'   => $temp_zip,
 			'decompress' => false,
 		] );
 
@@ -1558,17 +1588,11 @@ class STUH_GitHubClient {
 			return new WP_Error( 'download_failed', 'GitHub returned HTTP ' . $code );
 		}
 
-		$zip_data = wp_remote_retrieve_body( $response );
-		if ( empty( $zip_data ) ) {
+		if ( ! file_exists( $temp_zip ) || filesize( $temp_zip ) === 0 ) {
 			$this->rrmdir( $temp_dir );
 			return new WP_Error( 'empty_zip', 'Empty response from GitHub' );
 		}
 
-		$temp_zip = $temp_dir . '/download.zip';
-		if ( false === file_put_contents( $temp_zip, $zip_data, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
-			$this->rrmdir( $temp_dir );
-			return new WP_Error( 'write_failed', 'Failed to write zip' );
-		}
 		@chmod( $temp_zip, 0644 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
 		$extract_dir = $temp_dir . '/extract';
