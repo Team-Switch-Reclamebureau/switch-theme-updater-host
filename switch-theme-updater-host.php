@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.1.0
+ * Version: 0.1.1
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1471,13 +1471,6 @@ class STUH_GitHubClient {
 	}
 
 	public function get_latest_version( string $repo, ?string $branch, string $path = '/', string $mode = 'releases' ): ?array {
-		$cache_key = 'stuh_gh_v_' . md5( $repo . '|' . $mode . '|' . $branch . '|' . $path );
-		$ttl       = ( 'commits' === $mode ) ? 15 * MINUTE_IN_SECONDS : HOUR_IN_SECONDS;
-		$cached    = get_transient( $cache_key );
-		if ( false !== $cached ) {
-			return $cached ?: null;
-		}
-
 		if ( 'commits' === $mode && $branch ) {
 			$commits = $this->request(
 				'GET',
@@ -1497,7 +1490,6 @@ class STUH_GitHubClient {
 						$result = [ 'version' => trim( $m[1] ), 'ref' => $sha ];
 					}
 				}
-				set_transient( $cache_key, $result ?? '', $ttl );
 				return $result;
 			}
 			// Commits API failed — fall through to releases as a safety net.
@@ -1508,31 +1500,19 @@ class STUH_GitHubClient {
 		if ( ! is_wp_error( $rel ) && isset( $rel['tag_name'] ) ) {
 			$result = [ 'version' => ltrim( $rel['tag_name'], 'v' ), 'ref' => $rel['tag_name'] ];
 		}
-		set_transient( $cache_key, $result ?? '', $ttl );
 		return $result;
 	}
 
 	public function get_version_from_tag( string $repo, string $tag, string $path = '/' ): ?array {
-		$cache_key = 'stuh_gh_t_' . md5( $repo . '|' . $tag );
-		$cached    = get_transient( $cache_key );
-		if ( false !== $cached ) {
-			return $cached ?: null;
-		}
 		$rel    = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases/tags/' . rawurlencode( $tag ) );
 		$result = null;
 		if ( ! is_wp_error( $rel ) && isset( $rel['tag_name'] ) ) {
 			$result = [ 'version' => ltrim( $rel['tag_name'], 'v' ), 'ref' => $rel['tag_name'] ];
 		}
-		set_transient( $cache_key, $result ?? '', DAY_IN_SECONDS ); // Tags are immutable; cache for 24 h.
 		return $result;
 	}
 
 	public function get_releases( string $repo ): array {
-		$cache_key = 'stuh_gh_r_' . md5( $repo );
-		$cached    = get_transient( $cache_key );
-		if ( false !== $cached ) {
-			return $cached;
-		}
 		$data = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases?per_page=100' );
 		if ( is_wp_error( $data ) || ! is_array( $data ) ) {
 			return [];
@@ -1548,7 +1528,6 @@ class STUH_GitHubClient {
 				];
 			}
 		}
-		set_transient( $cache_key, $out, HOUR_IN_SECONDS );
 		return $out;
 	}
 
