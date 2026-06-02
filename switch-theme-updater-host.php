@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.1.1
+ * Version: 0.1.2
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -284,6 +284,28 @@ PHP;
 	// --------------------------------------------------------
 	// Data helpers
 	// --------------------------------------------------------
+
+	/**
+	 * Load IP-to-label map from ip-labels.json.
+	 * Returns an associative array of IP => label.
+	 */
+	public static function get_ip_labels(): array {
+		$file = plugin_dir_path( __FILE__ ) . 'ip-labels.json';
+		if ( ! file_exists( $file ) ) {
+			return [];
+		}
+		$json = file_get_contents( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		$data = json_decode( $json, true );
+		return is_array( $data ) ? $data : [];
+	}
+
+	/**
+	 * Return the human-readable label for an IP, or an empty string if none is defined.
+	 */
+	public static function ip_label( string $ip ): string {
+		$labels = self::get_ip_labels();
+		return $labels[ $ip ] ?? '';
+	}
 
 	public static function get_settings(): array {
 		$opt = get_option( STUH_OPTION_SETTINGS, [] );
@@ -1082,7 +1104,11 @@ PHP;
 						<td>
 							<?php if ( $c['last_seen'] ) : ?>
 								<?php echo esc_html( date_i18n( 'Y-m-d H:i', $c['last_seen'] ) ); ?><br>
-								<small><?php echo esc_html( $c['last_seen_ip'] ?? '' ); ?></small>
+									<?php
+								$lsip    = $c['last_seen_ip'] ?? '';
+								$lslabel = $lsip ? self::ip_label( $lsip ) : '';
+								?>
+								<small<?php echo $lsip ? ' title="' . esc_attr( $lsip ) . '" style="cursor:help;"' : ''; ?>><?php echo esc_html( $lslabel ?: $lsip ); ?></small>
 							<?php else : ?>
 								<em>Never</em>
 							<?php endif; ?>
@@ -1192,7 +1218,9 @@ PHP;
 							<em>Unknown</em>
 						<?php endif; ?>
 					</td>
-					<td><code><?php echo esc_html( $uv['ip'] ); ?></code></td>
+					<td><?php
+					$uv_label = self::ip_label( $uv['ip'] );
+				?><code title="<?php echo esc_attr( $uv['ip'] ); ?>" style="cursor:help;"><?php echo esc_html( $uv_label ?: $uv['ip'] ); ?></code></td>
 					<td><?php echo (int) $uv['attempts']; ?></td>
 					<td><?php echo esc_html( date_i18n( 'Y-m-d H:i', $uv['first_seen'] ) ); ?></td>
 					<td><?php echo esc_html( date_i18n( 'Y-m-d H:i', $uv['last_seen'] ) ); ?></td>
