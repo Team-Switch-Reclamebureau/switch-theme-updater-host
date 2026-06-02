@@ -15,5 +15,13 @@
 	"45.82.189.139": "Cloud86 teamswitch-s05.nl",
 	"2a0e:7280:0:189:139:777:0:1": "Cloud86 teamswitch-s05.nl",
 	"45.82.189.202": "Cloud86 teamswitch-s06.nl",
-	"2a0e:7280:0:189:202:777:0:1": "Cloud86 teamswitch-s06.nl"
+	"2a0e:7280:0:189:202:777:0:1": "Cloud86 teamswitch-s06.nl",
+    "37.97.184.237": "VServs 1",
+    "2a01:7c8:aac1:b6:5054:ff:feb7:6e76": "VServs 1",
+    "37.97.204.219": "VServs 2",
+    "2a01:7c8:aac3:4da:5054:ff:fe2c:df5": "VServs 2",
+    "85.10.155.21": "VServs 3",
+    "2a01:7c8:bb0b:368:5054:ff:fe87:ec6c": "VServs 3",
+    "95.170.74.155": "VServs 4",
+    "2a01:7c8:bb07:14a:5054:ff:feed:5e3f": "VServs 4"
 }
