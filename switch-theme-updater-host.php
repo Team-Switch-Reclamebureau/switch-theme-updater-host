@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.5
+ * Version: 0.2.6
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1170,14 +1170,18 @@ class STUH_Plugin {
 			return null;
 		}
 
+		// this table below is a combination of wordpress php compatibility and php supported versions, as of 2026-08-12
+		// https://www.php.net/supported-versions.php
+		// https://make.wordpress.org/core/handbook/references/php-compatibility-and-wordpress-versions/
+
 		$supported_php_ranges = [
-			'7.0' => [ '8.3', '8.5' ],
-			'6.9' => [ '8.3', '8.5' ],
-			'6.8' => [ '8.3', '8.4' ],
-			'6.7' => [ '8.3', '8.4' ],
-			'6.6' => [ '8.3', '8.3' ],
-			'6.5' => [ '8.3', '8.3' ],
-			'6.4' => [ '8.3', '8.3' ],
+			'7.0' => [ '8.4', '8.5' ],
+			'6.9' => [ '8.4', '8.5' ],
+			'6.8' => [ '8.4', '8.4' ],
+			'6.7' => [ '8.4', '8.4' ],
+			'6.6' => [ '8.4', '8.4' ],
+			'6.5' => [ '8.4', '8.4' ],
+			'6.4' => [ '8.4', '8.4' ],
 		];
 		$wordpress_minor = $wordpress_matches[1];
 		$php_minor       = $php_matches[1];
