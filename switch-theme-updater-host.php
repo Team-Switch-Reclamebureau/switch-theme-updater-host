@@ -1520,7 +1520,7 @@ class STUH_Plugin {
 			$latest_wordpress_version = self::latest_wordpress_version();
 			?>
 
-			<table class="wp-list-table widefat fixed" style="margin-top: 20px;">
+			<table class="wp-list-table widefat" style="margin-top: 20px;">
 				<thead>
 					<tr>
 						<?php foreach ( $columns as $column_id => $column_label ) : ?>
