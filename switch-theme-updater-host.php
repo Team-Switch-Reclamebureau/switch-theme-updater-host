@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.2
+ * Version: 0.2.3
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -411,8 +411,10 @@ class STUH_Plugin {
 	// --------------------------------------------------------
 
 	/**
-	 * Load IP-to-label map from ip-labels.json.
-	 * Returns an associative array of IP => label.
+	 * Load IP-to-label map from ip-labels.json. Keys may be exact IPs or
+	 * wildcard prefixes ending in *, such as "192.0.2.*" or "2001:db8:*".
+	 *
+	 * @return array<string, string>
 	 */
 	public static function get_ip_labels(): array {
 		$file = plugin_dir_path( __FILE__ ) . 'ip-labels.json';
@@ -426,10 +428,30 @@ class STUH_Plugin {
 
 	/**
 	 * Return the human-readable label for an IP, or an empty string if none is defined.
+	 * Exact IP entries take precedence over wildcard prefixes; the longest matching
+	 * wildcard prefix wins.
 	 */
 	public static function ip_label( string $ip ): string {
 		$labels = self::get_ip_labels();
-		return $labels[ $ip ] ?? '';
+		if ( isset( $labels[ $ip ] ) && is_string( $labels[ $ip ] ) ) {
+			return $labels[ $ip ];
+		}
+
+		$label         = '';
+		$matched_length = 0;
+		foreach ( $labels as $pattern => $candidate_label ) {
+			if ( ! is_string( $pattern ) || ! is_string( $candidate_label ) || ! str_ends_with( $pattern, '*' ) ) {
+				continue;
+			}
+
+			$prefix = substr( $pattern, 0, -1 );
+			if ( '' !== $prefix && str_starts_with( $ip, $prefix ) && strlen( $prefix ) > $matched_length ) {
+				$label          = $candidate_label;
+				$matched_length = strlen( $prefix );
+			}
+		}
+
+		return $label;
 	}
 
 	public static function get_settings(): array {
@@ -1013,7 +1035,7 @@ class STUH_Plugin {
 			'enabled'         => __( 'Status', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
-			'last_seen_ip'    => __( 'IP Address / Server Name', 'stuh' ),
+			'last_seen_ip'    => __( 'Server / IP', 'stuh' ),
 			'telemetry_site'  => __( 'Reported Site URL', 'stuh' ),
 			'telemetry_home'  => __( 'Home URL', 'stuh' ),
 			'telemetry_locale'=> __( 'Locale', 'stuh' ),
@@ -1561,7 +1583,10 @@ class STUH_Plugin {
 								$lslabel = $lsip ? self::ip_label( $lsip ) : '';
 							?>
 							<?php if ( $lsip ) : ?>
-								<span title="<?php echo esc_attr( $lsip ); ?>" style="cursor:help;"><?php echo esc_html( $lslabel ?: $lsip ); ?></span>
+								<?php if ( $lslabel ) : ?>
+									<?php echo esc_html( $lslabel ); ?><br>
+								<?php endif; ?>
+								<code><?php echo esc_html( $lsip ); ?></code>
 							<?php else : ?>
 								<em>&mdash;</em>
 							<?php endif; ?>
@@ -1712,9 +1737,15 @@ class STUH_Plugin {
 							<em>Unknown</em>
 						<?php endif; ?>
 					</td>
-					<td><?php
-					$uv_label = self::ip_label( $uv['ip'] );
-				?><code title="<?php echo esc_attr( $uv['ip'] ); ?>" style="cursor:help;"><?php echo esc_html( $uv_label ?: $uv['ip'] ); ?></code></td>
+					<td>
+						<?php
+						$uv_label = self::ip_label( $uv['ip'] );
+						if ( $uv_label ) :
+						?>
+							<?php echo esc_html( $uv_label ); ?><br>
+						<?php endif; ?>
+						<code><?php echo esc_html( $uv['ip'] ); ?></code>
+					</td>
 					<td><?php echo (int) $uv['attempts']; ?></td>
 					<td><?php echo esc_html( date_i18n( 'Y-m-d H:i', $uv['first_seen'] ) ); ?></td>
 					<td><?php echo esc_html( date_i18n( 'Y-m-d H:i', $uv['last_seen'] ) ); ?></td>

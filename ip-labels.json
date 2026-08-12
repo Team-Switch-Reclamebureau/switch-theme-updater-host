@@ -1,9 +1,13 @@
 {
-	"127.0.0.1": "Localhost",
-	"::1": "Localhost (IPv6)",
+	"127.0.0.1": "localhost",
+	"::1": "localhost (IPv6)",
+
 	"185.178.234.5": "Team Switch",
 	"188.89.199.15": "Kevin",
+
+	"85.10.157.*": "TransIP",
 	"85.10.157.179": "TransIP teamswitch.dev",
+
 	"45.82.191.40": "Cloud86 teamswitch-s01.nl",
 	"2a0e:7280:0:191:40:777:0:1": "Cloud86 teamswitch-s01.nl",
 	"45.82.191.174": "Cloud86 teamswitch-s02.nl",
@@ -18,6 +22,7 @@
 	"2a0e:7280:0:189:202:777:0:1": "Cloud86 teamswitch-s06.nl",
 	"45.82.188.89": "Cloud86 teamswitch-s07.nl",
 	"2a0e:7280:0:188:89:777:0:1": "Cloud86 teamswitch-s07.nl",
+
 	"37.97.184.237": "VServs 1",
 	"2a01:7c8:aac1:b6:5054:ff:feb7:6e76": "VServs 1",
 	"37.97.204.219": "VServs 2",
@@ -25,5 +30,14 @@
 	"85.10.155.21": "VServs 3",
 	"2a01:7c8:bb0b:368:5054:ff:fe87:ec6c": "VServs 3",
 	"95.170.74.155": "VServs 4",
-	"2a01:7c8:bb07:14a:5054:ff:feed:5e3f": "VServs 4"
+	"2a01:7c8:bb07:14a:5054:ff:feed:5e3f": "VServs 4",
+
+	"109.94.151.43": "FEKA DFG",
+	"2a02:fe9:1b41:1::43": "FEKA DFG",
+	"109.94.151.154": "FEKA spelt.nl",
+	"2a02:fe9:1b41:1::154": "FEKA spelt.nl",
+	"109.94.151.52": "FEKA spelt-afvalcontainer",
+	"2a02:fe9:1b41:1::52": "FEKA spelt-afvalcontainer",
+	"109.94.151.*": "FEKA",
+	"2a02:fe9:1b41:1::*": "FEKA"
 }
