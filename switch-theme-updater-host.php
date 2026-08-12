@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.1.5
+ * Version: 0.2.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1001,6 +1001,7 @@ class STUH_Plugin {
 		}
 
 		add_filter( 'manage_' . $screen->id . '_columns', [ $this, 'client_columns' ] );
+		add_thickbox();
 	}
 
 	/**
@@ -1093,6 +1094,59 @@ class STUH_Plugin {
 		}
 
 		return '';
+	}
+
+	/**
+	 * Render the latest reported plugin and theme inventory in a ThickBox dialog.
+	 *
+	 * @param array<string, mixed> $packages
+	 */
+	private static function render_packages_dialog( string $dialog_id, array $packages ): void {
+		$plugins = is_array( $packages['plugins'] ?? null ) ? $packages['plugins'] : [];
+		$themes  = is_array( $packages['themes'] ?? null ) ? $packages['themes'] : [];
+		?>
+		<div id="<?php echo esc_attr( $dialog_id ); ?>" style="display:none;">
+			<div style="padding:16px;">
+				<h2 style="margin-top:0;"><?php esc_html_e( 'Reported Packages', 'stuh' ); ?></h2>
+				<table class="widefat striped">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Package', 'stuh' ); ?></th>
+							<th><?php esc_html_e( 'Type', 'stuh' ); ?></th>
+							<th><?php esc_html_e( 'Version', 'stuh' ); ?></th>
+							<th><?php esc_html_e( 'Active', 'stuh' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+					<?php foreach ( $plugins as $plugin ) : ?>
+						<?php if ( ! is_array( $plugin ) ) { continue; } ?>
+						<tr>
+							<td>
+								<strong><?php echo esc_html( $plugin['name'] ?? $plugin['file'] ?? '' ); ?></strong><br>
+								<code><?php echo esc_html( $plugin['file'] ?? '' ); ?></code>
+							</td>
+							<td><?php esc_html_e( 'Plugin', 'stuh' ); ?></td>
+							<td><?php echo esc_html( $plugin['version'] ?? '' ); ?></td>
+							<td><?php echo ! empty( $plugin['active'] ) ? esc_html__( 'Yes', 'stuh' ) : esc_html__( 'No', 'stuh' ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+					<?php foreach ( $themes as $theme ) : ?>
+						<?php if ( ! is_array( $theme ) ) { continue; } ?>
+						<tr>
+							<td>
+								<strong><?php echo esc_html( $theme['name'] ?? $theme['stylesheet'] ?? '' ); ?></strong><br>
+								<code><?php echo esc_html( $theme['stylesheet'] ?? '' ); ?></code>
+							</td>
+							<td><?php esc_html_e( 'Theme', 'stuh' ); ?></td>
+							<td><?php echo esc_html( $theme['version'] ?? '' ); ?></td>
+							<td><?php echo ! empty( $theme['active'] ) ? esc_html__( 'Yes', 'stuh' ) : esc_html__( 'No', 'stuh' ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+			</div>
+		</div>
+		<?php
 	}
 
 	// --------------------------------------------------------
@@ -1488,8 +1542,20 @@ class STUH_Plugin {
 							</form>
 						<?php else : ?>
 							<?php
-							$value = self::telemetry_column_value( $column_id, $data );
-							echo '' === $value ? '<em>' . esc_html__( 'Not reported', 'stuh' ) . '</em>' : esc_html( $value );
+							$packages = is_array( $data['packages'] ?? null ) ? $data['packages'] : [];
+							if ( 'telemetry_packages' === $column_id && ! empty( $packages ) ) {
+								$dialog_id = 'stuh-packages-' . md5( (string) $c['id'] );
+								$value     = self::telemetry_column_value( $column_id, $data );
+								?>
+								<a href="#TB_inline?width=700&amp;height=500&amp;inlineId=<?php echo esc_attr( $dialog_id ); ?>" class="thickbox">
+									<?php echo esc_html( $value ); ?>
+								</a>
+								<?php self::render_packages_dialog( $dialog_id, $packages ); ?>
+								<?php
+							} else {
+								$value = self::telemetry_column_value( $column_id, $data );
+								echo '' === $value ? '<em>' . esc_html__( 'Not reported', 'stuh' ) . '</em>' : esc_html( $value );
+							}
 							?>
 						<?php endif; ?>
 						</td>
