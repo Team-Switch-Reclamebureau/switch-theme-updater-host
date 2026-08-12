@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.0
+ * Version: 0.2.1
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1097,6 +1097,67 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Return the newest stable WordPress version reported by the core update API.
+	 */
+	private static function latest_wordpress_version(): ?string {
+		$updates = get_site_transient( 'update_core' );
+
+		if ( ! is_object( $updates ) || ! isset( $updates->updates ) || ! is_array( $updates->updates ) ) {
+			wp_version_check();
+			$updates = get_site_transient( 'update_core' );
+		}
+
+		if ( ! is_object( $updates ) || ! isset( $updates->updates ) || ! is_array( $updates->updates ) ) {
+			return null;
+		}
+
+		$latest = null;
+		foreach ( $updates->updates as $update ) {
+			$version = is_object( $update ) ? (string) ( $update->version ?? '' ) : '';
+			if ( ! preg_match( '/^\d+\.\d+(?:\.\d+)?$/', $version ) ) {
+				continue;
+			}
+
+			if ( null === $latest || version_compare( $version, $latest, '>' ) ) {
+				$latest = $version;
+			}
+		}
+
+		return $latest;
+	}
+
+	/**
+	 * Whether a reported PHP version is supported by the reported WordPress version.
+	 *
+	 * This reflects the WordPress/PHP compatibility table as of WordPress 7.0.
+	 */
+	private static function is_php_version_supported_by_wordpress( string $php_version, string $wordpress_version ): ?bool {
+		if ( ! preg_match( '/^(\d+\.\d+)/', $wordpress_version, $wordpress_matches ) || ! preg_match( '/^(\d+\.\d+)/', $php_version, $php_matches ) ) {
+			return null;
+		}
+
+		$supported_php_ranges = [
+			'7.0' => [ '7.0', '8.5' ],
+			'6.9' => [ '7.2', '8.5' ],
+			'6.8' => [ '7.2', '8.4' ],
+			'6.7' => [ '7.2', '8.4' ],
+			'6.6' => [ '7.2', '8.3' ],
+			'6.5' => [ '7.1', '8.3' ],
+			'6.4' => [ '7.0', '8.3' ],
+		];
+		$wordpress_minor = $wordpress_matches[1];
+		$php_minor       = $php_matches[1];
+
+		if ( ! isset( $supported_php_ranges[ $wordpress_minor ] ) ) {
+			return null;
+		}
+
+		[ $minimum_php, $maximum_php ] = $supported_php_ranges[ $wordpress_minor ];
+
+		return version_compare( $php_minor, $minimum_php, '>=' ) && version_compare( $php_minor, $maximum_php, '<=' );
+	}
+
+	/**
 	 * Render the latest reported plugin and theme inventory in a ThickBox dialog.
 	 *
 	 * @param array<string, mixed> $packages
@@ -1418,6 +1479,7 @@ class STUH_Plugin {
 				if ( $orderby !== $col ) return '';
 				return ' <span class="dashicons dashicons-arrow-' . ( $order === 'asc' ? 'up' : 'down' ) . '" style="vertical-align:middle;font-size:14px;"></span>';
 			};
+			$latest_wordpress_version = self::latest_wordpress_version();
 			?>
 
 			<table class="wp-list-table widefat fixed" style="margin-top: 20px;">
@@ -1482,6 +1544,15 @@ class STUH_Plugin {
 							<?php else : ?>
 								<em>Never</em>
 							<?php endif; ?>
+						<?php elseif ( 'telemetry_wp' === $column_id || 'telemetry_php' === $column_id ) : ?>
+							<?php
+							$value             = self::telemetry_column_value( $column_id, $data );
+							$wordpress_version = self::telemetry_column_value( 'telemetry_wp', $data );
+							$php_version       = self::telemetry_column_value( 'telemetry_php', $data );
+							$is_problem        = ( 'telemetry_wp' === $column_id && $value && $latest_wordpress_version && $value !== $latest_wordpress_version )
+								|| ( 'telemetry_php' === $column_id && $value && false === self::is_php_version_supported_by_wordpress( $php_version, $wordpress_version ) );
+							?>
+							<span<?php echo $is_problem ? ' style="color:#d63638;font-weight:600;"' : ''; ?>><?php echo esc_html( $value ); ?></span>
 						<?php elseif ( 'diagnostics' === $column_id ) : ?>
 							<?php if ( is_array( $report ) && ! empty( $report['received_at'] ) ) : ?>
 								<details>
@@ -1554,7 +1625,7 @@ class STUH_Plugin {
 								<?php
 							} else {
 								$value = self::telemetry_column_value( $column_id, $data );
-								echo '' === $value ? '<em>' . esc_html__( 'Not reported', 'stuh' ) . '</em>' : esc_html( $value );
+								echo esc_html( $value );
 							}
 							?>
 						<?php endif; ?>
