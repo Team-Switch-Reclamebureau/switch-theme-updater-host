@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.7
+ * Version: 0.2.8
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -620,6 +620,32 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Find an enabled client that is registered for a site URL.
+	 *
+	 * @return array|false
+	 */
+	private static function find_client_by_site_url( string $site_url ) {
+		$norm_url = strtolower( rtrim( $site_url, '/' ) );
+		if ( '' === $norm_url ) {
+			return false;
+		}
+
+		foreach ( self::get_clients() as $client ) {
+			if ( ! ( $client['enabled'] ?? true ) ) {
+				continue;
+			}
+
+			$stored_raw  = $client['site_urls'] ?? ( ( $client['site_url'] ?? '' ) !== '' ? [ $client['site_url'] ] : [] );
+			$stored_norm = array_map( fn( $url ) => strtolower( rtrim( $url, '/' ) ), $stored_raw );
+			if ( in_array( $norm_url, $stored_norm, true ) ) {
+				return $client;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Validate a raw API key against stored (hashed) client records.
 	 * Updates last_seen at most once per 5 minutes to reduce DB writes.
 	 *
@@ -792,17 +818,22 @@ class STUH_Plugin {
 		$key  = $req->get_header( 'X-STU-Key' );
 		$ip   = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
 
-		// Whitelisted IPs always pass through, no key required.
-		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
-			return true;
-		}
-
 		// Extract the site URL from the WordPress User-Agent header.
 		// WP sends: "WordPress/6.5; https://example.com"
 		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
 		$site_url = '';
 		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
 			$site_url = self::strip_language_prefix( esc_url_raw( rtrim( $m[1], '/' ) ) );
+		}
+
+		// Whitelisted IPs always pass through, no key required. Associate
+		// diagnostics with the registered site identified by its User-Agent.
+		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
+			$client = self::find_client_by_site_url( $site_url );
+			if ( $client ) {
+				self::record_client_telemetry( $client, $req );
+			}
+			return true;
 		}
 
 		// Detect requests originating from this site itself (e.g. self-update).
@@ -842,19 +873,24 @@ class STUH_Plugin {
 	public function rest_validate( WP_REST_Request $req ) {
 		$ip = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
 
-		// Whitelisted IPs are always valid, no key required.
-		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
-			return rest_ensure_response( [
-				'valid'  => true,
-				'method' => 'ip_whitelist',
-			] );
-		}
-
 		$key      = $req->get_header( 'X-STU-Key' );
 		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
 		$site_url = '';
 		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $m ) ) {
 			$site_url = self::strip_language_prefix( esc_url_raw( rtrim( $m[1], '/' ) ) );
+		}
+
+		// Whitelisted IPs are always valid, no key required. Associate
+		// diagnostics with the registered site identified by its User-Agent.
+		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
+			$client = self::find_client_by_site_url( $site_url );
+			if ( $client ) {
+				self::record_client_telemetry( $client, $req );
+			}
+			return rest_ensure_response( [
+				'valid'  => true,
+				'method' => 'ip_whitelist',
+			] );
 		}
 
 		$client = $key ? self::authenticate_client( $key, $site_url ) : false;
