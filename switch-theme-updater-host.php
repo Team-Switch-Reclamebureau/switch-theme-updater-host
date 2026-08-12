@@ -19,12 +19,14 @@ define( 'STUH_OPTION_CLIENTS',    'stuh_clients' );
 define( 'STUH_OPTION_SETTINGS',   'stuh_settings' );
 define( 'STUH_OPTION_UNVERIFIED', 'stuh_unverified' );
 define( 'STUH_OPTION_WHITELIST',  'stuh_whitelist' );
+define( 'STUH_OPTION_TELEMETRY',  'stuh_telemetry' );
 define( 'STUH_REST_NS',           'stu-host/v1' );
 
 // ============================================================
 // Main plugin class
 // ============================================================
 class STUH_Plugin {
+	private $clients_page_hook = '';
 
 	/**
 	 * Legacy mu-plugin this plugin used to write. It never worked: it hooked a
@@ -460,6 +462,20 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Return the most recent telemetry report for each client, keyed by client ID.
+	 *
+	 * Telemetry is intentionally stored separately from the client list so
+	 * diagnostics do not add to the autoloaded client option.
+	 */
+	public static function get_telemetry(): array {
+		return (array) get_option( STUH_OPTION_TELEMETRY, [] );
+	}
+
+	private static function save_telemetry( array $telemetry ): void {
+		update_option( STUH_OPTION_TELEMETRY, $telemetry, false );
+	}
+
+	/**
 	 * Returns true if the given IP is in the whitelist.
 	 */
 	public static function ip_is_whitelisted( string $ip ): bool {
@@ -636,6 +652,67 @@ class STUH_Plugin {
 		return $matched;
 	}
 
+	/**
+	 * Decode and store versioned diagnostics sent by an authenticated client.
+	 *
+	 * Malformed diagnostics must not prevent a client from checking for updates,
+	 * but are logged so a client/host version mismatch remains diagnosable.
+	 *
+	 * @param array<string, mixed> $client Authenticated client record.
+	 */
+	private static function record_client_telemetry( array $client, WP_REST_Request $req ): void {
+		$metadata = $req->get_header( 'X-STU-Metadata' );
+		if ( '' === $metadata ) {
+			return;
+		}
+
+		$version = $req->get_header( 'X-STU-Metadata-Version' );
+		if ( '1' !== $version ) {
+			error_log( sprintf( '[STUH telemetry] Unsupported metadata version "%s" for client %s', $version, $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		if ( strlen( $metadata ) > 131072 || ! preg_match( '/^[A-Za-z0-9_-]+$/', $metadata ) ) {
+			error_log( sprintf( '[STUH telemetry] Invalid metadata encoding for client %s', $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$encoded = strtr( $metadata, '-_', '+/' );
+		$encoded .= str_repeat( '=', ( 4 - strlen( $encoded ) % 4 ) % 4 );
+		$gzip = base64_decode( $encoded, true );
+		if ( false === $gzip ) {
+			error_log( sprintf( '[STUH telemetry] Metadata base64 decoding failed for client %s', $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$json = gzdecode( $gzip, 1048576 );
+		if ( false === $json ) {
+			error_log( sprintf( '[STUH telemetry] Metadata gzip decoding failed for client %s', $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$data = json_decode( $json, true );
+		if ( JSON_ERROR_NONE !== json_last_error() || ! is_array( $data ) || array_is_list( $data ) ) {
+			error_log( sprintf( '[STUH telemetry] Metadata JSON is not a valid object for client %s', $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$client_id = $client['id'] ?? '';
+		if ( ! is_string( $client_id ) || '' === $client_id ) {
+			error_log( '[STUH telemetry] Authenticated client record has no ID' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$telemetry               = self::get_telemetry();
+		$telemetry[ $client_id ] = [
+			'version'      => 1,
+			'request_type' => sanitize_key( $req->get_header( 'X-STU-Request-Type' ) ),
+			'received_at'  => time(),
+			'data'         => $data,
+		];
+		self::save_telemetry( $telemetry );
+	}
+
 	// --------------------------------------------------------
 	// REST API registration
 	// --------------------------------------------------------
@@ -722,7 +799,8 @@ class STUH_Plugin {
 			return new WP_Error( 'missing_key', 'API key required', [ 'status' => 401 ] );
 		}
 
-		if ( ! self::authenticate_client( $key, $site_url ) ) {
+		$client = self::authenticate_client( $key, $site_url );
+		if ( ! $client ) {
 			if ( ! $is_self ) {
 				self::record_unverified( $req, 'invalid_key' );
 			}
@@ -731,6 +809,7 @@ class STUH_Plugin {
 			}
 			return new WP_Error( 'invalid_key', 'Invalid or disabled API key', [ 'status' => 403 ] );
 		}
+		self::record_client_telemetry( $client, $req );
 		return true;
 	}
 
@@ -759,6 +838,7 @@ class STUH_Plugin {
 		$client = $key ? self::authenticate_client( $key, $site_url ) : false;
 
 		if ( $client ) {
+			self::record_client_telemetry( $client, $req );
 			error_log( sprintf( '[STUH validate] PASS api_key | ip=%s site=%s', $ip, $client['site_url'] ?? $site_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			return rest_ensure_response( [
 				'valid'    => true,
@@ -883,7 +963,7 @@ class STUH_Plugin {
 	// --------------------------------------------------------
 
 	public function register_admin_menu(): void {
-		add_menu_page(
+		$this->clients_page_hook = add_menu_page(
 			__( 'Switch Updater Host', 'stuh' ),
 			__( 'Updater Host', 'stuh' ),
 			'manage_options',
@@ -892,6 +972,7 @@ class STUH_Plugin {
 			'dashicons-cloud',
 			59
 		);
+		add_action( 'load-' . $this->clients_page_hook, [ $this, 'register_clients_screen_options' ] );
 		add_submenu_page(
 			'stuh',
 			__( 'Client Sites', 'stuh' ),
@@ -908,6 +989,110 @@ class STUH_Plugin {
 			'stuh-settings',
 			[ $this, 'render_settings_page' ]
 		);
+	}
+
+	/**
+	 * Register Client Sites columns with the native Screen Options panel.
+	 */
+	public function register_clients_screen_options(): void {
+		$screen = get_current_screen();
+		if ( ! $screen ) {
+			return;
+		}
+
+		add_filter( 'manage_' . $screen->id . '_columns', [ $this, 'client_columns' ] );
+	}
+
+	/**
+	 * @return array<string, string>
+	 */
+	public function client_columns(): array {
+		return [
+			'site_url'        => __( 'URL', 'stuh' ),
+			'enabled'         => __( 'Status', 'stuh' ),
+			'created_at'      => __( 'Created', 'stuh' ),
+			'last_seen'       => __( 'Last Seen', 'stuh' ),
+			'telemetry_site'  => __( 'Reported Site URL', 'stuh' ),
+			'telemetry_home'  => __( 'Home URL', 'stuh' ),
+			'telemetry_locale'=> __( 'Locale', 'stuh' ),
+			'telemetry_wp'    => __( 'WordPress', 'stuh' ),
+			'telemetry_php'   => __( 'PHP', 'stuh' ),
+			'telemetry_updater' => __( 'Updater', 'stuh' ),
+			'telemetry_multisite' => __( 'Multisite', 'stuh' ),
+			'telemetry_packages'  => __( 'Packages', 'stuh' ),
+			'telemetry_database'  => __( 'Database', 'stuh' ),
+			'telemetry_analytics' => __( 'Analytics', 'stuh' ),
+			'telemetry_smtp'      => __( 'SMTP', 'stuh' ),
+			'telemetry_debug'     => __( 'Debug', 'stuh' ),
+			'diagnostics'     => __( 'Diagnostics', 'stuh' ),
+			'actions'         => __( 'Actions', 'stuh' ),
+		];
+	}
+
+	/**
+	 * Return a concise, human-readable value for a telemetry table column.
+	 *
+	 * @param array<string, mixed> $data
+	 */
+	private static function telemetry_column_value( string $column, array $data ): string {
+		$site     = (array) ( $data['site'] ?? [] );
+		$runtime  = (array) ( $data['runtime'] ?? [] );
+		$packages = (array) ( $data['packages'] ?? [] );
+		$database = (array) ( $data['database'] ?? [] );
+		$smtp     = (array) ( $data['smtp'] ?? [] );
+		$debug    = (array) ( $data['debug'] ?? [] );
+
+		switch ( $column ) {
+			case 'telemetry_site':
+				return (string) ( $site['site_url'] ?? '' );
+			case 'telemetry_home':
+				return (string) ( $site['home_url'] ?? '' );
+			case 'telemetry_locale':
+				return (string) ( $site['locale'] ?? '' );
+			case 'telemetry_wp':
+				return (string) ( $runtime['wordpress'] ?? '' );
+			case 'telemetry_php':
+				return (string) ( $runtime['php'] ?? '' );
+			case 'telemetry_updater':
+				return (string) ( $runtime['updater'] ?? '' );
+			case 'telemetry_multisite':
+				if ( ! array_key_exists( 'multisite', $site ) ) {
+					return '';
+				}
+				return ! empty( $site['multisite'] ) ? __( 'Yes', 'stuh' ) : __( 'No', 'stuh' );
+			case 'telemetry_packages':
+				if ( ! array_key_exists( 'plugins', $packages ) && ! array_key_exists( 'themes', $packages ) ) {
+					return '';
+				}
+				$plugins = is_array( $packages['plugins'] ?? null ) ? count( $packages['plugins'] ) : 0;
+				$themes  = is_array( $packages['themes'] ?? null ) ? count( $packages['themes'] ) : 0;
+				return sprintf( __( '%1$d plugins, %2$d themes', 'stuh' ), $plugins, $themes );
+			case 'telemetry_database':
+				$size = $database['size_bytes'] ?? null;
+				return is_numeric( $size ) ? size_format( (int) $size, 1 ) : '';
+			case 'telemetry_analytics':
+				return (string) ( $data['analytics'] ?? '' );
+			case 'telemetry_smtp':
+				if ( ! array_key_exists( 'configured', $smtp ) ) {
+					return '';
+				}
+				return ! empty( $smtp['configured'] )
+					? sprintf( __( 'Configured (%s)', 'stuh' ), (string) ( $smtp['delivery'] ?? __( 'unknown', 'stuh' ) ) )
+					: __( 'Not configured', 'stuh' );
+			case 'telemetry_debug':
+				if ( ! array_key_exists( 'wp_debug', $debug ) ) {
+					return '';
+				}
+				return ! empty( $debug['wp_debug'] )
+					? sprintf(
+						__( 'Enabled (display: %1$s, log: %2$s)', 'stuh' ),
+						! empty( $debug['debug_display'] ) ? __( 'yes', 'stuh' ) : __( 'no', 'stuh' ),
+						! empty( $debug['debug_log'] ) ? __( 'yes', 'stuh' ) : __( 'no', 'stuh' )
+					)
+					: __( 'Disabled', 'stuh' );
+		}
+
+		return '';
 	}
 
 	// --------------------------------------------------------
@@ -971,6 +1156,9 @@ class STUH_Plugin {
 				$id      = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$clients = array_values( array_filter( $clients, fn( $c ) => $c['id'] !== $id ) );
 				self::save_clients( $clients );
+				$telemetry = self::get_telemetry();
+				unset( $telemetry[ $id ] );
+				self::save_telemetry( $telemetry );
 				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
 				exit;
 
@@ -1126,6 +1314,11 @@ class STUH_Plugin {
 		}
 
 		$clients = self::get_clients();
+		$telemetry = self::get_telemetry();
+		$screen = get_current_screen();
+		$columns = $screen ? get_column_headers( $screen ) : $this->client_columns();
+		$hidden_columns = $screen ? get_hidden_columns( $screen ) : [];
+		$visible_column_count = count( array_diff_key( $columns, array_flip( $hidden_columns ) ) );
 		$uid     = get_current_user_id();
 		$new_key = get_transient( 'stuh_new_key_' . $uid );
 		if ( $new_key ) {
@@ -1176,25 +1369,21 @@ class STUH_Plugin {
 			<table class="wp-list-table widefat fixed" style="margin-top: 20px;">
 				<thead>
 					<tr>
-						<th scope="col" style="width: 15%;">
-							<a href="<?php echo $sort_url( 'site_url' ); ?>">URL<?php echo $sort_indicator( 'site_url' ); ?></a>
+						<?php foreach ( $columns as $column_id => $column_label ) : ?>
+						<th scope="col" id="<?php echo esc_attr( $column_id ); ?>" class="manage-column column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>">
+							<?php if ( in_array( $column_id, $allowed_cols, true ) ) : ?>
+								<a href="<?php echo $sort_url( $column_id ); ?>"><?php echo esc_html( $column_label ); ?><?php echo $sort_indicator( $column_id ); ?></a>
+							<?php else : ?>
+								<?php echo esc_html( $column_label ); ?>
+							<?php endif; ?>
 						</th>
-						<th scope="col" style="width: 8%;">
-							<a href="<?php echo $sort_url( 'enabled' ); ?>">Status<?php echo $sort_indicator( 'enabled' ); ?></a>
-						</th>
-						<th scope="col" style="width: 8%;">
-							<a href="<?php echo $sort_url( 'created_at' ); ?>">Created<?php echo $sort_indicator( 'created_at' ); ?></a>
-						</th>
-						<th scope="col" style="width: 12%;">
-							<a href="<?php echo $sort_url( 'last_seen' ); ?>">Last Seen<?php echo $sort_indicator( 'last_seen' ); ?></a>
-						</th>
-						<th scope="col" style="width: 25%;">Actions</th>
+						<?php endforeach; ?>
 					</tr>
 				</thead>
 				<tbody>
 					<?php if ( empty( $clients ) ) : ?>
 					<tr>
-						<td colspan="5" style="padding: 16px;">
+						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding: 16px;">
 							<em><?php esc_html_e( 'No client sites registered yet. Add one below.', 'stuh' ); ?></em>
 						</td>
 					</tr>
@@ -1205,7 +1394,13 @@ class STUH_Plugin {
 						$row_index++;
 					?>
 					<tr style="<?php echo $row_bg; ?>">
-						<td>
+						<?php
+						$report = $telemetry[ $c['id'] ] ?? null;
+						$data   = is_array( $report['data'] ?? null ) ? $report['data'] : [];
+						foreach ( $columns as $column_id => $column_label ) :
+						?>
+						<td class="column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>"<?php echo 'actions' === $column_id ? ' style="white-space:nowrap;"' : ''; ?>>
+						<?php if ( 'site_url' === $column_id ) : ?>
 							<?php
 							$all_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
 							foreach ( $all_urls as $u ) :
@@ -1214,18 +1409,15 @@ class STUH_Plugin {
 								<?php echo esc_html( preg_replace( '#^https?://#', '', $u ) ); ?>
 							</a><br>
 							<?php endforeach; ?>
-						</td>
-						<td>
+						<?php elseif ( 'enabled' === $column_id ) : ?>
 							<?php if ( $enabled ) : ?>
 								<span style="color:#46b450;font-weight:600;">&#10003; Active</span>
 							<?php else : ?>
 								<span style="color:#d63638;font-weight:600;">&#10005; Disabled</span>
 							<?php endif; ?>
-						</td>
-						<td>
+						<?php elseif ( 'created_at' === $column_id ) : ?>
 							<?php echo esc_html( $c['created_at'] ? date_i18n( 'Y-m-d', $c['created_at'] ) : '—' ); ?>
-						</td>
-						<td>
+						<?php elseif ( 'last_seen' === $column_id ) : ?>
 							<?php if ( $c['last_seen'] ) : ?>
 								<?php echo esc_html( date_i18n( 'Y-m-d H:i', $c['last_seen'] ) ); ?><br>
 									<?php
@@ -1236,8 +1428,21 @@ class STUH_Plugin {
 							<?php else : ?>
 								<em>Never</em>
 							<?php endif; ?>
-						</td>
-						<td style="white-space: nowrap;">
+						<?php elseif ( 'diagnostics' === $column_id ) : ?>
+							<?php if ( is_array( $report ) && ! empty( $report['received_at'] ) ) : ?>
+								<details>
+									<summary>
+										<?php echo esc_html( date_i18n( 'Y-m-d H:i', $report['received_at'] ) ); ?>
+										<?php if ( ! empty( $report['request_type'] ) ) : ?>
+											&mdash; <?php echo esc_html( $report['request_type'] ); ?>
+										<?php endif; ?>
+									</summary>
+									<pre style="max-height:240px;overflow:auto;white-space:pre-wrap;"><?php echo esc_html( wp_json_encode( $report['data'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) ); ?></pre>
+								</details>
+							<?php else : ?>
+								<em>None received</em>
+							<?php endif; ?>
+						<?php elseif ( 'actions' === $column_id ) : ?>
 							<!-- Enable / Disable -->
 							<form method="post" style="display:inline-block;margin-right:4px;">
 								<?php wp_nonce_field( 'stuh_admin' ); ?>
@@ -1281,11 +1486,18 @@ class STUH_Plugin {
 									<?php esc_html_e( 'Delete', 'stuh' ); ?>
 								</button>
 							</form>
+						<?php else : ?>
+							<?php
+							$value = self::telemetry_column_value( $column_id, $data );
+							echo '' === $value ? '<em>' . esc_html__( 'Not reported', 'stuh' ) . '</em>' : esc_html( $value );
+							?>
+						<?php endif; ?>
 						</td>
+						<?php endforeach; ?>
 					</tr>
 					<!-- Inline edit-URLs row (hidden by default) -->
 					<tr id="stuh-edit-urls-<?php echo esc_attr( $c['id'] ); ?>" style="display:none;background:#f6f7f7;">
-						<td colspan="5" style="padding:12px 16px;">
+						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding:12px 16px;">
 							<form method="post">
 								<?php wp_nonce_field( 'stuh_admin' ); ?>
 								<input type="hidden" name="stuh_action" value="edit_client_urls">
