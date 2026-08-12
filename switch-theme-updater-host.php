@@ -1043,6 +1043,7 @@ class STUH_Plugin {
 			'telemetry_php'   => __( 'PHP', 'stuh' ),
 			'telemetry_updater' => __( 'Updater', 'stuh' ),
 			'telemetry_multisite' => __( 'Multisite', 'stuh' ),
+			'telemetry_multilanguage' => __( 'Multilanguage', 'stuh' ),
 			'telemetry_packages'  => __( 'Packages', 'stuh' ),
 			'telemetry_database'  => __( 'Database', 'stuh' ),
 			'telemetry_analytics' => __( 'Analytics', 'stuh' ),
@@ -1084,6 +1085,12 @@ class STUH_Plugin {
 					return '';
 				}
 				return ! empty( $site['multisite'] ) ? __( 'Yes', 'stuh' ) : __( 'No', 'stuh' );
+			case 'telemetry_multilanguage':
+				$multilanguage = $site['multilanguage'] ?? $data['multilanguage'] ?? null;
+				if ( null === $multilanguage ) {
+					return '';
+				}
+				return ! empty( $multilanguage ) ? __( 'Yes', 'stuh' ) : __( 'No', 'stuh' );
 			case 'telemetry_packages':
 				if ( ! array_key_exists( 'plugins', $packages ) && ! array_key_exists( 'themes', $packages ) ) {
 					return '';
