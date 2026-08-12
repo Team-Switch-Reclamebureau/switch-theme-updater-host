@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.1
+ * Version: 0.2.2
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1013,6 +1013,7 @@ class STUH_Plugin {
 			'enabled'         => __( 'Status', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
+			'last_seen_ip'    => __( 'IP Address / Server Name', 'stuh' ),
 			'telemetry_site'  => __( 'Reported Site URL', 'stuh' ),
 			'telemetry_home'  => __( 'Home URL', 'stuh' ),
 			'telemetry_locale'=> __( 'Locale', 'stuh' ),
@@ -1453,18 +1454,33 @@ class STUH_Plugin {
 
 			<?php
 			// Sorting.
-			$allowed_cols = [ 'site_url', 'enabled', 'created_at', 'last_seen' ];
+			$allowed_cols = array_diff( array_keys( $columns ), [ 'diagnostics', 'actions' ] );
 			$orderby      = in_array( $_GET['orderby'] ?? '', $allowed_cols, true ) ? $_GET['orderby'] : 'site_url';
 			$order        = strtolower( $_GET['order'] ?? 'asc' ) === 'desc' ? 'desc' : 'asc';
 			$opposite     = $order === 'asc' ? 'desc' : 'asc';
 
-			usort( $clients, function( $a, $b ) use ( $orderby, $order ) {
+			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry ) {
 				$va = $a[ $orderby ] ?? '';
 				$vb = $b[ $orderby ] ?? '';
+				if ( str_starts_with( $orderby, 'telemetry_' ) ) {
+					$data_a = is_array( $telemetry[ $a['id'] ]['data'] ?? null ) ? $telemetry[ $a['id'] ]['data'] : [];
+					$data_b = is_array( $telemetry[ $b['id'] ]['data'] ?? null ) ? $telemetry[ $b['id'] ]['data'] : [];
+					if ( 'telemetry_database' === $orderby ) {
+						$database_a = is_array( $data_a['database'] ?? null ) ? $data_a['database'] : [];
+						$database_b = is_array( $data_b['database'] ?? null ) ? $data_b['database'] : [];
+						$va         = $database_a['size_bytes'] ?? null;
+						$vb         = $database_b['size_bytes'] ?? null;
+					} else {
+						$va = self::telemetry_column_value( $orderby, $data_a );
+						$vb = self::telemetry_column_value( $orderby, $data_b );
+					}
+				}
 				// Nulls last.
 				if ( $va === null || $va === '' ) return $order === 'asc' ? 1 : -1;
 				if ( $vb === null || $vb === '' ) return $order === 'asc' ? -1 : 1;
-				$cmp = is_numeric( $va ) ? ( $va <=> $vb ) : strcasecmp( (string) $va, (string) $vb );
+				$cmp = in_array( $orderby, [ 'telemetry_wp', 'telemetry_php' ], true )
+					? version_compare( (string) $va, (string) $vb )
+					: ( is_numeric( $va ) ? ( $va <=> $vb ) : strcasecmp( (string) $va, (string) $vb ) );
 				return $order === 'asc' ? $cmp : -$cmp;
 			} );
 
@@ -1535,14 +1551,19 @@ class STUH_Plugin {
 							<?php echo esc_html( $c['created_at'] ? date_i18n( 'Y-m-d', $c['created_at'] ) : '—' ); ?>
 						<?php elseif ( 'last_seen' === $column_id ) : ?>
 							<?php if ( $c['last_seen'] ) : ?>
-								<?php echo esc_html( date_i18n( 'Y-m-d H:i', $c['last_seen'] ) ); ?><br>
-									<?php
-								$lsip    = $c['last_seen_ip'] ?? '';
-								$lslabel = $lsip ? self::ip_label( $lsip ) : '';
-								?>
-								<small<?php echo $lsip ? ' title="' . esc_attr( $lsip ) . '" style="cursor:help;"' : ''; ?>><?php echo esc_html( $lslabel ?: $lsip ); ?></small>
+								<?php echo esc_html( date_i18n( 'Y-m-d H:i', $c['last_seen'] ) ); ?>
 							<?php else : ?>
 								<em>Never</em>
+							<?php endif; ?>
+						<?php elseif ( 'last_seen_ip' === $column_id ) : ?>
+							<?php
+								$lsip    = $c['last_seen_ip'] ?? '';
+								$lslabel = $lsip ? self::ip_label( $lsip ) : '';
+							?>
+							<?php if ( $lsip ) : ?>
+								<span title="<?php echo esc_attr( $lsip ); ?>" style="cursor:help;"><?php echo esc_html( $lslabel ?: $lsip ); ?></span>
+							<?php else : ?>
+								<em>&mdash;</em>
 							<?php endif; ?>
 						<?php elseif ( 'telemetry_wp' === $column_id || 'telemetry_php' === $column_id ) : ?>
 							<?php
