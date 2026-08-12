@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.6
+ * Version: 0.2.7
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1175,13 +1175,13 @@ class STUH_Plugin {
 		// https://make.wordpress.org/core/handbook/references/php-compatibility-and-wordpress-versions/
 
 		$supported_php_ranges = [
-			'7.0' => [ '8.4', '8.5' ],
-			'6.9' => [ '8.4', '8.5' ],
-			'6.8' => [ '8.4', '8.4' ],
-			'6.7' => [ '8.4', '8.4' ],
-			'6.6' => [ '8.4', '8.4' ],
-			'6.5' => [ '8.4', '8.4' ],
-			'6.4' => [ '8.4', '8.4' ],
+			'7.0' => [ '8.2', '8.5' ],
+			'6.9' => [ '8.2', '8.5' ],
+			'6.8' => [ '8.2', '8.4' ],
+			'6.7' => [ '8.2', '8.4' ],
+			'6.6' => [ '8.2', '8.3' ],
+			'6.5' => [ '8.2', '8.3' ],
+			'6.4' => [ '8.2', '8.3' ],
 		];
 		$wordpress_minor = $wordpress_matches[1];
 		$php_minor       = $php_matches[1];
@@ -1193,6 +1193,20 @@ class STUH_Plugin {
 		[ $minimum_php, $maximum_php ] = $supported_php_ranges[ $wordpress_minor ];
 
 		return version_compare( $php_minor, $minimum_php, '>=' ) && version_compare( $php_minor, $maximum_php, '<=' );
+	}
+
+	/**
+	 * Whether a PHP version receives regular, non-security-only support from PHP.
+	 *
+	 * This reflects https://www.php.net/supported-versions.php as of 2026-08-12.
+	 */
+	private static function is_php_version_regularly_supported( string $php_version ): ?bool {
+		if ( ! preg_match( '/^(\d+\.\d+)/', $php_version, $matches ) ) {
+			return null;
+		}
+
+		[ $minimum_php, $maximum_php ] = [ '8.4', '8.5' ];
+		return version_compare( $matches[1], $minimum_php, '>=' ) && version_compare( $matches[1], $maximum_php, '<=' );
 	}
 
 	/**
@@ -1621,10 +1635,16 @@ class STUH_Plugin {
 							$value             = self::telemetry_column_value( $column_id, $data );
 							$wordpress_version = self::telemetry_column_value( 'telemetry_wp', $data );
 							$php_version       = self::telemetry_column_value( 'telemetry_php', $data );
+							$php_wordpress_supported = self::is_php_version_supported_by_wordpress( $php_version, $wordpress_version );
+							$php_regularly_supported = self::is_php_version_regularly_supported( $php_version );
 							$is_problem        = ( 'telemetry_wp' === $column_id && $value && $latest_wordpress_version && $value !== $latest_wordpress_version )
-								|| ( 'telemetry_php' === $column_id && $value && false === self::is_php_version_supported_by_wordpress( $php_version, $wordpress_version ) );
+								|| ( 'telemetry_php' === $column_id && $value && false === $php_wordpress_supported );
+							$is_warning        = 'telemetry_php' === $column_id && $value && ! $is_problem && false === $php_regularly_supported;
+							$style             = $is_problem
+								? ' style="color:#d63638;font-weight:600;"'
+								: ( $is_warning ? ' style="color:#dba617;font-weight:600;"' : '' );
 							?>
-							<span<?php echo $is_problem ? ' style="color:#d63638;font-weight:600;"' : ''; ?>><?php echo esc_html( $value ); ?></span>
+							<span<?php echo $style; ?>><?php echo esc_html( $value ); ?></span>
 						<?php elseif ( 'diagnostics' === $column_id ) : ?>
 							<?php if ( is_array( $report ) && ! empty( $report['received_at'] ) ) : ?>
 								<details>
