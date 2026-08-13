@@ -1131,6 +1131,7 @@ class STUH_Plugin {
 			'last_seen_ip'    => __( 'Server / IP', 'stuh' ),
 			'telemetry_site'  => __( 'Reported Site URL', 'stuh' ),
 			'telemetry_home'  => __( 'Home URL', 'stuh' ),
+			'telemetry_admin_email' => __( 'Admin Email', 'stuh' ),
 			'telemetry_locale'=> __( 'Locale', 'stuh' ),
 			'telemetry_wp'    => __( 'WordPress', 'stuh' ),
 			'telemetry_php'   => __( 'PHP', 'stuh' ),
@@ -1169,6 +1170,8 @@ class STUH_Plugin {
 				return (string) ( $site['site_url'] ?? '' );
 			case 'telemetry_home':
 				return (string) ( $site['home_url'] ?? '' );
+			case 'telemetry_admin_email':
+				return (string) ( $site['admin_email'] ?? '' );
 			case 'telemetry_locale':
 				return (string) ( $site['locale'] ?? '' );
 			case 'telemetry_wp':
