@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.11
+ * Version: 0.2.12
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1702,7 +1702,7 @@ class STUH_Plugin {
 			?>
 			<p class="search-box" style="float:none;margin:20px 0 10px;">
 				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
-				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more...', 'stuh' ); ?>">
+				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more... Use -term to exclude.', 'stuh' ); ?>">
 				<span id="stuh-client-search-count" aria-live="polite"></span>
 			</p>
 
@@ -1970,10 +1970,19 @@ class STUH_Plugin {
 
 				function applyFilter() {
 					var query = search.value.trim().toLocaleLowerCase();
+					var terms = query.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
 					var visible = 0;
 
 					rows.forEach(function(row) {
-						var matches = !query || row.dataset.search.toLocaleLowerCase().indexOf(query) !== -1;
+						var searchableText = row.dataset.search.toLocaleLowerCase();
+						var matches = terms.every(function(term) {
+							var excluded = term.charAt(0) === '-' && term.length > 1;
+							term = (excluded ? term.slice(1) : term).replace(/^"|"$/g, '');
+							if (excluded) {
+								return searchableText.indexOf(term) === -1;
+							}
+							return !term || searchableText.indexOf(term) !== -1;
+						});
 						row.style.display = matches ? '' : 'none';
 						if (matches) {
 							visible++;
