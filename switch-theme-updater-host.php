@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.14
+ * Version: 0.2.15
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1212,13 +1212,19 @@ class STUH_Plugin {
 				}
 				$smtp_status = self::smtp_diagnostic_status( $smtp );
 				if ( 'healthy' === $smtp_status ) {
-					return __( 'Configured', 'stuh' );
+					return __( 'FluentSMTP', 'stuh' );
 				}
 				if ( 'warning' === $smtp_status ) {
-					return __( 'Configured (alerts disabled)', 'stuh' );
+					return __( 'FluentSMTP (no alert)', 'stuh' );
+				}
+				if ( 'unverified' === $smtp_status ) {
+					return __( 'Unverified configuration', 'stuh' );
+				}
+				if ( 'not_configured' === $smtp_status ) {
+					return __( 'Not configured', 'stuh' );
 				}
 				if ( 'error' === $smtp_status ) {
-					return __( 'Not configured', 'stuh' );
+					return __( 'Delivery failed', 'stuh' );
 				}
 				return ! empty( $smtp['configured'] )
 					? __( 'Configured', 'stuh' )
@@ -1262,13 +1268,19 @@ class STUH_Plugin {
 	 * Return an SMTP health status when the complete diagnostic is available.
 	 */
 	private static function smtp_diagnostic_status( array $smtp ): ?string {
-		if ( array_key_exists( 'configured', $smtp ) && true !== $smtp['configured'] ) {
-			return 'error';
+		if ( ! array_key_exists( 'configured', $smtp ) ) {
+			return null;
+		}
+		if ( true !== $smtp['configured'] ) {
+			return 'not_configured';
+		}
+		if ( 'unverified' === ( $smtp['delivery'] ?? null ) ) {
+			return 'unverified';
 		}
 		if ( array_key_exists( 'delivery', $smtp ) && true !== $smtp['delivery'] ) {
 			return 'error';
 		}
-		if ( ! array_key_exists( 'configured', $smtp ) || ! array_key_exists( 'delivery', $smtp ) || ! array_key_exists( 'alert', $smtp ) ) {
+		if ( ! array_key_exists( 'delivery', $smtp ) || ! array_key_exists( 'alert', $smtp ) ) {
 			return null;
 		}
 
@@ -1713,7 +1725,7 @@ class STUH_Plugin {
 					} elseif ( 'telemetry_smtp' === $orderby ) {
 						$smtp_a = is_array( $data_a['smtp'] ?? null ) ? $data_a['smtp'] : [];
 						$smtp_b = is_array( $data_b['smtp'] ?? null ) ? $data_b['smtp'] : [];
-						$ranks  = [ 'error' => 1, 'warning' => 2, 'healthy' => 4 ];
+						$ranks  = [ 'error' => 1, 'unverified' => 2, 'warning' => 3, 'not_configured' => 4, 'healthy' => 6 ];
 						$status_a = self::smtp_diagnostic_status( $smtp_a );
 						$status_b = self::smtp_diagnostic_status( $smtp_b );
 						$va       = array_key_exists( 'configured', $smtp_a ) ? ( $ranks[ $status_a ] ?? 3 ) : null;
