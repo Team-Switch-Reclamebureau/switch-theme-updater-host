@@ -1210,8 +1210,18 @@ class STUH_Plugin {
 				if ( ! array_key_exists( 'configured', $smtp ) ) {
 					return '';
 				}
+				$smtp_status = self::smtp_diagnostic_status( $smtp );
+				if ( 'healthy' === $smtp_status ) {
+					return __( 'Configured', 'stuh' );
+				}
+				if ( 'warning' === $smtp_status ) {
+					return __( 'Configured (alerts disabled)', 'stuh' );
+				}
+				if ( 'error' === $smtp_status ) {
+					return __( 'Not configured', 'stuh' );
+				}
 				return ! empty( $smtp['configured'] )
-					? sprintf( __( 'Configured (%s)', 'stuh' ), (string) ( $smtp['delivery'] ?? __( 'unknown', 'stuh' ) ) )
+					? __( 'Configured', 'stuh' )
 					: __( 'Not configured', 'stuh' );
 			case 'telemetry_debug':
 				if ( ! array_key_exists( 'wp_debug', $debug ) ) {
@@ -1246,6 +1256,23 @@ class STUH_Plugin {
 		}
 
 		return '';
+	}
+
+	/**
+	 * Return an SMTP health status when the complete diagnostic is available.
+	 */
+	private static function smtp_diagnostic_status( array $smtp ): ?string {
+		foreach ( [ 'configured', 'delivery', 'alert' ] as $field ) {
+			if ( ! array_key_exists( $field, $smtp ) ) {
+				return null;
+			}
+		}
+
+		if ( true !== $smtp['configured'] || true !== $smtp['delivery'] ) {
+			return 'error';
+		}
+
+		return true === $smtp['alert'] ? 'healthy' : 'warning';
 	}
 
 	/**
@@ -1841,6 +1868,20 @@ class STUH_Plugin {
 							}
 							?>
 							<span<?php echo $style; ?><?php echo $title ? ' title="' . esc_attr( $title ) . '"' : ''; ?>><?php echo esc_html( $value ); ?></span>
+						<?php elseif ( 'telemetry_smtp' === $column_id ) : ?>
+							<?php
+							$smtp_status = self::smtp_diagnostic_status( (array) ( $data['smtp'] ?? [] ) );
+							$value       = self::telemetry_column_value( $column_id, $data );
+							?>
+							<?php if ( 'healthy' === $smtp_status ) : ?>
+								<span style="color:#46b450;font-weight:600;">&#10003; <?php echo esc_html( $value ); ?></span>
+							<?php elseif ( 'warning' === $smtp_status ) : ?>
+								<span style="color:#dba617;font-weight:600;"><?php echo esc_html( $value ); ?></span>
+							<?php elseif ( 'error' === $smtp_status ) : ?>
+								<span style="color:#d63638;font-weight:600;"><?php echo esc_html( $value ); ?></span>
+							<?php else : ?>
+								<?php echo esc_html( $value ); ?>
+							<?php endif; ?>
 						<?php elseif ( 'diagnostics' === $column_id ) : ?>
 							<?php if ( is_array( $report ) && ! empty( $report['received_at'] ) ) : ?>
 								<details>
