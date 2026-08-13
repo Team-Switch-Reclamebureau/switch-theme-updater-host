@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.10
+ * Version: 0.2.11
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1224,33 +1224,55 @@ class STUH_Plugin {
 	}
 
 	/**
-	 * Return the newest stable WordPress version reported by the core update API.
+	 * Check whether WordPress offers a maintenance release for a reported version.
+	 *
+	 * @return array{status: 'current'|'outdated'|'unknown', latest: string, update: string}
 	 */
-	private static function latest_wordpress_version(): ?string {
-		$updates = get_site_transient( 'update_core' );
-
-		if ( ! is_object( $updates ) || ! isset( $updates->updates ) || ! is_array( $updates->updates ) ) {
-			wp_version_check();
-			$updates = get_site_transient( 'update_core' );
+	private static function wordpress_version_safety( string $wordpress_version, string $php_version ): array {
+		$unknown = [ 'status' => 'unknown', 'latest' => '', 'update' => '' ];
+		if ( ! preg_match( '/^\d+\.\d+(?:\.\d+)?$/', $wordpress_version ) ) {
+			return $unknown;
 		}
 
-		if ( ! is_object( $updates ) || ! isset( $updates->updates ) || ! is_array( $updates->updates ) ) {
-			return null;
+		$cache_key = 'stuh_wp_safety_' . md5( $wordpress_version . '|' . $php_version );
+		$cached    = get_transient( $cache_key );
+		if ( is_array( $cached ) ) {
+			return wp_parse_args( $cached, $unknown );
 		}
 
-		$latest = null;
-		foreach ( $updates->updates as $update ) {
-			$version = is_object( $update ) ? (string) ( $update->version ?? '' ) : '';
-			if ( ! preg_match( '/^\d+\.\d+(?:\.\d+)?$/', $version ) ) {
+		$response = wp_remote_get( add_query_arg( [
+			'version' => $wordpress_version,
+			'php'     => $php_version ?: PHP_VERSION,
+			'locale'  => 'en_US',
+		], 'https://api.wordpress.org/core/version-check/1.7/' ), [ 'timeout' => 10 ] );
+		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			return $unknown;
+		}
+
+		$payload = json_decode( wp_remote_retrieve_body( $response ), true );
+		$offers  = is_array( $payload['offers'] ?? null ) ? $payload['offers'] : [];
+		if ( [] === $offers ) {
+			return $unknown;
+		}
+
+		$result = [ 'status' => 'current', 'latest' => '', 'update' => '' ];
+		foreach ( $offers as $offer ) {
+			if ( ! is_array( $offer ) ) {
 				continue;
 			}
-
-			if ( null === $latest || version_compare( $version, $latest, '>' ) ) {
-				$latest = $version;
+			$offered_version = (string) ( $offer['version'] ?? '' );
+			if ( '' === $result['latest'] && preg_match( '/^\d+\.\d+(?:\.\d+)?$/', $offered_version ) ) {
+				$result['latest'] = $offered_version;
+			}
+			if ( $wordpress_version === (string) ( $offer['partial_version'] ?? '' ) ) {
+				$result['status'] = 'outdated';
+				$result['update'] = $offered_version;
+				break;
 			}
 		}
 
-		return $latest;
+		set_transient( $cache_key, $result, 12 * HOUR_IN_SECONDS );
+		return $result;
 	}
 
 	/**
@@ -1677,7 +1699,6 @@ class STUH_Plugin {
 				if ( $orderby !== $col ) return '';
 				return ' <span class="dashicons dashicons-arrow-' . ( $order === 'asc' ? 'up' : 'down' ) . '" style="vertical-align:middle;font-size:14px;"></span>';
 			};
-			$latest_wordpress_version = self::latest_wordpress_version();
 			?>
 			<p class="search-box" style="float:none;margin:20px 0 10px;">
 				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
@@ -1772,14 +1793,29 @@ class STUH_Plugin {
 							$php_version       = self::telemetry_column_value( 'telemetry_php', $data );
 							$php_wordpress_supported = self::is_php_version_supported_by_wordpress( $php_version, $wordpress_version );
 							$php_regularly_supported = self::is_php_version_regularly_supported( $php_version );
-							$is_problem        = ( 'telemetry_wp' === $column_id && $value && $latest_wordpress_version && $value !== $latest_wordpress_version )
+							$wp_safety = 'telemetry_wp' === $column_id && $value
+								? self::wordpress_version_safety( $wordpress_version, $php_version )
+								: [ 'status' => 'unknown', 'latest' => '', 'update' => '' ];
+							$is_problem = ( 'telemetry_wp' === $column_id && 'outdated' === $wp_safety['status'] )
 								|| ( 'telemetry_php' === $column_id && $value && false === $php_wordpress_supported );
-							$is_warning        = 'telemetry_php' === $column_id && $value && ! $is_problem && false === $php_regularly_supported;
+							$is_warning = ( 'telemetry_wp' === $column_id
+									&& 'current' === $wp_safety['status']
+									&& $wp_safety['latest']
+									&& $value !== $wp_safety['latest'] )
+								|| ( 'telemetry_php' === $column_id && $value && ! $is_problem && false === $php_regularly_supported );
 							$style             = $is_problem
 								? ' style="color:#d63638;font-weight:600;"'
 								: ( $is_warning ? ' style="color:#dba617;font-weight:600;"' : '' );
+							$title = '';
+							if ( 'telemetry_wp' === $column_id && 'outdated' === $wp_safety['status'] ) {
+								$title = sprintf( __( 'Security or maintenance update available: %s', 'stuh' ), $wp_safety['update'] );
+							} elseif ( 'telemetry_wp' === $column_id && 'current' === $wp_safety['status'] && $wp_safety['latest'] && $value !== $wp_safety['latest'] ) {
+								$title = sprintf( __( 'Current within this branch. Newest WordPress release: %s', 'stuh' ), $wp_safety['latest'] );
+							} elseif ( 'telemetry_wp' === $column_id && 'unknown' === $wp_safety['status'] ) {
+								$title = __( 'Could not verify the WordPress update status.', 'stuh' );
+							}
 							?>
-							<span<?php echo $style; ?>><?php echo esc_html( $value ); ?></span>
+							<span<?php echo $style; ?><?php echo $title ? ' title="' . esc_attr( $title ) . '"' : ''; ?>><?php echo esc_html( $value ); ?></span>
 						<?php elseif ( 'diagnostics' === $column_id ) : ?>
 							<?php if ( is_array( $report ) && ! empty( $report['received_at'] ) ) : ?>
 								<details>
