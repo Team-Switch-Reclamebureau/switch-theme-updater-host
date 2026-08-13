@@ -1143,6 +1143,8 @@ class STUH_Plugin {
 			'telemetry_analytics' => __( 'Analytics', 'stuh' ),
 			'telemetry_smtp'      => __( 'SMTP', 'stuh' ),
 			'telemetry_debug'     => __( 'Debug', 'stuh' ),
+			'telemetry_post_revisions' => __( 'Post Revisions', 'stuh' ),
+			'telemetry_core_upgrade_skip_new_bundled' => __( 'Skip New Bundled Themes', 'stuh' ),
 			'diagnostics'     => __( 'Diagnostics', 'stuh' ),
 			'actions'         => __( 'Actions', 'stuh' ),
 		];
@@ -1160,6 +1162,7 @@ class STUH_Plugin {
 		$database = (array) ( $data['database'] ?? [] );
 		$smtp     = (array) ( $data['smtp'] ?? [] );
 		$debug    = (array) ( $data['debug'] ?? [] );
+		$wp_config = (array) ( $data['wp_config'] ?? [] );
 
 		switch ( $column ) {
 			case 'telemetry_site':
@@ -1218,6 +1221,25 @@ class STUH_Plugin {
 						! empty( $debug['debug_log'] ) ? __( 'yes', 'stuh' ) : __( 'no', 'stuh' )
 					)
 					: __( 'Disabled', 'stuh' );
+			case 'telemetry_post_revisions':
+				if ( ! array_key_exists( 'post_revisions', $wp_config ) ) {
+					return '';
+				}
+				$post_revisions = $wp_config['post_revisions'];
+				if ( true === $post_revisions || 'true' === $post_revisions ) {
+					return __( 'Unlimited', 'stuh' );
+				}
+				if ( false === $post_revisions || 'false' === $post_revisions || 0 === $post_revisions || '0' === $post_revisions ) {
+					return __( 'Disabled', 'stuh' );
+				}
+				return is_scalar( $post_revisions ) ? (string) $post_revisions : '';
+			case 'telemetry_core_upgrade_skip_new_bundled':
+				if ( ! array_key_exists( 'core_upgrade_skip_new_bundled', $wp_config ) ) {
+					return '';
+				}
+				return ! empty( $wp_config['core_upgrade_skip_new_bundled'] )
+					? __( 'Yes', 'stuh' )
+					: __( 'No', 'stuh' );
 		}
 
 		return '';
