@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.9
+ * Version: 0.2.10
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -689,6 +689,25 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Record client activity at most once per five minutes to reduce DB writes.
+	 */
+	private static function record_client_activity( string $client_id ): void {
+		$clients = self::get_clients();
+
+		foreach ( $clients as $index => $client ) {
+			if ( $client_id !== ( $client['id'] ?? '' ) ) {
+				continue;
+			}
+			if ( ( time() - ( $client['last_seen'] ?? 0 ) ) > 300 ) {
+				$clients[ $index ]['last_seen']    = time();
+				$clients[ $index ]['last_seen_ip'] = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
+				self::save_clients( $clients );
+			}
+			return;
+		}
+	}
+
+	/**
 	 * Validate a raw API key against stored (hashed) client records.
 	 * Updates last_seen at most once per 5 minutes to reduce DB writes.
 	 *
@@ -702,12 +721,11 @@ class STUH_Plugin {
 
 		$clients = self::get_clients();
 		$matched = false;
-		$idx     = null;
 
 		// Normalise the incoming URL for comparison (lowercase, no trailing slash).
 		$norm_url = strtolower( rtrim( $site_url, '/' ) );
 
-		foreach ( $clients as $i => $client ) {
+		foreach ( $clients as $client ) {
 			if ( ! ( $client['enabled'] ?? true ) ) {
 				continue;
 			}
@@ -724,7 +742,6 @@ class STUH_Plugin {
 			}
 
 			$matched = $client;
-			$idx     = $i;
 			break;
 		}
 
@@ -732,13 +749,7 @@ class STUH_Plugin {
 			return false;
 		}
 
-		// Throttle last_seen writes to once per 5 minutes.
-		$last = $matched['last_seen'] ?? 0;
-		if ( ( time() - $last ) > 300 ) {
-			$clients[ $idx ]['last_seen']    = time();
-			$clients[ $idx ]['last_seen_ip'] = sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' );
-			self::save_clients( $clients );
-		}
+		self::record_client_activity( (string) $matched['id'] );
 
 		return $matched;
 	}
@@ -874,6 +885,7 @@ class STUH_Plugin {
 		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
 			$client = self::find_client_by_site_url( $site_url );
 			if ( $client ) {
+				self::record_client_activity( (string) $client['id'] );
 				self::record_client_telemetry( $client, $req );
 			}
 			return true;
@@ -928,6 +940,7 @@ class STUH_Plugin {
 		if ( $ip && self::ip_is_whitelisted( $ip ) ) {
 			$client = self::find_client_by_site_url( $site_url );
 			if ( $client ) {
+				self::record_client_activity( (string) $client['id'] );
 				self::record_client_telemetry( $client, $req );
 			}
 			return rest_ensure_response( [
