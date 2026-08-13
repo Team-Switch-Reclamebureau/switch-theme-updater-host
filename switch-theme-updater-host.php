@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.13
+ * Version: 0.2.14
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1262,14 +1262,14 @@ class STUH_Plugin {
 	 * Return an SMTP health status when the complete diagnostic is available.
 	 */
 	private static function smtp_diagnostic_status( array $smtp ): ?string {
-		foreach ( [ 'configured', 'delivery', 'alert' ] as $field ) {
-			if ( ! array_key_exists( $field, $smtp ) ) {
-				return null;
-			}
-		}
-
-		if ( true !== $smtp['configured'] || true !== $smtp['delivery'] ) {
+		if ( array_key_exists( 'configured', $smtp ) && true !== $smtp['configured'] ) {
 			return 'error';
+		}
+		if ( array_key_exists( 'delivery', $smtp ) && true !== $smtp['delivery'] ) {
+			return 'error';
+		}
+		if ( ! array_key_exists( 'configured', $smtp ) || ! array_key_exists( 'delivery', $smtp ) || ! array_key_exists( 'alert', $smtp ) ) {
+			return null;
 		}
 
 		return true === $smtp['alert'] ? 'healthy' : 'warning';
@@ -1710,6 +1710,14 @@ class STUH_Plugin {
 						$database_b = is_array( $data_b['database'] ?? null ) ? $data_b['database'] : [];
 						$va         = $database_a['size_bytes'] ?? null;
 						$vb         = $database_b['size_bytes'] ?? null;
+					} elseif ( 'telemetry_smtp' === $orderby ) {
+						$smtp_a = is_array( $data_a['smtp'] ?? null ) ? $data_a['smtp'] : [];
+						$smtp_b = is_array( $data_b['smtp'] ?? null ) ? $data_b['smtp'] : [];
+						$ranks  = [ 'error' => 1, 'warning' => 2, 'healthy' => 4 ];
+						$status_a = self::smtp_diagnostic_status( $smtp_a );
+						$status_b = self::smtp_diagnostic_status( $smtp_b );
+						$va       = array_key_exists( 'configured', $smtp_a ) ? ( $ranks[ $status_a ] ?? 3 ) : null;
+						$vb       = array_key_exists( 'configured', $smtp_b ) ? ( $ranks[ $status_b ] ?? 3 ) : null;
 					} else {
 						$va = self::telemetry_column_value( $orderby, $data_a );
 						$vb = self::telemetry_column_value( $orderby, $data_b );
