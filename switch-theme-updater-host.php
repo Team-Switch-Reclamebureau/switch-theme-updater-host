@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.8
+ * Version: 0.2.9
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -465,6 +465,49 @@ class STUH_Plugin {
 
 	private static function save_clients( array $clients ): void {
 		update_option( STUH_OPTION_CLIENTS, array_values( $clients ) );
+	}
+
+	/**
+	 * @return array<int, string>
+	 */
+	private static function sanitize_client_tags( string $raw_tags ): array {
+		$tags = preg_split( '/[\r\n,]+/', $raw_tags );
+		$tags = is_array( $tags ) ? $tags : [];
+		$tags = array_map( static fn( string $tag ): string => sanitize_text_field( trim( $tag ) ), $tags );
+		$tags = array_filter( $tags, static fn( string $tag ): bool => '' !== $tag );
+
+		return array_values( array_unique( $tags, SORT_STRING ) );
+	}
+
+	/**
+	 * Build text for the client-list search without exposing private client fields.
+	 *
+	 * @param array<string, mixed> $client
+	 * @param array<string, mixed> $telemetry
+	 */
+	private static function client_search_text( array $client, array $telemetry ): string {
+		$values = [
+			...array_map( 'strval', (array) ( $client['site_urls'] ?? [] ) ),
+			(string) ( $client['site_url'] ?? '' ),
+			...array_map( 'strval', (array) ( $client['tags'] ?? [] ) ),
+			(string) ( $client['last_seen_ip'] ?? '' ),
+			self::ip_label( (string) ( $client['last_seen_ip'] ?? '' ) ),
+		];
+		$data = is_array( $telemetry['data'] ?? null ) ? $telemetry['data'] : [];
+		$collect_values = static function( array $items ) use ( &$collect_values ): array {
+			$collected = [];
+			foreach ( $items as $key => $value ) {
+				$collected[] = (string) $key;
+				if ( is_array( $value ) ) {
+					$collected = [ ...$collected, ...$collect_values( $value ) ];
+				} elseif ( is_scalar( $value ) ) {
+					$collected[] = (string) $value;
+				}
+			}
+			return $collected;
+		};
+
+		return implode( ' ', [ ...$values, ...$collect_values( $data ) ] );
 	}
 
 	public static function get_unverified(): array {
@@ -1068,6 +1111,7 @@ class STUH_Plugin {
 	public function client_columns(): array {
 		return [
 			'site_url'        => __( 'URL', 'stuh' ),
+			'tags'            => __( 'Tags', 'stuh' ),
 			'enabled'         => __( 'Status', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
@@ -1327,6 +1371,7 @@ class STUH_Plugin {
 						'site_urls'    => $urls,
 						'api_key'      => $raw_key,
 						'api_key_hash' => wp_hash_password( $raw_key ),
+						'tags'         => [],
 						'enabled'      => true,
 						'created_at'   => time(),
 						'last_seen'    => null,
@@ -1377,6 +1422,21 @@ class STUH_Plugin {
 					}
 					$c['site_urls'] = $urls;
 					$c['site_url']  = $urls[0] ?? '';
+					break;
+				}
+				unset( $c );
+				self::save_clients( $clients );
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
+			case 'edit_client_tags':
+				$id   = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$tags = self::sanitize_client_tags( (string) wp_unslash( $_POST['client_tags'] ?? '' ) );
+				foreach ( $clients as &$c ) {
+					if ( $c['id'] !== $id ) {
+						continue;
+					}
+					$c['tags'] = $tags;
 					break;
 				}
 				unset( $c );
@@ -1487,6 +1547,7 @@ class STUH_Plugin {
 						'site_urls'    => $site ? [ $site ] : [],
 						'api_key'      => $raw_key,
 						'api_key_hash' => wp_hash_password( $raw_key ),
+						'tags'         => [],
 						'enabled'      => true,
 						'created_at'   => time(),
 						'last_seen'    => null,
@@ -1545,10 +1606,15 @@ class STUH_Plugin {
 			$orderby      = in_array( $_GET['orderby'] ?? '', $allowed_cols, true ) ? $_GET['orderby'] : 'site_url';
 			$order        = strtolower( $_GET['order'] ?? 'asc' ) === 'desc' ? 'desc' : 'asc';
 			$opposite     = $order === 'asc' ? 'desc' : 'asc';
+			$search_query = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
 
 			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry ) {
 				$va = $a[ $orderby ] ?? '';
 				$vb = $b[ $orderby ] ?? '';
+				if ( 'tags' === $orderby ) {
+					$va = implode( ', ', (array) $va );
+					$vb = implode( ', ', (array) $vb );
+				}
 				if ( str_starts_with( $orderby, 'telemetry_' ) ) {
 					$data_a = is_array( $telemetry[ $a['id'] ]['data'] ?? null ) ? $telemetry[ $a['id'] ]['data'] : [];
 					$data_b = is_array( $telemetry[ $b['id'] ]['data'] ?? null ) ? $telemetry[ $b['id'] ]['data'] : [];
@@ -1582,12 +1648,17 @@ class STUH_Plugin {
 				return $order === 'asc' ? $cmp : -$cmp;
 			} );
 
-			$sort_url = function( string $col ) use ( $orderby, $order, $opposite ): string {
-				return esc_url( add_query_arg( [
+			$sort_url = function( string $col ) use ( $orderby, $order, $opposite, $search_query ): string {
+				$args = [
 					'page'    => 'stuh',
 					'orderby' => $col,
 					'order'   => $orderby === $col ? $opposite : 'asc',
-				], admin_url( 'admin.php' ) ) );
+				];
+				if ( '' !== $search_query ) {
+					$args['stuh_search'] = $search_query;
+				}
+
+				return esc_url( add_query_arg( $args, admin_url( 'admin.php' ) ) );
 			};
 			$sort_indicator = function( string $col ) use ( $orderby, $order ): string {
 				if ( $orderby !== $col ) return '';
@@ -1595,6 +1666,11 @@ class STUH_Plugin {
 			};
 			$latest_wordpress_version = self::latest_wordpress_version();
 			?>
+			<p class="search-box" style="float:none;margin:20px 0 10px;">
+				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
+				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more...', 'stuh' ); ?>">
+				<span id="stuh-client-search-count" aria-live="polite"></span>
+			</p>
 
 			<table class="wp-list-table widefat" style="margin-top: 20px;">
 				<thead>
@@ -1621,9 +1697,10 @@ class STUH_Plugin {
 					<?php $row_index = 0; foreach ( $clients as $c ) :
 						$enabled = (bool) ( $c['enabled'] ?? true );
 						$row_bg  = ( $row_index % 2 === 0 ) ? 'background-color:#f6f7f7;' : '';
+						$search_telemetry = is_array( $telemetry[ $c['id'] ] ?? null ) ? $telemetry[ $c['id'] ] : [];
 						$row_index++;
 					?>
-					<tr style="<?php echo $row_bg; ?>">
+					<tr class="stuh-client-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
 						<?php
 						$report = $telemetry[ $c['id'] ] ?? null;
 						$data   = is_array( $report['data'] ?? null ) ? $report['data'] : [];
@@ -1639,6 +1716,15 @@ class STUH_Plugin {
 								<?php echo esc_html( preg_replace( '#^https?://#', '', $u ) ); ?>
 							</a><br>
 							<?php endforeach; ?>
+						<?php elseif ( 'tags' === $column_id ) : ?>
+							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
+							<?php if ( $tags ) : ?>
+								<?php foreach ( $tags as $tag ) : ?>
+									<button type="button" class="stuh-client-tag" data-tag="<?php echo esc_attr( $tag ); ?>" style="display:inline-block;margin:0 4px 4px 0;padding:2px 6px;border:0;border-radius:3px;background:#dcdcde;cursor:pointer;"><?php echo esc_html( $tag ); ?></button>
+								<?php endforeach; ?>
+							<?php else : ?>
+								<em>&mdash;</em>
+							<?php endif; ?>
 						<?php elseif ( 'enabled' === $column_id ) : ?>
 							<?php if ( $enabled ) : ?>
 								<span style="color:#46b450;font-weight:600;">&#10003; Active</span>
@@ -1728,6 +1814,15 @@ class STUH_Plugin {
 									})(this)">
 								<?php esc_html_e( 'Edit URLs', 'stuh' ); ?>
 							</button>
+							<button type="button" class="button" style="margin-right:4px;"
+									onclick="(function(btn){
+										var row = document.getElementById('stuh-edit-tags-<?php echo esc_js( $c['id'] ); ?>');
+										var hidden = row.style.display === 'none' || row.style.display === '';
+										row.style.display = hidden ? 'table-row' : 'none';
+										btn.textContent = hidden ? 'Cancel' : 'Edit Tags';
+									})(this)">
+								<?php esc_html_e( 'Edit Tags', 'stuh' ); ?>
+							</button>
 							<!-- Delete -->
 							<form method="post" style="display:inline-block;"
 								  onsubmit="return confirm('Permanently delete this client site?');">
@@ -1761,7 +1856,7 @@ class STUH_Plugin {
 						<?php endforeach; ?>
 					</tr>
 					<!-- Inline edit-URLs row (hidden by default) -->
-					<tr id="stuh-edit-urls-<?php echo esc_attr( $c['id'] ); ?>" style="display:none;background:#f6f7f7;">
+					<tr id="stuh-edit-urls-<?php echo esc_attr( $c['id'] ); ?>" class="stuh-client-detail-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" style="display:none;background:#f6f7f7;">
 						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding:12px 16px;">
 							<form method="post">
 								<?php wp_nonce_field( 'stuh_admin' ); ?>
@@ -1783,10 +1878,98 @@ class STUH_Plugin {
 							</form>
 						</td>
 					</tr>
+					<tr id="stuh-edit-tags-<?php echo esc_attr( $c['id'] ); ?>" class="stuh-client-detail-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" style="display:none;background:#f6f7f7;">
+						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding:12px 16px;">
+							<form method="post">
+								<?php wp_nonce_field( 'stuh_admin' ); ?>
+								<input type="hidden" name="stuh_action" value="edit_client_tags">
+								<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+								<label for="stuh-client-tags-<?php echo esc_attr( $c['id'] ); ?>" style="display:block;font-weight:600;margin-bottom:6px;">
+									<?php esc_html_e( 'Tags', 'stuh' ); ?>
+								</label>
+								<input type="text" id="stuh-client-tags-<?php echo esc_attr( $c['id'] ); ?>" name="client_tags" class="regular-text" value="<?php echo esc_attr( implode( ', ', (array) ( $c['tags'] ?? [] ) ) ); ?>">
+								<p class="description" style="margin-top:4px;">
+									<?php esc_html_e( 'Separate tags with commas or new lines.', 'stuh' ); ?>
+								</p>
+								<button type="submit" class="button button-primary">
+									<?php esc_html_e( 'Save Tags', 'stuh' ); ?>
+								</button>
+							</form>
+						</td>
+					</tr>
 					<?php endforeach; ?>
 					<?php endif; ?>
+					<tr id="stuh-client-no-matches" style="display:none;">
+						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding:16px;">
+							<em><?php esc_html_e( 'No client sites match this search.', 'stuh' ); ?></em>
+						</td>
+					</tr>
 				</tbody>
 			</table>
+			<script>
+			(function() {
+				var search = document.getElementById('stuh-client-search');
+				var rows = Array.prototype.slice.call(document.querySelectorAll('.stuh-client-row'));
+				var detailRows = Array.prototype.slice.call(document.querySelectorAll('.stuh-client-detail-row'));
+				var count = document.getElementById('stuh-client-search-count');
+				var noMatches = document.getElementById('stuh-client-no-matches');
+				var sortLinks = Array.prototype.slice.call(document.querySelectorAll('.wp-list-table thead .manage-column a'));
+
+				if (!search || !rows.length) {
+					return;
+				}
+
+				function applyFilter() {
+					var query = search.value.trim().toLocaleLowerCase();
+					var visible = 0;
+
+					rows.forEach(function(row) {
+						var matches = !query || row.dataset.search.toLocaleLowerCase().indexOf(query) !== -1;
+						row.style.display = matches ? '' : 'none';
+						if (matches) {
+							visible++;
+						}
+					});
+					detailRows.forEach(function(row) {
+						if (query && row.style.display !== 'none') {
+							row.style.display = 'none';
+						}
+					});
+					noMatches.style.display = query && visible === 0 ? '' : 'none';
+					count.textContent = query ? visible + ' matching client' + (visible === 1 ? '' : 's') : '';
+				}
+
+				search.addEventListener('input', function() {
+					var url = new URL(window.location.href);
+					if (search.value.trim()) {
+						url.searchParams.set('stuh_search', search.value);
+					} else {
+						url.searchParams.delete('stuh_search');
+					}
+					window.history.replaceState({}, '', url);
+					sortLinks.forEach(function(link) {
+						var sortUrl = new URL(link.href);
+						if (search.value.trim()) {
+							sortUrl.searchParams.set('stuh_search', search.value);
+						} else {
+							sortUrl.searchParams.delete('stuh_search');
+						}
+						link.href = sortUrl;
+					});
+					applyFilter();
+				});
+
+				document.querySelectorAll('.stuh-client-tag').forEach(function(tag) {
+					tag.addEventListener('click', function() {
+						search.value = tag.dataset.tag;
+						search.dispatchEvent(new Event('input', { bubbles: true }));
+						search.focus();
+					});
+				});
+
+				applyFilter();
+			})();
+			</script>
 
 		<?php
 		$unverified = self::get_unverified();
