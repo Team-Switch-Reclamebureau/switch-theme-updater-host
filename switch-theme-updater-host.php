@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.15
+ * Version: 0.2.16
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -39,6 +39,7 @@ class STUH_Plugin {
 
 	public function __construct() {
 		add_action( 'admin_menu',    [ $this, 'register_admin_menu' ] );
+		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_clients_styles' ] );
 		add_action( 'admin_init',    [ $this, 'handle_admin_actions' ] );
 		add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
 		add_action( 'admin_notices', [ $this, 'maybe_notice_no_token' ] );
@@ -1106,6 +1107,25 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Load Client Sites styles only on the Client Sites admin screen.
+	 */
+	public function enqueue_clients_styles( string $hook ): void {
+		if ( $hook !== $this->clients_page_hook ) {
+			return;
+		}
+
+		$stylesheet = 'assets/css/client-sites.css';
+		$path       = plugin_dir_path( __FILE__ ) . $stylesheet;
+
+		wp_enqueue_style(
+			'stuh-client-sites',
+			plugins_url( $stylesheet, __FILE__ ),
+			[],
+			(string) filemtime( $path )
+		);
+	}
+
+	/**
 	 * Register Client Sites columns with the native Screen Options panel.
 	 */
 	public function register_clients_screen_options(): void {
@@ -1688,7 +1708,7 @@ class STUH_Plugin {
 			delete_transient( 'stuh_new_key_' . $uid );
 		}
 		?>
-		<div class="wrap">
+		<div class="wrap stuh-client-sites">
 			<h1><?php esc_html_e( 'Switch Updater Host — Client Sites', 'stuh' ); ?></h1>
 
 			<?php if ( $new_key ) : ?>
@@ -1826,7 +1846,7 @@ class STUH_Plugin {
 							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
 							<?php if ( $tags ) : ?>
 								<?php foreach ( $tags as $tag ) : ?>
-									<button type="button" class="stuh-client-tag" data-tag="<?php echo esc_attr( $tag ); ?>" style="display:inline-block;margin:0 4px 4px 0;padding:2px 6px;border:0;border-radius:3px;background:#dcdcde;cursor:pointer;"><?php echo esc_html( $tag ); ?></button>
+									<button type="button" class="stuh-client-tag stuh-client-tag--<?php echo esc_attr( sanitize_html_class( strtolower( $tag ) ) ); ?>" data-tag="<?php echo esc_attr( $tag ); ?>"><?php echo esc_html( $tag ); ?></button>
 								<?php endforeach; ?>
 							<?php else : ?>
 								<em>&mdash;</em>

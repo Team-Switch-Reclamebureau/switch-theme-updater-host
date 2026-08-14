@@ -1,0 +1,28 @@
+.stuh-client-sites .stuh-client-tag {
+	display: inline-block;
+	margin: 0 4px 4px 0;
+	padding: 2px 6px;
+	border: 0;
+	border-radius: 3px;
+	background: #dcdcde;
+	cursor: pointer;
+}
+
+.stuh-client-tag--websquad {
+	background-color: #c6006d !important;
+	color: white;
+}
+.stuh-client-tag--onderhoudveilig,
+.stuh-client-tag--onderhoudbasis,
+.stuh-client-tag--onderhoudzorgeloos {
+	background-color: #212121 !important;
+	color: white;
+}
+.stuh-client-tag--fmp {
+	background-color: #387170 !important;
+	color: white;
+}
+.stuh-client-tag--webshop, .stuh-client-tag--woocommerce {
+	background-color: #873eff !important;
+	color: white;
+}
