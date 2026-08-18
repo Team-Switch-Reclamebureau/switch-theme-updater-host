@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.18
+ * Version: 0.2.19
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1589,6 +1589,25 @@ class STUH_Plugin {
 				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
 				exit;
 
+			case 'retry_failed_smtp_emails':
+				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$client = null;
+				foreach ( $clients as $candidate ) {
+					if ( $candidate['id'] === $id ) {
+						$client = $candidate;
+						break;
+					}
+				}
+
+				$result = self::retry_failed_smtp_emails( $client );
+				set_transient(
+					'stuh_smtp_retry_' . get_current_user_id(),
+					$result,
+					MINUTE_IN_SECONDS
+				);
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
 			case 'edit_client_urls':
 				$id    = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$lines = explode( "\n", $_POST['site_urls_raw'] ?? '' );
@@ -1629,6 +1648,7 @@ class STUH_Plugin {
 				foreach ( $clients as &$c ) {
 					if ( $c['id'] === $id ) {
 						$raw_key          = bin2hex( random_bytes( 24 ) );
+						$c['api_key']      = $raw_key;
 						$c['api_key_hash'] = wp_hash_password( $raw_key );
 						$site_url          = $c['site_url'];
 						break;
@@ -1747,6 +1767,96 @@ class STUH_Plugin {
 		}
 	}
 
+	/**
+	 * Ask a client site to retry FluentSMTP's failed emails.
+	 *
+	 * @param array<string, mixed>|null $client
+	 * @return array{type: string, message: string}
+	 */
+	private static function retry_failed_smtp_emails( ?array $client ): array {
+		if ( ! $client ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The selected client site could not be found.', 'stuh' ),
+			];
+		}
+
+		$site_url = esc_url_raw( (string) ( $client['site_url'] ?? '' ) );
+		$api_key  = (string) ( $client['api_key'] ?? '' );
+		if ( '' === $site_url || '' === $api_key ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The client site has no URL or configured client key.', 'stuh' ),
+			];
+		}
+
+		$response = wp_remote_post(
+			trailingslashit( $site_url ) . 'wp-json/stu-client/v1/fluent-smtp/retry-failed-emails',
+			[
+				'headers' => [ 'X-STU-Key' => $api_key ],
+				'timeout' => 30,
+			]
+		);
+		if ( is_wp_error( $response ) ) {
+			return [
+				'type'    => 'error',
+				'message' => sprintf(
+					__( 'Could not retry failed emails: %s', 'stuh' ),
+					$response->get_error_message()
+				),
+			];
+		}
+
+		$status_code = wp_remote_retrieve_response_code( $response );
+		$body        = json_decode( wp_remote_retrieve_body( $response ), true );
+		$retry       = is_array( $body ) && is_array( $body['retry'] ?? null ) ? $body['retry'] : [];
+		$diagnostics = is_array( $body ) && is_array( $body['diagnostics'] ?? null ) ? $body['diagnostics'] : [];
+
+		if ( true === ( $retry['success'] ?? null ) && is_array( $retry['data'] ?? null ) ) {
+			$totals = $retry['data'];
+			$diagnostics_succeeded = true === ( $diagnostics['success'] ?? null );
+			$diagnostics_message   = $diagnostics_succeeded
+				? __( 'Diagnostics were updated.', 'stuh' )
+				: sprintf(
+					__( 'Diagnostics could not be updated: %s', 'stuh' ),
+					sanitize_text_field( (string) ( $diagnostics['message'] ?? __( 'unknown error', 'stuh' ) ) )
+				);
+
+			return [
+				'type' => $diagnostics_succeeded ? 'success' : 'warning',
+				'message' => sprintf(
+					__( 'Retried %1$d failed emails for %2$s: %3$d sent, %4$d still failed. %5$s', 'stuh' ),
+					(int) ( $totals['attempted'] ?? 0 ),
+					$site_url,
+					(int) ( $totals['sent'] ?? 0 ),
+					(int) ( $totals['failed'] ?? 0 ),
+					$diagnostics_message
+				),
+			];
+		}
+
+		if ( $status_code < 200 || $status_code >= 300 ) {
+			$message = ! empty( $retry['message'] )
+				? sanitize_text_field( (string) $retry['message'] )
+				: ( is_array( $body ) && ! empty( $body['message'] )
+					? sanitize_text_field( (string) $body['message'] )
+					: sprintf( __( 'The client site returned HTTP %d.', 'stuh' ), $status_code ) );
+
+			return [
+				'type'    => 'error',
+				'message' => sprintf( __( 'Could not retry failed emails: %s', 'stuh' ), $message ),
+			];
+		}
+
+		return [
+			'type'    => 'success',
+			'message' => sprintf(
+				__( 'The failed-email retry command was completed for %s.', 'stuh' ),
+				$site_url
+			),
+		];
+	}
+
 	// --------------------------------------------------------
 	// Admin page: client site list
 	// --------------------------------------------------------
@@ -1776,6 +1886,10 @@ class STUH_Plugin {
 		if ( $new_key ) {
 			delete_transient( 'stuh_new_key_' . $uid );
 		}
+		$smtp_retry = get_transient( 'stuh_smtp_retry_' . $uid );
+		if ( $smtp_retry ) {
+			delete_transient( 'stuh_smtp_retry_' . $uid );
+		}
 		?>
 		<div class="wrap stuh-client-sites">
 			<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
@@ -1785,6 +1899,12 @@ class STUH_Plugin {
 				<h3 style="margin-top: 0;">&#128274; New API Key</h3>
 				<p><strong>This key is shown only once. Copy it before leaving this page.</strong></p>
 				<code id="stuh-api-key" style="display:block;font-size:14px;background:#f0f0f1;padding:10px 14px;border-radius:4px;word-break:break-all;user-select:all;margin-bottom:12px;"><?php echo esc_html( $new_key['key'] ); ?></code>
+			</div>
+			<?php endif; ?>
+
+			<?php if ( is_array( $smtp_retry ) ) : ?>
+			<div class="notice notice-<?php echo in_array( $smtp_retry['type'] ?? '', [ 'success', 'warning' ], true ) ? esc_attr( $smtp_retry['type'] ) : 'error'; ?> is-dismissible">
+				<p><?php echo esc_html( $smtp_retry['message'] ?? '' ); ?></p>
 			</div>
 			<?php endif; ?>
 
@@ -2019,6 +2139,12 @@ class STUH_Plugin {
 								<span style="color:#dba617;font-weight:600;"><?php echo esc_html( $value ); ?></span>
 							<?php elseif ( 'error' === $smtp_status ) : ?>
 								<span style="color:#d63638;font-weight:600;"><?php echo esc_html( $value ); ?></span>
+								<form method="post" style="margin-top:4px;">
+									<?php wp_nonce_field( 'stuh_admin' ); ?>
+									<input type="hidden" name="stuh_action" value="retry_failed_smtp_emails">
+									<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+									<button type="submit" class="button-link"><?php esc_html_e( 'Retry', 'stuh' ); ?></button>
+								</form>
 							<?php else : ?>
 								<?php echo esc_html( $value ); ?>
 							<?php endif; ?>
