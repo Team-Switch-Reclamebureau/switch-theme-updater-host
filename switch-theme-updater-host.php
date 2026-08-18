@@ -1735,6 +1735,8 @@ class STUH_Plugin {
 
 		$clients = self::get_clients();
 		$telemetry = self::get_telemetry();
+		$enabled_client_count = count( array_filter( $clients, fn( array $client ): bool => (bool) ( $client['enabled'] ?? true ) ) );
+		$disabled_client_count = count( $clients ) - $enabled_client_count;
 		$client_tags = [];
 		foreach ( $clients as $client ) {
 			foreach ( (array) ( $client['tags'] ?? [] ) as $tag ) {
@@ -1753,7 +1755,7 @@ class STUH_Plugin {
 		}
 		?>
 		<div class="wrap stuh-client-sites">
-			<h1><?php esc_html_e( 'Switch Updater Host — Client Sites', 'stuh' ); ?></h1>
+			<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
 
 			<?php if ( $new_key ) : ?>
 			<div class="notice notice-success" style="padding: 16px 16px 8px;">
@@ -1762,6 +1764,12 @@ class STUH_Plugin {
 				<code id="stuh-api-key" style="display:block;font-size:14px;background:#f0f0f1;padding:10px 14px;border-radius:4px;word-break:break-all;user-select:all;margin-bottom:12px;"><?php echo esc_html( $new_key['key'] ); ?></code>
 			</div>
 			<?php endif; ?>
+
+			<ul class="subsubsub stuh-client-status-filters" aria-label="<?php esc_attr_e( 'Filter client sites by status', 'stuh' ); ?>">
+				<li class="all"><a href="#" class="current" data-status="all" aria-current="page"><?php esc_html_e( 'All', 'stuh' ); ?> <span class="count">(<?php echo esc_html( count( $clients ) ); ?>)</span></a> |</li>
+				<li class="enabled"><a href="#" data-status="enabled"><?php esc_html_e( 'Enabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $enabled_client_count ); ?>)</span></a> |</li>
+				<li class="disabled"><a href="#" data-status="disabled"><?php esc_html_e( 'Disabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $disabled_client_count ); ?>)</span></a></li>
+			</ul>
 
 			<?php
 			// Sorting.
@@ -1836,11 +1844,12 @@ class STUH_Plugin {
 				return ' <span class="dashicons dashicons-arrow-' . ( $order === 'asc' ? 'up' : 'down' ) . '" style="vertical-align:middle;font-size:14px;"></span>';
 			};
 			?>
-			<p class="search-box" style="float:none;margin:20px 0 10px;">
+			<p class="search-box" style="float:right;margin:8px 0 0;">
 				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
 				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more... Use -term to exclude.', 'stuh' ); ?>">
 				<span id="stuh-client-search-count" aria-live="polite"></span>
 			</p>
+			<div class="clear"></div>
 			<?php if ( $client_tags ) : ?>
 			<div class="stuh-client-tag-filters" aria-label="<?php esc_attr_e( 'Filter client sites by tag', 'stuh' ); ?>">
 				<strong><?php esc_html_e( 'Filter by tag:', 'stuh' ); ?></strong>
@@ -1878,7 +1887,7 @@ class STUH_Plugin {
 						$search_telemetry = is_array( $telemetry[ $c['id'] ] ?? null ) ? $telemetry[ $c['id'] ] : [];
 						$row_index++;
 					?>
-					<tr class="stuh-client-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
+					<tr class="stuh-client-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
 						<?php
 						$report = $telemetry[ $c['id'] ] ?? null;
 						$data   = is_array( $report['data'] ?? null ) ? $report['data'] : [];
@@ -2063,6 +2072,8 @@ class STUH_Plugin {
 				var count = document.getElementById('stuh-client-search-count');
 				var noMatches = document.getElementById('stuh-client-no-matches');
 				var sortLinks = Array.prototype.slice.call(document.querySelectorAll('.wp-list-table thead .manage-column a'));
+				var statusFilters = Array.prototype.slice.call(document.querySelectorAll('.stuh-client-status-filters a'));
+				var selectedStatus = 'all';
 
 				if (!search || !rows.length) {
 					return;
@@ -2075,7 +2086,7 @@ class STUH_Plugin {
 
 					rows.forEach(function(row) {
 						var searchableText = row.dataset.search.toLocaleLowerCase();
-						var matches = terms.every(function(term) {
+						var matches = (selectedStatus === 'all' || row.dataset.status === selectedStatus) && terms.every(function(term) {
 							var excluded = term.charAt(0) === '-' && term.length > 1;
 							term = (excluded ? term.slice(1) : term).replace(/^"|"$/g, '');
 							if (excluded) {
@@ -2123,6 +2134,23 @@ class STUH_Plugin {
 						search.value = tag.dataset.tag;
 						search.dispatchEvent(new Event('input', { bubbles: true }));
 						search.focus();
+					});
+				});
+
+				statusFilters.forEach(function(filter) {
+					filter.addEventListener('click', function(event) {
+						event.preventDefault();
+						selectedStatus = filter.dataset.status;
+						statusFilters.forEach(function(statusFilter) {
+							var isCurrent = statusFilter === filter;
+							statusFilter.classList.toggle('current', isCurrent);
+							if (isCurrent) {
+								statusFilter.setAttribute('aria-current', 'page');
+							} else {
+								statusFilter.removeAttribute('aria-current');
+							}
+						});
+						applyFilter();
 					});
 				});
 
