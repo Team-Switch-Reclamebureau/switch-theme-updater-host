@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.19
+ * Version: 0.2.20
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1209,6 +1209,13 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Return the client URL as it is displayed in the list and sorted.
+	 */
+	private static function client_url_label( string $url ): string {
+		return preg_replace( '#^https?://(?:www\.)?#i', '', $url );
+	}
+
+	/**
 	 * Return a concise, human-readable value for a telemetry table column.
 	 *
 	 * @param array<string, mixed> $data
@@ -1925,6 +1932,10 @@ class STUH_Plugin {
 			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry ) {
 				$va = $a[ $orderby ] ?? '';
 				$vb = $b[ $orderby ] ?? '';
+				if ( 'site_url' === $orderby ) {
+					$va = self::client_url_label( (string) $va );
+					$vb = self::client_url_label( (string) $vb );
+				}
 				if ( 'tags' === $orderby ) {
 					$va = implode( ', ', (array) $va );
 					$vb = implode( ', ', (array) $vb );
@@ -2064,7 +2075,7 @@ class STUH_Plugin {
 							foreach ( $all_urls as $url_index => $u ) :
 							?>
 							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
-								<?php echo esc_html( preg_replace( '#^https?://#', '', $u ) ); ?>
+								<?php echo esc_html( self::client_url_label( $u ) ); ?>
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
 							<?php endforeach; ?>
 							<?php self::render_client_row_actions( $c, $enabled ); ?>
