@@ -1167,8 +1167,46 @@ class STUH_Plugin {
 			'telemetry_post_revisions' => __( 'Post Revisions', 'stuh' ),
 			'telemetry_core_upgrade_skip_new_bundled' => __( 'Skip New Bundled Themes', 'stuh' ),
 			'diagnostics'     => __( 'Diagnostics', 'stuh' ),
-			'actions'         => __( 'Actions', 'stuh' ),
 		];
+	}
+
+	/**
+	 * Render client actions beneath the primary URL, following WordPress list-table conventions.
+	 *
+	 * @param array<string, mixed> $client
+	 */
+	private static function render_client_row_actions( array $client, bool $enabled ): void {
+		?>
+		<div class="row-actions stuh-client-row-actions">
+			<span class="toggle">
+				<form method="post">
+					<?php wp_nonce_field( 'stuh_admin' ); ?>
+					<input type="hidden" name="stuh_action" value="toggle_client">
+					<input type="hidden" name="client_id" value="<?php echo esc_attr( $client['id'] ); ?>">
+					<button type="submit"><?php echo $enabled ? esc_html__( 'Disable', 'stuh' ) : esc_html__( 'Enable', 'stuh' ); ?></button>
+				</form> |
+			</span>
+			<?php if ( ! empty( $client['api_key'] ) ) : ?>
+			<span class="copy-key">
+				<button type="button" data-key="<?php echo esc_attr( $client['api_key'] ); ?>" onclick="(function(btn){ navigator.clipboard.writeText(btn.dataset.key).then(function(){ btn.textContent='Copied!'; setTimeout(function(){ btn.textContent='Copy Key'; }, 2000); }); })(this)"><?php esc_html_e( 'Copy Key', 'stuh' ); ?></button> |
+			</span>
+			<?php endif; ?>
+			<span class="edit-urls">
+				<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-urls-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit URLs'; })(this)"><?php esc_html_e( 'Edit URLs', 'stuh' ); ?></button> |
+			</span>
+			<span class="edit-tags">
+				<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-tags-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit Tags'; })(this)"><?php esc_html_e( 'Edit Tags', 'stuh' ); ?></button> |
+			</span>
+			<span class="delete">
+				<form method="post" onsubmit="return confirm('Permanently delete this client site?');">
+					<?php wp_nonce_field( 'stuh_admin' ); ?>
+					<input type="hidden" name="stuh_action" value="delete_client">
+					<input type="hidden" name="client_id" value="<?php echo esc_attr( $client['id'] ); ?>">
+					<button type="submit"><?php esc_html_e( 'Delete', 'stuh' ); ?></button>
+				</form>
+			</span>
+		</div>
+		<?php
 	}
 
 	/**
@@ -1698,6 +1736,13 @@ class STUH_Plugin {
 
 		$clients = self::get_clients();
 		$telemetry = self::get_telemetry();
+		$client_tags = [];
+		foreach ( $clients as $client ) {
+			foreach ( (array) ( $client['tags'] ?? [] ) as $tag ) {
+				$client_tags[ $tag ] = $tag;
+			}
+		}
+		natcasesort( $client_tags );
 		$screen = get_current_screen();
 		$columns = $screen ? get_column_headers( $screen ) : $this->client_columns();
 		$hidden_columns = $screen ? get_hidden_columns( $screen ) : [];
@@ -1721,7 +1766,7 @@ class STUH_Plugin {
 
 			<?php
 			// Sorting.
-			$allowed_cols = array_diff( array_keys( $columns ), [ 'diagnostics', 'actions' ] );
+			$allowed_cols = array_diff( array_keys( $columns ), [ 'diagnostics' ] );
 			$orderby      = in_array( $_GET['orderby'] ?? '', $allowed_cols, true ) ? $_GET['orderby'] : 'site_url';
 			$order        = strtolower( $_GET['order'] ?? 'asc' ) === 'desc' ? 'desc' : 'asc';
 			$opposite     = $order === 'asc' ? 'desc' : 'asc';
@@ -1797,6 +1842,14 @@ class STUH_Plugin {
 				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more... Use -term to exclude.', 'stuh' ); ?>">
 				<span id="stuh-client-search-count" aria-live="polite"></span>
 			</p>
+			<?php if ( $client_tags ) : ?>
+			<div class="stuh-client-tag-filters" aria-label="<?php esc_attr_e( 'Filter client sites by tag', 'stuh' ); ?>">
+				<strong><?php esc_html_e( 'Filter by tag:', 'stuh' ); ?></strong>
+				<?php foreach ( $client_tags as $tag ) : ?>
+				<button type="button" class="stuh-client-tag stuh-client-tag--<?php echo esc_attr( sanitize_html_class( strtolower( $tag ) ) ); ?>" data-tag="<?php echo esc_attr( $tag ); ?>"><?php echo esc_html( $tag ); ?></button>
+				<?php endforeach; ?>
+			</div>
+			<?php endif; ?>
 
 			<table class="wp-list-table widefat" style="margin-top: 20px;">
 				<thead>
@@ -1832,7 +1885,7 @@ class STUH_Plugin {
 						$data   = is_array( $report['data'] ?? null ) ? $report['data'] : [];
 						foreach ( $columns as $column_id => $column_label ) :
 						?>
-						<td class="column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>"<?php echo 'actions' === $column_id ? ' style="white-space:nowrap;"' : ''; ?>>
+						<td class="column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>">
 						<?php if ( 'site_url' === $column_id ) : ?>
 							<?php
 							$all_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
@@ -1842,6 +1895,7 @@ class STUH_Plugin {
 								<?php echo esc_html( preg_replace( '#^https?://#', '', $u ) ); ?>
 							</a><br>
 							<?php endforeach; ?>
+							<?php self::render_client_row_actions( $c, $enabled ); ?>
 						<?php elseif ( 'tags' === $column_id ) : ?>
 							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
 							<?php if ( $tags ) : ?>
@@ -1936,59 +1990,6 @@ class STUH_Plugin {
 							<?php else : ?>
 								<em>None received</em>
 							<?php endif; ?>
-						<?php elseif ( 'actions' === $column_id ) : ?>
-							<!-- Enable / Disable -->
-							<form method="post" style="display:inline-block;margin-right:4px;">
-								<?php wp_nonce_field( 'stuh_admin' ); ?>
-								<input type="hidden" name="stuh_action" value="toggle_client">
-								<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
-								<button type="submit" class="button button-secondary">
-									<?php echo $enabled ? esc_html__( 'Disable', 'stuh' ) : esc_html__( 'Enable', 'stuh' ); ?>
-								</button>
-							</form>
-							<?php if ( ! empty( $c['api_key'] ) ) : ?>
-							<!-- Copy Key -->
-							<button type="button" class="button" style="margin-right:4px;"
-									data-key="<?php echo esc_attr( $c['api_key'] ); ?>"
-									onclick="(function(btn){
-										navigator.clipboard.writeText(btn.dataset.key).then(function(){
-											btn.textContent='Copied!';
-											setTimeout(function(){ btn.textContent='Copy Key'; }, 2000);
-										});
-									})(this)">
-								<?php esc_html_e( 'Copy Key', 'stuh' ); ?>
-							</button>
-							<?php endif; ?>
-							<!-- Edit URLs -->
-							<button type="button" class="button" style="margin-right:4px;"
-									onclick="(function(btn){
-										var row = document.getElementById('stuh-edit-urls-<?php echo esc_js( $c['id'] ); ?>');
-										var hidden = row.style.display === 'none' || row.style.display === '';
-										row.style.display = hidden ? 'table-row' : 'none';
-										btn.textContent = hidden ? 'Cancel' : 'Edit URLs';
-									})(this)">
-								<?php esc_html_e( 'Edit URLs', 'stuh' ); ?>
-							</button>
-							<button type="button" class="button" style="margin-right:4px;"
-									onclick="(function(btn){
-										var row = document.getElementById('stuh-edit-tags-<?php echo esc_js( $c['id'] ); ?>');
-										var hidden = row.style.display === 'none' || row.style.display === '';
-										row.style.display = hidden ? 'table-row' : 'none';
-										btn.textContent = hidden ? 'Cancel' : 'Edit Tags';
-									})(this)">
-								<?php esc_html_e( 'Edit Tags', 'stuh' ); ?>
-							</button>
-							<!-- Delete -->
-							<form method="post" style="display:inline-block;"
-								  onsubmit="return confirm('Permanently delete this client site?');">
-								<?php wp_nonce_field( 'stuh_admin' ); ?>
-								<input type="hidden" name="stuh_action" value="delete_client">
-								<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
-								<button type="submit" class="button"
-										style="color:#d63638;border-color:#d63638;">
-									<?php esc_html_e( 'Delete', 'stuh' ); ?>
-								</button>
-							</form>
 						<?php else : ?>
 							<?php
 							$packages = is_array( $data['packages'] ?? null ) ? $data['packages'] : [];
@@ -2091,6 +2092,7 @@ class STUH_Plugin {
 						});
 						row.style.display = matches ? '' : 'none';
 						if (matches) {
+							row.style.backgroundColor = visible % 2 === 0 ? '#f6f7f7' : '';
 							visible++;
 						}
 					});

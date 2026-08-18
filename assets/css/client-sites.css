@@ -8,6 +8,14 @@
 	cursor: pointer;
 }
 
+.stuh-client-sites .stuh-client-tag-filters {
+	margin: 10px 0;
+}
+
+.stuh-client-sites .stuh-client-tag-filters strong {
+	margin-right: 4px;
+}
+
 .stuh-client-tag--websquad {
 	background-color: #c6006d !important;
 	color: white;
@@ -25,4 +33,39 @@
 .stuh-client-tag--webshop, .stuh-client-tag--woocommerce {
 	background-color: #873eff !important;
 	color: white;
+}
+
+.stuh-client-sites .stuh-client-row-actions {
+	visibility: hidden;
+}
+
+.stuh-client-sites .stuh-client-row:hover .stuh-client-row-actions,
+.stuh-client-sites .stuh-client-row:focus-within .stuh-client-row-actions {
+	visibility: visible;
+}
+
+.stuh-client-sites .stuh-client-row-actions form {
+	display: inline;
+}
+
+.stuh-client-sites .stuh-client-row-actions button {
+	min-height: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: #2271b1;
+	font-size: inherit;
+	line-height: inherit;
+	cursor: pointer;
+}
+
+.stuh-client-sites .stuh-client-row-actions button:hover,
+.stuh-client-sites .stuh-client-row-actions button:focus {
+	color: #135e96;
+	text-decoration: underline;
+}
+
+.stuh-client-sites .stuh-client-row-actions .delete button {
+	color: #b32d2e;
 }
