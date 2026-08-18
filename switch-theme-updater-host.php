@@ -1556,6 +1556,29 @@ class STUH_Plugin {
 				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
 				exit;
 
+			case 'bulk_update_clients':
+				$bulk_action = sanitize_key( $_POST['bulk_action'] ?? '' );
+				$client_ids  = [];
+				if ( isset( $_POST['client_ids'] ) && is_array( $_POST['client_ids'] ) ) {
+					foreach ( wp_unslash( $_POST['client_ids'] ) as $client_id ) {
+						if ( is_scalar( $client_id ) ) {
+							$client_ids[] = sanitize_text_field( $client_id );
+						}
+					}
+				}
+				if ( in_array( $bulk_action, [ 'enable', 'disable' ], true ) && $client_ids ) {
+					$selected_client_ids = array_flip( $client_ids );
+					foreach ( $clients as &$c ) {
+						if ( isset( $selected_client_ids[ $c['id'] ] ) ) {
+							$c['enabled'] = 'enable' === $bulk_action;
+						}
+					}
+					unset( $c );
+					self::save_clients( $clients );
+				}
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
 			case 'delete_client':
 				$id      = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$clients = array_values( array_filter( $clients, fn( $c ) => $c['id'] !== $id ) );
@@ -1747,7 +1770,7 @@ class STUH_Plugin {
 		$screen = get_current_screen();
 		$columns = $screen ? get_column_headers( $screen ) : $this->client_columns();
 		$hidden_columns = $screen ? get_hidden_columns( $screen ) : [];
-		$visible_column_count = count( array_diff_key( $columns, array_flip( $hidden_columns ) ) );
+		$visible_column_count = count( array_diff_key( $columns, array_flip( $hidden_columns ) ) ) + 1;
 		$uid     = get_current_user_id();
 		$new_key = get_transient( 'stuh_new_key_' . $uid );
 		if ( $new_key ) {
@@ -1846,22 +1869,39 @@ class STUH_Plugin {
 			?>
 			<p class="search-box" style="float:right;margin:8px 0 0;">
 				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
-				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more... Use -term to exclude.', 'stuh' ); ?>">
 				<span id="stuh-client-search-count" aria-live="polite"></span>
+				<input type="search" id="stuh-client-search" value="<?php echo esc_attr( $search_query ); ?>" placeholder="<?php esc_attr_e( 'Search tags, URLs, plugins, themes, and more... Use -term to exclude.', 'stuh' ); ?>">
 			</p>
 			<div class="clear"></div>
-			<?php if ( $client_tags ) : ?>
-			<div class="stuh-client-tag-filters" aria-label="<?php esc_attr_e( 'Filter client sites by tag', 'stuh' ); ?>">
-				<strong><?php esc_html_e( 'Filter by tag:', 'stuh' ); ?></strong>
-				<?php foreach ( $client_tags as $tag ) : ?>
-				<button type="button" class="stuh-client-tag stuh-client-tag--<?php echo esc_attr( sanitize_html_class( strtolower( $tag ) ) ); ?>" data-tag="<?php echo esc_attr( $tag ); ?>"><?php echo esc_html( $tag ); ?></button>
-				<?php endforeach; ?>
-			</div>
-			<?php endif; ?>
+			<form id="stuh-client-bulk-actions" method="post" class="tablenav top">
+				<?php wp_nonce_field( 'stuh_admin' ); ?>
+				<input type="hidden" name="stuh_action" value="bulk_update_clients">
+				<div class="alignleft actions bulkactions">
+					<label for="stuh-bulk-action-selector-top" class="screen-reader-text"><?php esc_html_e( 'Select bulk action', 'stuh' ); ?></label>
+					<select name="bulk_action" id="stuh-bulk-action-selector-top">
+						<option value=""><?php esc_html_e( 'Bulk actions', 'stuh' ); ?></option>
+						<option value="enable"><?php esc_html_e( 'Enable', 'stuh' ); ?></option>
+						<option value="disable"><?php esc_html_e( 'Disable', 'stuh' ); ?></option>
+					</select>
+					<button type="submit" class="button action"><?php esc_html_e( 'Apply', 'stuh' ); ?></button>
+					<?php if ( $client_tags ) : ?>
+					<div class="stuh-client-tag-filters" aria-label="<?php esc_attr_e( 'Filter client sites by tag', 'stuh' ); ?>">
+						<strong><?php esc_html_e( 'Filter by tag:', 'stuh' ); ?></strong>
+						<?php foreach ( $client_tags as $tag ) : ?>
+						<button type="button" class="stuh-client-tag stuh-client-tag--<?php echo esc_attr( sanitize_html_class( strtolower( $tag ) ) ); ?>" data-tag="<?php echo esc_attr( $tag ); ?>"><?php echo esc_html( $tag ); ?></button>
+						<?php endforeach; ?>
+					</div>
+					<?php endif; ?>
+				</div>
+			</form>
 
 			<table class="wp-list-table widefat" style="margin-top: 20px;">
 				<thead>
 					<tr>
+						<td class="manage-column column-cb check-column">
+							<label class="screen-reader-text" for="cb-select-all-1"><?php esc_html_e( 'Select all client sites', 'stuh' ); ?></label>
+							<input id="cb-select-all-1" type="checkbox">
+						</td>
 						<?php foreach ( $columns as $column_id => $column_label ) : ?>
 						<th scope="col" id="<?php echo esc_attr( $column_id ); ?>" class="manage-column column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>">
 							<?php if ( in_array( $column_id, $allowed_cols, true ) ) : ?>
@@ -1888,6 +1928,10 @@ class STUH_Plugin {
 						$row_index++;
 					?>
 					<tr class="stuh-client-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
+						<th scope="row" class="check-column">
+							<label class="screen-reader-text" for="cb-select-<?php echo esc_attr( $c['id'] ); ?>"><?php echo esc_html( sprintf( __( 'Select %s', 'stuh' ), $c['site_url'] ?? '' ) ); ?></label>
+							<input id="cb-select-<?php echo esc_attr( $c['id'] ); ?>" type="checkbox" name="client_ids[]" value="<?php echo esc_attr( $c['id'] ); ?>" form="stuh-client-bulk-actions">
+						</th>
 						<?php
 						$report = $telemetry[ $c['id'] ] ?? null;
 						$data   = is_array( $report['data'] ?? null ) ? $report['data'] : [];
@@ -2073,6 +2117,8 @@ class STUH_Plugin {
 				var noMatches = document.getElementById('stuh-client-no-matches');
 				var sortLinks = Array.prototype.slice.call(document.querySelectorAll('.wp-list-table thead .manage-column a'));
 				var statusFilters = Array.prototype.slice.call(document.querySelectorAll('.stuh-client-status-filters a'));
+				var selectAll = document.getElementById('cb-select-all-1');
+				var clientCheckboxes = Array.prototype.slice.call(document.querySelectorAll('input[name="client_ids[]"]'));
 				var selectedStatus = 'all';
 
 				if (!search || !rows.length) {
@@ -2107,7 +2153,33 @@ class STUH_Plugin {
 					});
 					noMatches.style.display = query && visible === 0 ? '' : 'none';
 					count.textContent = query ? visible + ' matching client' + (visible === 1 ? '' : 's') : '';
+					updateSelectAll();
 				}
+
+				function updateSelectAll() {
+					var visibleCheckboxes = clientCheckboxes.filter(function(checkbox) {
+						return checkbox.closest('.stuh-client-row').style.display !== 'none';
+					});
+					selectAll.checked = visibleCheckboxes.length > 0 && visibleCheckboxes.every(function(checkbox) {
+						return checkbox.checked;
+					});
+					selectAll.indeterminate = !selectAll.checked && visibleCheckboxes.some(function(checkbox) {
+						return checkbox.checked;
+					});
+				}
+
+				selectAll.addEventListener('change', function() {
+					clientCheckboxes.forEach(function(checkbox) {
+						if (checkbox.closest('.stuh-client-row').style.display !== 'none') {
+							checkbox.checked = selectAll.checked;
+						}
+					});
+					updateSelectAll();
+				});
+
+				clientCheckboxes.forEach(function(checkbox) {
+					checkbox.addEventListener('change', updateSelectAll);
+				});
 
 				search.addEventListener('input', function() {
 					var url = new URL(window.location.href);

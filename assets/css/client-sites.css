@@ -12,6 +12,21 @@
 	margin: 10px 0;
 }
 
+.stuh-client-sites .bulkactions .stuh-client-tag-filters {
+	display: flex;
+	align-items: center;
+	margin: 0 0 0 8px;
+}
+
+.stuh-client-sites .bulkactions {
+	display: flex;
+	align-items: center;
+}
+
+.stuh-client-sites .bulkactions .stuh-client-tag {
+	margin: 0 4px 0 0;
+}
+
 .stuh-client-sites .stuh-client-tag-filters strong {
 	margin-right: 4px;
 }
