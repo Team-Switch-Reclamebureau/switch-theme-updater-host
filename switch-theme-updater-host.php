@@ -1145,7 +1145,6 @@ class STUH_Plugin {
 		return [
 			'site_url'        => __( 'URL', 'stuh' ),
 			'tags'            => __( 'Tags', 'stuh' ),
-			'enabled'         => __( 'Status', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
 			'last_seen_ip'    => __( 'Server / IP', 'stuh' ),
@@ -1889,11 +1888,11 @@ class STUH_Plugin {
 						<?php if ( 'site_url' === $column_id ) : ?>
 							<?php
 							$all_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
-							foreach ( $all_urls as $u ) :
+							foreach ( $all_urls as $url_index => $u ) :
 							?>
 							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
 								<?php echo esc_html( preg_replace( '#^https?://#', '', $u ) ); ?>
-							</a><br>
+							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
 							<?php endforeach; ?>
 							<?php self::render_client_row_actions( $c, $enabled ); ?>
 						<?php elseif ( 'tags' === $column_id ) : ?>
@@ -1904,12 +1903,6 @@ class STUH_Plugin {
 								<?php endforeach; ?>
 							<?php else : ?>
 								<em>&mdash;</em>
-							<?php endif; ?>
-						<?php elseif ( 'enabled' === $column_id ) : ?>
-							<?php if ( $enabled ) : ?>
-								<span style="color:#46b450;font-weight:600;">&#10003; Active</span>
-							<?php else : ?>
-								<span style="color:#d63638;font-weight:600;">&#10005; Disabled</span>
 							<?php endif; ?>
 						<?php elseif ( 'created_at' === $column_id ) : ?>
 							<?php echo esc_html( $c['created_at'] ? date_i18n( 'Y-m-d', $c['created_at'] ) : '—' ); ?>
