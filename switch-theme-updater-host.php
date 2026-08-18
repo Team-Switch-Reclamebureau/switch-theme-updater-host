@@ -1193,9 +1193,6 @@ class STUH_Plugin {
 			<span class="edit-urls">
 				<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-urls-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit URLs'; })(this)"><?php esc_html_e( 'Edit URLs', 'stuh' ); ?></button> |
 			</span>
-			<span class="edit-tags">
-				<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-tags-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit Tags'; })(this)"><?php esc_html_e( 'Edit Tags', 'stuh' ); ?></button> |
-			</span>
 			<span class="delete">
 				<form method="post" onsubmit="return confirm('Permanently delete this client site?');">
 					<?php wp_nonce_field( 'stuh_admin' ); ?>
@@ -2088,6 +2085,11 @@ class STUH_Plugin {
 							<?php else : ?>
 								<em>&mdash;</em>
 							<?php endif; ?>
+							<p class="row-actions stuh-client-row-actions" style="margin:4px 0 0;">
+								<span class="edit-tags">
+									<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-tags-<?php echo esc_js( $c['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit Tags'; })(this)"><?php esc_html_e( 'Edit Tags', 'stuh' ); ?></button>
+								</span>
+							</p>
 						<?php elseif ( 'created_at' === $column_id ) : ?>
 							<?php echo esc_html( $c['created_at'] ? date_i18n( 'Y-m-d', $c['created_at'] ) : '—' ); ?>
 						<?php elseif ( 'last_seen' === $column_id ) : ?>
@@ -2150,12 +2152,14 @@ class STUH_Plugin {
 								<span style="color:#dba617;font-weight:600;"><?php echo esc_html( $value ); ?></span>
 							<?php elseif ( 'error' === $smtp_status ) : ?>
 								<span style="color:#d63638;font-weight:600;"><?php echo esc_html( $value ); ?></span>
-								<form method="post" style="margin-top:4px;">
-									<?php wp_nonce_field( 'stuh_admin' ); ?>
-									<input type="hidden" name="stuh_action" value="retry_failed_smtp_emails">
-									<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
-									<button type="submit" class="button-link"><?php esc_html_e( 'Retry', 'stuh' ); ?></button>
-								</form>
+								<div class="row-actions stuh-client-row-actions" style="margin-top:4px;">
+									<form method="post">
+										<?php wp_nonce_field( 'stuh_admin' ); ?>
+										<input type="hidden" name="stuh_action" value="retry_failed_smtp_emails">
+										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+										<button type="submit"><?php esc_html_e( 'Retry', 'stuh' ); ?></button>
+									</form>
+								</div>
 							<?php else : ?>
 								<?php echo esc_html( $value ); ?>
 							<?php endif; ?>
