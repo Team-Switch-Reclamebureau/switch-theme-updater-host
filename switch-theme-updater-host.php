@@ -1640,6 +1640,34 @@ class STUH_Plugin {
 				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
 				exit;
 
+			case 'set_post_revisions':
+				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$client = null;
+				foreach ( $clients as $candidate ) {
+					if ( $candidate['id'] === $id ) {
+						$client = $candidate;
+						break;
+					}
+				}
+
+				$result = self::set_post_revisions( $client );
+				if ( 'success' === $result['type'] && $client ) {
+					$telemetry = self::get_telemetry();
+					if ( is_array( $telemetry[ $id ] ?? null ) ) {
+						$telemetry[ $id ]['data'] = is_array( $telemetry[ $id ]['data'] ?? null ) ? $telemetry[ $id ]['data'] : [];
+						$telemetry[ $id ]['data']['wp_config'] = is_array( $telemetry[ $id ]['data']['wp_config'] ?? null ) ? $telemetry[ $id ]['data']['wp_config'] : [];
+						$telemetry[ $id ]['data']['wp_config']['post_revisions'] = 10;
+						self::save_telemetry( $telemetry );
+					}
+				}
+				set_transient(
+					'stuh_post_revisions_' . get_current_user_id(),
+					$result,
+					MINUTE_IN_SECONDS
+				);
+				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				exit;
+
 			case 'edit_client_urls':
 				$id    = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$lines = explode( "\n", $_POST['site_urls_raw'] ?? '' );
@@ -1953,6 +1981,68 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Ask a client site to retain ten post revisions.
+	 *
+	 * @param array<string, mixed>|null $client
+	 * @return array{type: string, message: string}
+	 */
+	private static function set_post_revisions( ?array $client ): array {
+		if ( ! $client ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The selected client site could not be found.', 'stuh' ),
+			];
+		}
+
+		$site_url = esc_url_raw( (string) ( $client['site_url'] ?? '' ) );
+		$api_key  = (string) ( $client['api_key'] ?? '' );
+		if ( '' === $site_url || '' === $api_key ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The client site has no URL or configured client key.', 'stuh' ),
+			];
+		}
+
+		$response = wp_remote_post(
+			trailingslashit( $site_url ) . 'wp-json/stu-client/v1/wp-config/set-post-revisions',
+			[
+				'headers'   => [ 'X-STU-Key' => $api_key ],
+				'sslverify' => self::client_sslverify( $client ),
+				'timeout'   => 30,
+			]
+		);
+		if ( is_wp_error( $response ) ) {
+			return [
+				'type'    => 'error',
+				'message' => sprintf(
+					__( 'Could not set post revisions: %s', 'stuh' ),
+					$response->get_error_message()
+				),
+			];
+		}
+
+		$status_code = wp_remote_retrieve_response_code( $response );
+		$body        = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( $status_code < 200 || $status_code >= 300 || ! is_array( $body ) || 10 !== ( $body['post_revisions'] ?? null ) ) {
+			$message = is_array( $body ) && ! empty( $body['message'] )
+				? sanitize_text_field( (string) $body['message'] )
+				: ( $status_code >= 200 && $status_code < 300
+					? __( 'The client site returned an unexpected response.', 'stuh' )
+					: sprintf( __( 'The client site returned HTTP %d.', 'stuh' ), $status_code ) );
+
+			return [
+				'type'    => 'error',
+				'message' => sprintf( __( 'Could not set post revisions: %s', 'stuh' ), $message ),
+			];
+		}
+
+		return [
+			'type'    => 'success',
+			'message' => sprintf( __( 'Post revisions are now set to 10 for %s.', 'stuh' ), $site_url ),
+		];
+	}
+
+	/**
 	 * Whether requests to this client should verify its TLS certificate.
 	 *
 	 * An explicit GHTU_SSLVERIFY=false client setting is reported through
@@ -2006,6 +2096,10 @@ class STUH_Plugin {
 		if ( $core_upgrade_setting ) {
 			delete_transient( 'stuh_core_upgrade_setting_' . $uid );
 		}
+		$post_revisions = get_transient( 'stuh_post_revisions_' . $uid );
+		if ( $post_revisions ) {
+			delete_transient( 'stuh_post_revisions_' . $uid );
+		}
 		?>
 		<div class="wrap stuh-client-sites">
 			<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
@@ -2027,6 +2121,12 @@ class STUH_Plugin {
 			<?php if ( is_array( $core_upgrade_setting ) ) : ?>
 			<div class="notice notice-<?php echo 'success' === ( $core_upgrade_setting['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible">
 				<p><?php echo esc_html( $core_upgrade_setting['message'] ?? '' ); ?></p>
+			</div>
+			<?php endif; ?>
+
+			<?php if ( is_array( $post_revisions ) ) : ?>
+			<div class="notice notice-<?php echo 'success' === ( $post_revisions['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible">
+				<p><?php echo esc_html( $post_revisions['message'] ?? '' ); ?></p>
 			</div>
 			<?php endif; ?>
 
@@ -2280,6 +2380,23 @@ class STUH_Plugin {
 								</div>
 							<?php else : ?>
 								<?php echo esc_html( $value ); ?>
+							<?php endif; ?>
+						<?php elseif ( 'telemetry_post_revisions' === $column_id ) : ?>
+							<?php $wp_config = is_array( $data['wp_config'] ?? null ) ? $data['wp_config'] : []; ?>
+							<?php $post_revisions = $wp_config['post_revisions'] ?? null; ?>
+							<?php $post_revisions_are_ten = 10 === $post_revisions || '10' === $post_revisions; ?>
+							<?php if ( ! $post_revisions_are_ten ) : ?>
+								<span style="color:#d63638;font-weight:600;"><?php echo esc_html( self::telemetry_column_value( $column_id, $data ) ); ?></span>
+								<div class="row-actions stuh-client-row-actions" style="margin-top:4px;">
+									<form method="post">
+										<?php wp_nonce_field( 'stuh_admin' ); ?>
+										<input type="hidden" name="stuh_action" value="set_post_revisions">
+										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+										<button type="submit"><?php esc_html_e( 'Fix', 'stuh' ); ?></button>
+									</form>
+								</div>
+							<?php else : ?>
+								<?php echo esc_html( self::telemetry_column_value( $column_id, $data ) ); ?>
 							<?php endif; ?>
 						<?php elseif ( 'telemetry_core_upgrade_skip_new_bundled' === $column_id ) : ?>
 							<?php $wp_config = is_array( $data['wp_config'] ?? null ) ? $data['wp_config'] : []; ?>
