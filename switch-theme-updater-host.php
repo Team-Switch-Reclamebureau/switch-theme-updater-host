@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.23
+ * Version: 0.2.24
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1192,6 +1192,16 @@ class STUH_Plugin {
 				<button type="button" data-key="<?php echo esc_attr( $client['api_key'] ); ?>" onclick="(function(btn){ navigator.clipboard.writeText(btn.dataset.key).then(function(){ btn.textContent='Copied!'; setTimeout(function(){ btn.textContent='Copy Key'; }, 2000); }); })(this)"><?php esc_html_e( 'Copy Key', 'stuh' ); ?></button> |
 			</span>
 			<?php endif; ?>
+			<?php if ( $enabled ) : ?>
+			<span class="refresh-diagnostics">
+				<form method="post">
+					<?php wp_nonce_field( 'stuh_admin' ); ?>
+					<input type="hidden" name="stuh_action" value="refresh_client_diagnostics">
+					<input type="hidden" name="client_id" value="<?php echo esc_attr( $client['id'] ); ?>">
+					<button type="submit"><?php esc_html_e( 'Refresh', 'stuh' ); ?></button>
+				</form> |
+			</span>
+			<?php endif; ?>
 			<span class="edit-urls">
 				<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-urls-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit URLs'; })(this)"><?php esc_html_e( 'Edit URLs', 'stuh' ); ?></button> |
 			</span>
@@ -1762,6 +1772,25 @@ class STUH_Plugin {
 				wp_safe_redirect( self::client_list_url() );
 				exit;
 
+			case 'refresh_client_diagnostics':
+				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$client = null;
+				foreach ( $clients as $candidate ) {
+					if ( $candidate['id'] === $id ) {
+						$client = $candidate;
+						break;
+					}
+				}
+
+				$result = self::refresh_client_diagnostics( $client );
+				set_transient(
+					'stuh_diagnostics_refresh_' . get_current_user_id(),
+					$result,
+					MINUTE_IN_SECONDS
+				);
+				wp_safe_redirect( self::client_list_url() );
+				exit;
+
 			case 'skip_new_bundled_themes':
 				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$client = null;
@@ -2237,6 +2266,101 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * Fetch and store current diagnostics from a client site.
+	 *
+	 * @param array<string, mixed>|null $client
+	 * @return array{type: string, message: string}
+	 */
+	private static function refresh_client_diagnostics( ?array $client ): array {
+		if ( ! $client ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The selected client site could not be found.', 'stuh' ),
+			];
+		}
+
+		if ( ! ( $client['enabled'] ?? true ) ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'Diagnostics cannot be refreshed for a disabled client site.', 'stuh' ),
+			];
+		}
+
+		$site_url  = esc_url_raw( (string) ( $client['site_url'] ?? '' ) );
+		$api_key   = (string) ( $client['api_key'] ?? '' );
+		$client_id = (string) ( $client['id'] ?? '' );
+		if ( '' === $site_url || '' === $api_key || '' === $client_id ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The client site has no URL, identifier, or configured client key.', 'stuh' ),
+			];
+		}
+
+		$response = wp_remote_post(
+			trailingslashit( $site_url ) . 'wp-json/stu-client/v1/diagnostics',
+			[
+				'headers'   => [ 'X-STU-Key' => $api_key ],
+				'sslverify' => self::client_sslverify( $client ),
+				'timeout'   => 60,
+			]
+		);
+		if ( is_wp_error( $response ) ) {
+			return [
+				'type'    => 'error',
+				'message' => sprintf(
+					__( 'Could not refresh diagnostics: %s', 'stuh' ),
+					$response->get_error_message()
+				),
+			];
+		}
+
+		$status_code = wp_remote_retrieve_response_code( $response );
+		$body        = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( $status_code < 200 || $status_code >= 300 || ! is_array( $body ) ) {
+			$message = is_array( $body ) && ! empty( $body['message'] )
+				? sanitize_text_field( (string) $body['message'] )
+				: sprintf( __( 'The client site returned HTTP %d.', 'stuh' ), $status_code );
+
+			return [
+				'type'    => 'error',
+				'message' => sprintf( __( 'Could not refresh diagnostics: %s', 'stuh' ), $message ),
+			];
+		}
+
+		if ( ! empty( $body['queued'] ) ) {
+			return [
+				'type'    => 'success',
+				'message' => sprintf(
+					__( 'A diagnostics refresh has been queued for %s. The client data will refresh after it finishes.', 'stuh' ),
+					$site_url
+				),
+			];
+		}
+
+		$data = $body['data'] ?? null;
+		if ( 1 !== (int) ( $body['version'] ?? 0 ) || ! is_array( $data ) || array_is_list( $data ) ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The client site returned an invalid diagnostics response.', 'stuh' ),
+			];
+		}
+
+		$telemetry               = self::get_telemetry();
+		$telemetry[ $client_id ] = [
+			'version'      => 1,
+			'request_type' => 'manual',
+			'received_at'  => time(),
+			'data'         => $data,
+		];
+		self::save_telemetry( $telemetry );
+
+		return [
+			'type'    => 'success',
+			'message' => sprintf( __( 'Refreshed diagnostics for %s.', 'stuh' ), $site_url ),
+		];
+	}
+
+	/**
 	 * Ask a client site to retry FluentSMTP's failed emails.
 	 *
 	 * @param array<string, mixed>|null $client
@@ -2644,6 +2768,10 @@ class STUH_Plugin {
 		if ( $wordpress_update ) {
 			delete_transient( 'stuh_wordpress_update_' . $uid );
 		}
+		$diagnostics_refresh = get_transient( 'stuh_diagnostics_refresh_' . $uid );
+		if ( $diagnostics_refresh ) {
+			delete_transient( 'stuh_diagnostics_refresh_' . $uid );
+		}
 		$core_upgrade_setting = get_transient( 'stuh_core_upgrade_setting_' . $uid );
 		if ( $core_upgrade_setting ) {
 			delete_transient( 'stuh_core_upgrade_setting_' . $uid );
@@ -2687,6 +2815,12 @@ class STUH_Plugin {
 			<?php if ( is_array( $wordpress_update ) ) : ?>
 			<div class="notice notice-<?php echo 'success' === ( $wordpress_update['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible">
 				<p><?php echo esc_html( $wordpress_update['message'] ?? '' ); ?></p>
+			</div>
+			<?php endif; ?>
+
+			<?php if ( is_array( $diagnostics_refresh ) ) : ?>
+			<div class="notice notice-<?php echo 'success' === ( $diagnostics_refresh['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible">
+				<p><?php echo esc_html( $diagnostics_refresh['message'] ?? '' ); ?></p>
 			</div>
 			<?php endif; ?>
 
