@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.24
+ * Version: 0.2.25
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -415,7 +415,7 @@ class STUH_Plugin {
 	 * Load IP-to-label map from ip-labels.json. Keys may be exact IPs or
 	 * wildcard prefixes ending in *, such as "192.0.2.*" or "2001:db8:*".
 	 *
-	 * @return array<string, string>
+	 * @return array<string, array{label: string, url: string}>
 	 */
 	public static function get_ip_labels(): array {
 		$file = plugin_dir_path( __FILE__ ) . 'ip-labels.json';
@@ -428,31 +428,46 @@ class STUH_Plugin {
 	}
 
 	/**
-	 * Return the human-readable label for an IP, or an empty string if none is defined.
+	 * Return the label and management URL for an IP.
 	 * Exact IP entries take precedence over wildcard prefixes; the longest matching
 	 * wildcard prefix wins.
+	 *
+	 * @return array{label: string, url: string}
 	 */
-	public static function ip_label( string $ip ): string {
+	public static function ip_details( string $ip ): array {
 		$labels = self::get_ip_labels();
-		if ( isset( $labels[ $ip ] ) && is_string( $labels[ $ip ] ) ) {
-			return $labels[ $ip ];
+		if ( isset( $labels[ $ip ] ) && is_array( $labels[ $ip ] ) ) {
+			return [
+				'label' => is_string( $labels[ $ip ]['label'] ?? null ) ? $labels[ $ip ]['label'] : '',
+				'url'   => is_string( $labels[ $ip ]['url'] ?? null ) ? $labels[ $ip ]['url'] : '',
+			];
 		}
 
-		$label         = '';
+		$details        = [ 'label' => '', 'url' => '' ];
 		$matched_length = 0;
-		foreach ( $labels as $pattern => $candidate_label ) {
-			if ( ! is_string( $pattern ) || ! is_string( $candidate_label ) || ! str_ends_with( $pattern, '*' ) ) {
+		foreach ( $labels as $pattern => $candidate_details ) {
+			if ( ! is_string( $pattern ) || ! is_array( $candidate_details ) || ! str_ends_with( $pattern, '*' ) ) {
 				continue;
 			}
 
 			$prefix = substr( $pattern, 0, -1 );
 			if ( '' !== $prefix && str_starts_with( $ip, $prefix ) && strlen( $prefix ) > $matched_length ) {
-				$label          = $candidate_label;
+				$details        = [
+					'label' => is_string( $candidate_details['label'] ?? null ) ? $candidate_details['label'] : '',
+					'url'   => is_string( $candidate_details['url'] ?? null ) ? $candidate_details['url'] : '',
+				];
 				$matched_length = strlen( $prefix );
 			}
 		}
 
-		return $label;
+		return $details;
+	}
+
+	/**
+	 * Return the human-readable label for an IP, or an empty string if none is defined.
+	 */
+	public static function ip_label( string $ip ): string {
+		return self::ip_details( $ip )['label'];
 	}
 
 	public static function get_settings(): array {
@@ -3036,12 +3051,16 @@ class STUH_Plugin {
 							<?php endif; ?>
 						<?php elseif ( 'last_seen_ip' === $column_id ) : ?>
 							<?php
-								$lsip    = $c['last_seen_ip'] ?? '';
-								$lslabel = $lsip ? self::ip_label( $lsip ) : '';
+								$lsip      = $c['last_seen_ip'] ?? '';
+								$lsdetails = $lsip ? self::ip_details( $lsip ) : [ 'label' => '', 'url' => '' ];
 							?>
 							<?php if ( $lsip ) : ?>
-								<?php if ( $lslabel ) : ?>
-									<?php echo esc_html( $lslabel ); ?><br>
+								<?php if ( $lsdetails['label'] ) : ?>
+									<?php if ( $lsdetails['url'] ) : ?>
+										<a href="<?php echo esc_url( $lsdetails['url'] ); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html( $lsdetails['label'] ); ?></a><br>
+									<?php else : ?>
+										<?php echo esc_html( $lsdetails['label'] ); ?><br>
+									<?php endif; ?>
 								<?php endif; ?>
 								<code><?php echo esc_html( $lsip ); ?></code>
 							<?php else : ?>
