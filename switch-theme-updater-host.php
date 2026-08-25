@@ -1514,6 +1514,25 @@ class STUH_Plugin {
 	// Admin action handler (POST handler for all admin forms)
 	// --------------------------------------------------------
 
+	/**
+	 * Return the client list URL while retaining its active filters.
+	 */
+	private static function client_list_url(): string {
+		$args = [ 'page' => 'stuh' ];
+
+		$search = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
+		if ( '' !== $search ) {
+			$args['stuh_search'] = $search;
+		}
+
+		$status = sanitize_key( wp_unslash( $_GET['stuh_status'] ?? '' ) );
+		if ( in_array( $status, [ 'enabled', 'disabled' ], true ) ) {
+			$args['stuh_status'] = $status;
+		}
+
+		return add_query_arg( $args, admin_url( 'admin.php' ) );
+	}
+
 	public function handle_admin_actions(): void {
 		if ( empty( $_POST['stuh_action'] ) || ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -1552,7 +1571,7 @@ class STUH_Plugin {
 						120 // shown for 2 minutes max
 					);
 				}
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'toggle_client':
@@ -1565,7 +1584,7 @@ class STUH_Plugin {
 				}
 				unset( $c );
 				self::save_clients( $clients );
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'bulk_update_clients':
@@ -1588,7 +1607,7 @@ class STUH_Plugin {
 					unset( $c );
 					self::save_clients( $clients );
 				}
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'delete_client':
@@ -1598,7 +1617,7 @@ class STUH_Plugin {
 				$telemetry = self::get_telemetry();
 				unset( $telemetry[ $id ] );
 				self::save_telemetry( $telemetry );
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'retry_failed_smtp_emails':
@@ -1617,7 +1636,7 @@ class STUH_Plugin {
 					$result,
 					MINUTE_IN_SECONDS
 				);
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'skip_new_bundled_themes':
@@ -1645,7 +1664,7 @@ class STUH_Plugin {
 					$result,
 					MINUTE_IN_SECONDS
 				);
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'set_post_revisions':
@@ -1673,7 +1692,7 @@ class STUH_Plugin {
 					$result,
 					MINUTE_IN_SECONDS
 				);
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'toggle_search_engine_visibility':
@@ -1701,7 +1720,7 @@ class STUH_Plugin {
 					$result,
 					MINUTE_IN_SECONDS
 				);
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'disable_debugging':
@@ -1729,7 +1748,7 @@ class STUH_Plugin {
 					$result,
 					MINUTE_IN_SECONDS
 				);
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'edit_client_urls':
@@ -1748,7 +1767,7 @@ class STUH_Plugin {
 				}
 				unset( $c );
 				self::save_clients( $clients );
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'edit_client_tags':
@@ -1763,7 +1782,7 @@ class STUH_Plugin {
 				}
 				unset( $c );
 				self::save_clients( $clients );
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'regenerate_key':
@@ -1787,7 +1806,7 @@ class STUH_Plugin {
 						120
 					);
 				}
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'save_settings':
@@ -1819,12 +1838,12 @@ class STUH_Plugin {
 				$id      = sanitize_text_field( $_POST['unverified_id'] ?? '' );
 				$records = array_values( array_filter( self::get_unverified(), fn( $r ) => $r['id'] !== $id ) );
 				self::save_unverified( $records );
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'clear_unverified':
 				delete_option( STUH_OPTION_UNVERIFIED );
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 
 			case 'add_whitelist':
@@ -1886,7 +1905,7 @@ class STUH_Plugin {
 						120
 					);
 				}
-				wp_safe_redirect( admin_url( 'admin.php?page=stuh' ) );
+				wp_safe_redirect( self::client_list_url() );
 				exit;
 		}
 	}
@@ -2267,6 +2286,10 @@ class STUH_Plugin {
 		$telemetry = self::get_telemetry();
 		$enabled_client_count = count( array_filter( $clients, fn( array $client ): bool => (bool) ( $client['enabled'] ?? true ) ) );
 		$disabled_client_count = count( $clients ) - $enabled_client_count;
+		$selected_status = sanitize_key( wp_unslash( $_GET['stuh_status'] ?? '' ) );
+		if ( ! in_array( $selected_status, [ 'enabled', 'disabled' ], true ) ) {
+			$selected_status = 'all';
+		}
 		$client_tags = [];
 		foreach ( $clients as $client ) {
 			foreach ( (array) ( $client['tags'] ?? [] ) as $tag ) {
@@ -2346,9 +2369,9 @@ class STUH_Plugin {
 			<?php endif; ?>
 
 			<ul class="subsubsub stuh-client-status-filters" aria-label="<?php esc_attr_e( 'Filter client sites by status', 'stuh' ); ?>">
-				<li class="all"><a href="#" class="current" data-status="all" aria-current="page"><?php esc_html_e( 'All', 'stuh' ); ?> <span class="count">(<?php echo esc_html( count( $clients ) ); ?>)</span></a> |</li>
-				<li class="enabled"><a href="#" data-status="enabled"><?php esc_html_e( 'Enabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $enabled_client_count ); ?>)</span></a> |</li>
-				<li class="disabled"><a href="#" data-status="disabled"><?php esc_html_e( 'Disabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $disabled_client_count ); ?>)</span></a></li>
+				<li class="all"><a href="#" class="<?php echo 'all' === $selected_status ? 'current' : ''; ?>" data-status="all"<?php echo 'all' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'All', 'stuh' ); ?> <span class="count">(<?php echo esc_html( count( $clients ) ); ?>)</span></a> |</li>
+				<li class="enabled"><a href="#" class="<?php echo 'enabled' === $selected_status ? 'current' : ''; ?>" data-status="enabled"<?php echo 'enabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Enabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $enabled_client_count ); ?>)</span></a> |</li>
+				<li class="disabled"><a href="#" class="<?php echo 'disabled' === $selected_status ? 'current' : ''; ?>" data-status="disabled"<?php echo 'disabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Disabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $disabled_client_count ); ?>)</span></a></li>
 			</ul>
 
 			<?php
@@ -2754,7 +2777,7 @@ class STUH_Plugin {
 				var statusFilters = Array.prototype.slice.call(document.querySelectorAll('.stuh-client-status-filters a'));
 				var selectAll = document.getElementById('cb-select-all-1');
 				var clientCheckboxes = Array.prototype.slice.call(document.querySelectorAll('input[name="client_ids[]"]'));
-				var selectedStatus = 'all';
+				var selectedStatus = <?php echo wp_json_encode( $selected_status ); ?>;
 
 				if (!search || !rows.length) {
 					return;
@@ -2848,6 +2871,13 @@ class STUH_Plugin {
 					filter.addEventListener('click', function(event) {
 						event.preventDefault();
 						selectedStatus = filter.dataset.status;
+						var url = new URL(window.location.href);
+						if (selectedStatus === 'all') {
+							url.searchParams.delete('stuh_status');
+						} else {
+							url.searchParams.set('stuh_status', selectedStatus);
+						}
+						window.history.replaceState({}, '', url);
 						statusFilters.forEach(function(statusFilter) {
 							var isCurrent = statusFilter === filter;
 							statusFilter.classList.toggle('current', isCurrent);
