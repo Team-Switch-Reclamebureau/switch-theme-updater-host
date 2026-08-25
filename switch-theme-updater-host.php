@@ -1160,6 +1160,7 @@ class STUH_Plugin {
 			'telemetry_search_engine_visibility' => __( 'Search Engine Visibility', 'stuh' ),
 			'telemetry_multilanguage' => __( 'Multilanguage', 'stuh' ),
 			'telemetry_packages'  => __( 'Packages', 'stuh' ),
+			'telemetry_active_theme' => __( 'Active Theme', 'stuh' ),
 			'telemetry_database'  => __( 'Database', 'stuh' ),
 			'telemetry_analytics' => __( 'Analytics', 'stuh' ),
 			'telemetry_smtp'      => __( 'SMTP', 'stuh' ),
@@ -1204,6 +1205,68 @@ class STUH_Plugin {
 			</span>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Return a theme's GitHub repository URL when its theme URI points to one.
+	 *
+	 * @param array<string, mixed> $theme
+	 */
+	private static function theme_github_uri( array $theme ): string {
+		$theme_uri = $theme['theme_uri'] ?? $theme['uri'] ?? '';
+		if ( ! is_scalar( $theme_uri ) || '' === trim( (string) $theme_uri ) ) {
+			return '';
+		}
+
+		$theme_uri = trim( (string) $theme_uri );
+		$parts     = wp_parse_url( $theme_uri );
+		if ( ! is_array( $parts ) ) {
+			return '';
+		}
+
+		$host      = strtolower( (string) ( $parts['host'] ?? '' ) );
+		$path      = trim( (string) ( $parts['path'] ?? '' ), '/' );
+		$segments  = explode( '/', $path );
+
+		if (
+			! in_array( $parts['scheme'] ?? '', [ 'http', 'https' ], true )
+			|| ! in_array( $host, [ 'github.com', 'www.github.com' ], true )
+			|| count( $segments ) < 2
+			|| '' === $segments[0]
+			|| '' === $segments[1]
+		) {
+			return '';
+		}
+
+		return $theme_uri;
+	}
+
+	/**
+	 * Render one active-theme name, linking it when its theme URI is a GitHub repository.
+	 *
+	 * @param array<string, mixed> $theme
+	 */
+	private static function render_active_theme_name( array $theme ): void {
+		$theme_name    = is_scalar( $theme['name'] ?? null ) ? (string) $theme['name'] : '';
+		$theme_version = is_scalar( $theme['version'] ?? null ) ? (string) $theme['version'] : '';
+		$theme_uri     = self::theme_github_uri( $theme );
+
+		if ( '' !== $theme_uri && '' !== $theme_name ) {
+			printf(
+				'<a href="%1$s" target="_blank" rel="noopener">%2$s</a>',
+				esc_url( $theme_uri ),
+				esc_html( $theme_name )
+			);
+		} else {
+			echo esc_html( $theme_name );
+		}
+
+		if ( '' !== $theme_version ) {
+			printf(
+				' <span style="display:inline-block;padding:1px 6px;border-radius:10px;background:#f0f0f1;color:#50575e;font-size:11px;font-weight:600;line-height:1.5;">%s</span>',
+				esc_html( $theme_version )
+			);
+		}
 	}
 
 	/**
@@ -1270,6 +1333,28 @@ class STUH_Plugin {
 				$plugins = is_array( $packages['plugins'] ?? null ) ? count( $packages['plugins'] ) : 0;
 				$themes  = is_array( $packages['themes'] ?? null ) ? count( $packages['themes'] ) : 0;
 				return sprintf( __( '%1$d plugins, %2$d themes', 'stuh' ), $plugins, $themes );
+			case 'telemetry_active_theme':
+				$active_theme = is_array( $data['active_theme'] ?? null ) ? $data['active_theme'] : [];
+				if ( [] === $active_theme ) {
+					return '';
+				}
+				$theme_name = is_scalar( $active_theme['name'] ?? null ) ? (string) $active_theme['name'] : '';
+				$theme_version = is_scalar( $active_theme['version'] ?? null ) ? (string) $active_theme['version'] : '';
+				$theme_display = trim( $theme_name . ( '' !== $theme_version ? ' (' . $theme_version . ')' : '' ) );
+				$parent_theme = is_array( $active_theme['parent_theme'] ?? null ) ? $active_theme['parent_theme'] : [];
+				if ( [] === $parent_theme ) {
+					return $theme_display;
+				}
+				$parent_name = is_scalar( $parent_theme['name'] ?? null ) ? (string) $parent_theme['name'] : '';
+				$parent_version = is_scalar( $parent_theme['version'] ?? null ) ? (string) $parent_theme['version'] : '';
+				$parent_display = trim( $parent_name . ( '' !== $parent_version ? ' (' . $parent_version . ')' : '' ) );
+				if ( '' === $theme_display ) {
+					return $parent_display;
+				}
+				if ( '' === $parent_display ) {
+					return $theme_display;
+				}
+				return sprintf( __( '%1$s > %2$s', 'stuh' ), $theme_display, $parent_display );
 			case 'telemetry_database':
 				$size = $database['size_bytes'] ?? null;
 				return is_numeric( $size ) ? size_format( (int) $size, 1 ) : '';
@@ -2694,6 +2779,20 @@ class STUH_Plugin {
 							<?php else : ?>
 								<em>None received</em>
 							<?php endif; ?>
+						<?php elseif ( 'telemetry_active_theme' === $column_id ) : ?>
+							<?php
+							$active_theme = is_array( $data['active_theme'] ?? null ) ? $data['active_theme'] : [];
+							$parent_theme = is_array( $active_theme['parent_theme'] ?? null ) ? $active_theme['parent_theme'] : [];
+							self::render_active_theme_name( $active_theme );
+							if ( [] !== $parent_theme ) {
+								$theme_name    = is_scalar( $active_theme['name'] ?? null ) ? (string) $active_theme['name'] : '';
+								$theme_version = is_scalar( $active_theme['version'] ?? null ) ? (string) $active_theme['version'] : '';
+								if ( '' !== trim( $theme_name . $theme_version ) ) {
+									echo esc_html( ' > ' );
+								}
+								self::render_active_theme_name( $parent_theme );
+							}
+							?>
 						<?php else : ?>
 							<?php
 							$packages = is_array( $data['packages'] ?? null ) ? $data['packages'] : [];
