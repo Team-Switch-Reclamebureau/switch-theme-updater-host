@@ -45,18 +45,37 @@
 	background-color: #387170 !important;
 	color: white;
 }
-.stuh-client-tag--webshop, .stuh-client-tag--woocommerce {
+.stuh-client-tag--webshop,
+.stuh-client-tag--woocommerce {
 	background-color: #873eff !important;
 	color: white;
 }
 
 .stuh-client-sites .stuh-client-row-actions {
 	visibility: hidden;
+	text-align: left;
 }
 
 .stuh-client-sites .stuh-client-row:hover .stuh-client-row-actions,
 .stuh-client-sites .stuh-client-row:focus-within .stuh-client-row-actions {
 	visibility: visible;
+}
+
+.stuh-client-sites .stuh-client-row--stale > .check-column {
+	position: relative;
+	overflow: hidden;
+}
+
+.stuh-client-sites .stuh-client-row--stale > .check-column::before {
+	content: '\1f578';
+	position: absolute;
+	top: -30px;
+	left: -30px;
+	color: #fff;
+	font-size: 60px;
+	line-height: 1;
+	opacity: 0.55;
+	pointer-events: none;
 }
 
 .stuh-client-sites .stuh-client-row-actions form {
@@ -75,6 +94,7 @@
 	font-size: inherit;
 	line-height: inherit;
 	cursor: pointer;
+	text-align: left;
 }
 
 .stuh-client-sites .stuh-client-row-actions button:hover,

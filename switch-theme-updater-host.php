@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.26
+ * Version: 0.2.27
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -477,6 +477,16 @@ class STUH_Plugin {
 
 	public static function get_clients(): array {
 		return (array) get_option( STUH_OPTION_CLIENTS, [] );
+	}
+
+	/**
+	 * Return whether a client has not been seen in the last 24 hours.
+	 *
+	 * @param array<string, mixed> $client
+	 */
+	private static function is_client_stale( array $client ): bool {
+		$last_seen = (int) ( $client['last_seen'] ?? 0 );
+		return $last_seen > 0 && ( time() - $last_seen ) > DAY_IN_SECONDS;
 	}
 
 	private static function save_clients( array $clients ): void {
@@ -1170,7 +1180,7 @@ class STUH_Plugin {
 			'telemetry_wp'    => __( 'WordPress', 'stuh' ),
 			'telemetry_php'   => __( 'PHP', 'stuh' ),
 			'telemetry_updater' => __( 'Updater', 'stuh' ),
-			'telemetry_pending_updates' => __( 'Pending Updates', 'stuh' ),
+			'telemetry_pending_updates' => __( 'Updates', 'stuh' ),
 			'telemetry_multisite' => __( 'Multisite', 'stuh' ),
 			'telemetry_search_engine_visibility' => __( 'Search Engine Visibility', 'stuh' ),
 			'telemetry_multilanguage' => __( 'Multilanguage', 'stuh' ),
@@ -2757,8 +2767,9 @@ class STUH_Plugin {
 		$telemetry = self::get_telemetry();
 		$enabled_client_count = count( array_filter( $clients, fn( array $client ): bool => (bool) ( $client['enabled'] ?? true ) ) );
 		$disabled_client_count = count( $clients ) - $enabled_client_count;
+		$stale_client_count = count( array_filter( $clients, fn( array $client ): bool => self::is_client_stale( $client ) ) );
 		$selected_status = sanitize_key( wp_unslash( $_GET['stuh_status'] ?? '' ) );
-		if ( ! in_array( $selected_status, [ 'enabled', 'disabled' ], true ) ) {
+		if ( ! in_array( $selected_status, [ 'enabled', 'disabled', 'stale' ], true ) ) {
 			$selected_status = 'all';
 		}
 		$client_tags = [];
@@ -2872,7 +2883,8 @@ class STUH_Plugin {
 			<ul class="subsubsub stuh-client-status-filters" aria-label="<?php esc_attr_e( 'Filter client sites by status', 'stuh' ); ?>">
 				<li class="all"><a href="#" class="<?php echo 'all' === $selected_status ? 'current' : ''; ?>" data-status="all"<?php echo 'all' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'All', 'stuh' ); ?> <span class="count">(<?php echo esc_html( count( $clients ) ); ?>)</span></a> |</li>
 				<li class="enabled"><a href="#" class="<?php echo 'enabled' === $selected_status ? 'current' : ''; ?>" data-status="enabled"<?php echo 'enabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Enabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $enabled_client_count ); ?>)</span></a> |</li>
-				<li class="disabled"><a href="#" class="<?php echo 'disabled' === $selected_status ? 'current' : ''; ?>" data-status="disabled"<?php echo 'disabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Disabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $disabled_client_count ); ?>)</span></a></li>
+				<li class="disabled"><a href="#" class="<?php echo 'disabled' === $selected_status ? 'current' : ''; ?>" data-status="disabled"<?php echo 'disabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Disabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $disabled_client_count ); ?>)</span></a> |</li>
+				<li class="stale"><a href="#" class="<?php echo 'stale' === $selected_status ? 'current' : ''; ?>" data-status="stale"<?php echo 'stale' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Stale', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $stale_client_count ); ?>)</span></a></li>
 			</ul>
 
 			<?php
@@ -3007,12 +3019,15 @@ class STUH_Plugin {
 					</tr>
 					<?php else : ?>
 					<?php $row_index = 0; foreach ( $clients as $c ) :
-						$enabled = (bool) ( $c['enabled'] ?? true );
-						$row_bg  = ( $row_index % 2 === 0 ) ? 'background-color:#f6f7f7;' : '';
+						$enabled  = (bool) ( $c['enabled'] ?? true );
+						$is_stale = self::is_client_stale( $c );
+						$row_bg   = $is_stale
+							? 'background-color:#fff9f2;'
+							: ( ( $row_index % 2 === 0 ) ? 'background-color:#f6f7f7;' : '' );
 						$search_telemetry = is_array( $telemetry[ $c['id'] ] ?? null ) ? $telemetry[ $c['id'] ] : [];
 						$row_index++;
 					?>
-					<tr class="stuh-client-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
+					<tr class="stuh-client-row<?php echo $is_stale ? ' stuh-client-row--stale' : ''; ?>" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-stale="<?php echo $is_stale ? 'true' : 'false'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
 						<th scope="row" class="check-column">
 							<label class="screen-reader-text" for="cb-select-<?php echo esc_attr( $c['id'] ); ?>"><?php echo esc_html( sprintf( __( 'Select %s', 'stuh' ), $c['site_url'] ?? '' ) ); ?></label>
 							<input id="cb-select-<?php echo esc_attr( $c['id'] ); ?>" type="checkbox" name="client_ids[]" value="<?php echo esc_attr( $c['id'] ); ?>" form="stuh-client-bulk-actions">
@@ -3053,7 +3068,14 @@ class STUH_Plugin {
 							<?php echo esc_html( $c['created_at'] ? date_i18n( 'Y-m-d', $c['created_at'] ) : '—' ); ?>
 						<?php elseif ( 'last_seen' === $column_id ) : ?>
 							<?php if ( $c['last_seen'] ) : ?>
-								<?php echo esc_html( date_i18n( 'Y-m-d H:i', $c['last_seen'] ) ); ?>
+								<?php
+								$last_seen = (int) $c['last_seen'];
+								$elapsed   = time() - $last_seen;
+								$display   = $elapsed <= DAY_IN_SECONDS
+									? sprintf( __( '%s ago', 'stuh' ), human_time_diff( $last_seen, time() ) )
+									: wp_date( 'Y-m-d H:i', $last_seen, wp_timezone() );
+								echo esc_html( $display );
+								?>
 							<?php else : ?>
 								<em>Never</em>
 							<?php endif; ?>
@@ -3110,7 +3132,7 @@ class STUH_Plugin {
 										<?php wp_nonce_field( 'stuh_admin' ); ?>
 										<input type="hidden" name="stuh_action" value="install_wordpress_update">
 										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
-										<button type="submit"><?php esc_html_e( 'Update WordPress', 'stuh' ); ?></button>
+										<button type="submit"><?php esc_html_e( 'Update', 'stuh' ); ?></button>
 									</form>
 								</div>
 							<?php endif; ?>
@@ -3145,7 +3167,7 @@ class STUH_Plugin {
 										<?php wp_nonce_field( 'stuh_admin' ); ?>
 										<input type="hidden" name="stuh_action" value="install_pending_updates">
 										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
-										<button type="submit"><?php esc_html_e( 'Update All', 'stuh' ); ?></button>
+										<button type="submit"><?php esc_html_e( 'Update', 'stuh' ); ?></button>
 									</form>
 								</div>
 							<?php endif; ?>
@@ -3233,7 +3255,7 @@ class STUH_Plugin {
 								$theme_name    = is_scalar( $active_theme['name'] ?? null ) ? (string) $active_theme['name'] : '';
 								$theme_version = is_scalar( $active_theme['version'] ?? null ) ? (string) $active_theme['version'] : '';
 								if ( '' !== trim( $theme_name . $theme_version ) ) {
-									echo esc_html( ' > ' );
+									echo '<br>';
 								}
 								self::render_active_theme_name( $parent_theme );
 							}
@@ -3334,7 +3356,9 @@ class STUH_Plugin {
 
 					rows.forEach(function(row) {
 						var searchableText = row.dataset.search.toLocaleLowerCase();
-						var matches = (selectedStatus === 'all' || row.dataset.status === selectedStatus) && terms.every(function(term) {
+						var matchesStatus = selectedStatus === 'all'
+							|| (selectedStatus === 'stale' ? row.dataset.stale === 'true' : row.dataset.status === selectedStatus);
+						var matches = matchesStatus && terms.every(function(term) {
 							var excluded = term.charAt(0) === '-' && term.length > 1;
 							term = (excluded ? term.slice(1) : term).replace(/^"|"$/g, '');
 							if (excluded) {
@@ -3344,7 +3368,9 @@ class STUH_Plugin {
 						});
 						row.style.display = matches ? '' : 'none';
 						if (matches) {
-							row.style.backgroundColor = visible % 2 === 0 ? '#f6f7f7' : '';
+							row.style.backgroundColor = row.dataset.stale === 'true'
+								? '#fff9f2'
+								: (visible % 2 === 0 ? '#f6f7f7' : '');
 							visible++;
 						}
 					});
