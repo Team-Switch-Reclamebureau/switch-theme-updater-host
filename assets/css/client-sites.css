@@ -63,7 +63,9 @@
 	display: inline;
 }
 
-.stuh-client-sites .stuh-client-row-actions button {
+.stuh-client-sites .stuh-client-row-actions button,
+.stuh-client-sites .stuh-client-row-actions .login a,
+.stuh-client-sites .stuh-client-row-actions .login a:visited {
 	min-height: 0;
 	margin: 0;
 	padding: 0;
@@ -76,7 +78,9 @@
 }
 
 .stuh-client-sites .stuh-client-row-actions button:hover,
-.stuh-client-sites .stuh-client-row-actions button:focus {
+.stuh-client-sites .stuh-client-row-actions button:focus,
+.stuh-client-sites .stuh-client-row-actions .login a:hover,
+.stuh-client-sites .stuh-client-row-actions .login a:focus {
 	color: #135e96;
 	text-decoration: underline;
 }

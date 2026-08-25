@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.25
+ * Version: 0.2.26
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1191,9 +1191,15 @@ class STUH_Plugin {
 	 *
 	 * @param array<string, mixed> $client
 	 */
-	private static function render_client_row_actions( array $client, bool $enabled ): void {
+	private static function render_client_row_actions( array $client, bool $enabled, string $login_url ): void {
+		$login_url = esc_url( $login_url );
 		?>
 		<div class="row-actions stuh-client-row-actions">
+			<?php if ( '' !== $login_url ) : ?>
+			<span class="login">
+				<a href="<?php echo esc_url( $login_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Login', 'stuh' ); ?></a> |
+			</span>
+			<?php endif; ?>
 			<span class="toggle">
 				<form method="post">
 					<?php wp_nonce_field( 'stuh_admin' ); ?>
@@ -3019,14 +3025,16 @@ class STUH_Plugin {
 						<td class="column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>">
 						<?php if ( 'site_url' === $column_id ) : ?>
 							<?php
-							$all_urls = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
+							$all_urls  = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
+							$site      = is_array( $data['site'] ?? null ) ? $data['site'] : [];
+							$login_url = is_string( $site['login_url'] ?? null ) ? $site['login_url'] : '';
 							foreach ( $all_urls as $url_index => $u ) :
 							?>
 							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
 								<?php echo esc_html( self::client_url_label( $u ) ); ?>
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
 							<?php endforeach; ?>
-							<?php self::render_client_row_actions( $c, $enabled ); ?>
+							<?php self::render_client_row_actions( $c, $enabled, $login_url ); ?>
 						<?php elseif ( 'tags' === $column_id ) : ?>
 							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
 							<?php if ( $tags ) : ?>
