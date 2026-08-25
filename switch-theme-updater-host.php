@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.22
+ * Version: 0.2.23
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1724,6 +1724,44 @@ class STUH_Plugin {
 				wp_safe_redirect( self::client_list_url() );
 				exit;
 
+			case 'install_pending_updates':
+				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$client = null;
+				foreach ( $clients as $candidate ) {
+					if ( $candidate['id'] === $id ) {
+						$client = $candidate;
+						break;
+					}
+				}
+
+				$result = self::install_pending_updates( $client );
+				set_transient(
+					'stuh_pending_updates_' . get_current_user_id(),
+					$result,
+					MINUTE_IN_SECONDS
+				);
+				wp_safe_redirect( self::client_list_url() );
+				exit;
+
+			case 'install_wordpress_update':
+				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$client = null;
+				foreach ( $clients as $candidate ) {
+					if ( $candidate['id'] === $id ) {
+						$client = $candidate;
+						break;
+					}
+				}
+
+				$result = self::install_wordpress_update( $client );
+				set_transient(
+					'stuh_wordpress_update_' . get_current_user_id(),
+					$result,
+					MINUTE_IN_SECONDS
+				);
+				wp_safe_redirect( self::client_list_url() );
+				exit;
+
 			case 'skip_new_bundled_themes':
 				$id     = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$client = null;
@@ -1993,6 +2031,209 @@ class STUH_Plugin {
 				wp_safe_redirect( self::client_list_url() );
 				exit;
 		}
+	}
+
+	/**
+	 * Ask a client site to install all currently pending plugin and theme updates.
+	 *
+	 * @param array<string, mixed>|null $client
+	 * @return array{type: string, message: string}
+	 */
+	private static function install_pending_updates( ?array $client ): array {
+		if ( ! $client ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The selected client site could not be found.', 'stuh' ),
+			];
+		}
+
+		if ( ! ( $client['enabled'] ?? true ) ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'Updates cannot be installed for a disabled client site.', 'stuh' ),
+			];
+		}
+
+		$site_url = esc_url_raw( (string) ( $client['site_url'] ?? '' ) );
+		$api_key  = (string) ( $client['api_key'] ?? '' );
+		if ( '' === $site_url || '' === $api_key ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The client site has no URL or configured client key.', 'stuh' ),
+			];
+		}
+
+		$response = wp_remote_post(
+			trailingslashit( $site_url ) . 'wp-json/stu-client/v1/updates/install-pending',
+			[
+				'headers'   => [ 'X-STU-Key' => $api_key ],
+				'sslverify' => self::client_sslverify( $client ),
+				'timeout'   => 300,
+			]
+		);
+		if ( is_wp_error( $response ) ) {
+			return [
+				'type'    => 'error',
+				'message' => sprintf(
+					__( 'Could not install updates: %s', 'stuh' ),
+					$response->get_error_message()
+				),
+			];
+		}
+
+		$status_code = wp_remote_retrieve_response_code( $response );
+		$body        = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( $status_code < 200 || $status_code >= 300 || ! is_array( $body ) ) {
+			$message = is_array( $body ) && ! empty( $body['message'] )
+				? sanitize_text_field( (string) $body['message'] )
+				: sprintf( __( 'The client site returned HTTP %d.', 'stuh' ), $status_code );
+
+			return [
+				'type'    => 'error',
+				'message' => sprintf( __( 'Could not install updates: %s', 'stuh' ), $message ),
+			];
+		}
+
+		$updated = is_array( $body['updated'] ?? null ) ? $body['updated'] : [];
+		$failed  = is_array( $body['failed'] ?? null ) ? $body['failed'] : [];
+		if ( ! empty( $body['queued'] ) ) {
+			return [
+				'type'    => 'success',
+				'message' => sprintf(
+					__( 'Plugin and theme updates have been queued for %s. The reported update count will refresh after they finish.', 'stuh' ),
+					$site_url
+				),
+			];
+		}
+
+		$count   = is_array( $updated['plugins'] ?? null ) ? count( $updated['plugins'] ) : 0;
+		$count  += is_array( $updated['themes'] ?? null ) ? count( $updated['themes'] ) : 0;
+
+		if ( $failed ) {
+			$first_failure = sanitize_text_field( (string) reset( $failed ) );
+			return [
+				'type' => $count > 0 ? 'warning' : 'error',
+				'message' => sprintf(
+					_n(
+						'Installed %1$d update for %2$s, but %3$d update failed: %4$s',
+						'Installed %1$d updates for %2$s, but %3$d updates failed: %4$s',
+						$count,
+						'stuh'
+					),
+					$count,
+					$site_url,
+					count( $failed ),
+					$first_failure
+				),
+			];
+		}
+
+		return [
+			'type' => 'success',
+			'message' => $count > 0
+				? sprintf(
+					_n(
+						'Installed %1$d update for %2$s.',
+						'Installed %1$d updates for %2$s.',
+						$count,
+						'stuh'
+					),
+					$count,
+					$site_url
+				)
+				: sprintf( __( 'No plugin or theme updates are currently pending for %s.', 'stuh' ), $site_url ),
+		];
+	}
+
+	/**
+	 * Ask a client site to install its pending WordPress core update.
+	 *
+	 * @param array<string, mixed>|null $client
+	 * @return array{type: string, message: string}
+	 */
+	private static function install_wordpress_update( ?array $client ): array {
+		if ( ! $client ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The selected client site could not be found.', 'stuh' ),
+			];
+		}
+
+		if ( ! ( $client['enabled'] ?? true ) ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'WordPress cannot be updated for a disabled client site.', 'stuh' ),
+			];
+		}
+
+		$site_url = esc_url_raw( (string) ( $client['site_url'] ?? '' ) );
+		$api_key  = (string) ( $client['api_key'] ?? '' );
+		if ( '' === $site_url || '' === $api_key ) {
+			return [
+				'type'    => 'error',
+				'message' => __( 'The client site has no URL or configured client key.', 'stuh' ),
+			];
+		}
+
+		$response = wp_remote_post(
+			trailingslashit( $site_url ) . 'wp-json/stu-client/v1/updates/install-core',
+			[
+				'headers'   => [ 'X-STU-Key' => $api_key ],
+				'sslverify' => self::client_sslverify( $client ),
+				'timeout'   => 300,
+			]
+		);
+		if ( is_wp_error( $response ) ) {
+			return [
+				'type'    => 'error',
+				'message' => sprintf(
+					__( 'Could not update WordPress: %s', 'stuh' ),
+					$response->get_error_message()
+				),
+			];
+		}
+
+		$status_code = wp_remote_retrieve_response_code( $response );
+		$body        = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( $status_code < 200 || $status_code >= 300 || ! is_array( $body ) ) {
+			$message = is_array( $body ) && ! empty( $body['message'] )
+				? sanitize_text_field( (string) $body['message'] )
+				: sprintf( __( 'The client site returned HTTP %d.', 'stuh' ), $status_code );
+
+			return [
+				'type'    => 'error',
+				'message' => sprintf( __( 'Could not update WordPress: %s', 'stuh' ), $message ),
+			];
+		}
+
+		$failed = is_array( $body['failed'] ?? null ) ? $body['failed'] : [];
+		if ( ! empty( $body['queued'] ) ) {
+			return [
+				'type'    => 'success',
+				'message' => sprintf(
+					__( 'The WordPress update has been queued for %s. The reported version will refresh after it finishes.', 'stuh' ),
+					$site_url
+				),
+			];
+		}
+
+		if ( $failed ) {
+			return [
+				'type'    => 'error',
+				'message' => sprintf(
+					__( 'Could not update WordPress on %1$s: %2$s', 'stuh' ),
+					$site_url,
+					sanitize_text_field( (string) reset( $failed ) )
+				),
+			];
+		}
+
+		return [
+			'type'    => 'success',
+			'message' => ! empty( $body['updated']['core'] )
+				? sprintf( __( 'Updated WordPress on %s.', 'stuh' ), $site_url )
+				: sprintf( __( 'No WordPress update is currently pending for %s.', 'stuh' ), $site_url ),
+		];
 	}
 
 	/**
@@ -2395,6 +2636,14 @@ class STUH_Plugin {
 		if ( $smtp_retry ) {
 			delete_transient( 'stuh_smtp_retry_' . $uid );
 		}
+		$pending_updates = get_transient( 'stuh_pending_updates_' . $uid );
+		if ( $pending_updates ) {
+			delete_transient( 'stuh_pending_updates_' . $uid );
+		}
+		$wordpress_update = get_transient( 'stuh_wordpress_update_' . $uid );
+		if ( $wordpress_update ) {
+			delete_transient( 'stuh_wordpress_update_' . $uid );
+		}
 		$core_upgrade_setting = get_transient( 'stuh_core_upgrade_setting_' . $uid );
 		if ( $core_upgrade_setting ) {
 			delete_transient( 'stuh_core_upgrade_setting_' . $uid );
@@ -2426,6 +2675,18 @@ class STUH_Plugin {
 			<?php if ( is_array( $smtp_retry ) ) : ?>
 			<div class="notice notice-<?php echo in_array( $smtp_retry['type'] ?? '', [ 'success', 'warning' ], true ) ? esc_attr( $smtp_retry['type'] ) : 'error'; ?> is-dismissible">
 				<p><?php echo esc_html( $smtp_retry['message'] ?? '' ); ?></p>
+			</div>
+			<?php endif; ?>
+
+			<?php if ( is_array( $pending_updates ) ) : ?>
+			<div class="notice notice-<?php echo in_array( $pending_updates['type'] ?? '', [ 'success', 'warning' ], true ) ? esc_attr( $pending_updates['type'] ) : 'error'; ?> is-dismissible">
+				<p><?php echo esc_html( $pending_updates['message'] ?? '' ); ?></p>
+			</div>
+			<?php endif; ?>
+
+			<?php if ( is_array( $wordpress_update ) ) : ?>
+			<div class="notice notice-<?php echo 'success' === ( $wordpress_update['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible">
+				<p><?php echo esc_html( $wordpress_update['message'] ?? '' ); ?></p>
 			</div>
 			<?php endif; ?>
 
@@ -2682,6 +2943,16 @@ class STUH_Plugin {
 							}
 							?>
 							<span<?php echo $style; ?><?php echo $title ? ' title="' . esc_attr( $title ) . '"' : ''; ?>><?php echo esc_html( $value ); ?></span>
+							<?php if ( 'telemetry_wp' === $column_id && $enabled && $value && ( 'outdated' === $wp_safety['status'] || ( $wp_safety['latest'] && $value !== $wp_safety['latest'] ) ) ) : ?>
+								<div class="row-actions stuh-client-row-actions" style="margin-top:4px;">
+									<form method="post" onsubmit="return confirm('<?php echo esc_js( __( 'Install the pending WordPress core update on this client site?', 'stuh' ) ); ?>');">
+										<?php wp_nonce_field( 'stuh_admin' ); ?>
+										<input type="hidden" name="stuh_action" value="install_wordpress_update">
+										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+										<button type="submit"><?php esc_html_e( 'Update WordPress', 'stuh' ); ?></button>
+									</form>
+								</div>
+							<?php endif; ?>
 						<?php elseif ( 'telemetry_smtp' === $column_id ) : ?>
 							<?php
 							$smtp_status = self::smtp_diagnostic_status( (array) ( $data['smtp'] ?? [] ) );
@@ -2703,6 +2974,19 @@ class STUH_Plugin {
 								</div>
 							<?php else : ?>
 								<?php echo esc_html( $value ); ?>
+							<?php endif; ?>
+						<?php elseif ( 'telemetry_pending_updates' === $column_id ) : ?>
+							<?php $pending_updates_count = self::telemetry_column_value( $column_id, $data ); ?>
+							<?php echo esc_html( $pending_updates_count ); ?>
+							<?php if ( $enabled && is_numeric( $pending_updates_count ) && (int) $pending_updates_count > 0 ) : ?>
+								<div class="row-actions stuh-client-row-actions" style="margin-top:4px;">
+									<form method="post" onsubmit="return confirm('<?php echo esc_js( __( 'Install all pending plugin and theme updates on this client site?', 'stuh' ) ); ?>');">
+										<?php wp_nonce_field( 'stuh_admin' ); ?>
+										<input type="hidden" name="stuh_action" value="install_pending_updates">
+										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+										<button type="submit"><?php esc_html_e( 'Update All', 'stuh' ); ?></button>
+									</form>
+								</div>
 							<?php endif; ?>
 						<?php elseif ( 'telemetry_debug' === $column_id ) : ?>
 							<?php $debug = is_array( $data['debug'] ?? null ) ? $data['debug'] : []; ?>
