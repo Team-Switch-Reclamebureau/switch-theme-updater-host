@@ -5,6 +5,7 @@
 	"185.178.234.5": { "label": "Team Switch", "url": "" },
 	"188.89.199.15": { "label": "Kevin", "url": "" },
 
+	"85.10.156.*": { "label": "TransIP", "url": "https://www.transip.nl/cp/domein-hosting" },
 	"85.10.157.*": { "label": "TransIP", "url": "https://www.transip.nl/cp/domein-hosting" },
 	"85.10.158.*": { "label": "TransIP", "url": "https://www.transip.nl/cp/domein-hosting" },
 	"85.10.157.179": { "label": "TransIP teamswitch.dev", "url": "https://www.transip.nl/cp/domein-hosting/domeinnaam/prm/202094866/teamswitch.dev/" },
