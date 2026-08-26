@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.27
+ * Version: 0.2.28
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1013,7 +1013,7 @@ class STUH_Plugin {
 		$ref    = $req->get_param( 'ref' );
 		$path   = $req->get_param( 'path' );
 
-		if ( ! $this->valid_repo( $repo ) ) {
+		if ( ! self::valid_repo( $repo ) ) {
 			return new WP_Error( 'invalid_repo', 'Invalid repository format (expected owner/repo)', [ 'status' => 400 ] );
 		}
 
@@ -1041,7 +1041,7 @@ class STUH_Plugin {
 	public function rest_releases( WP_REST_Request $req ) {
 		$repo = $req->get_param( 'repo' );
 
-		if ( ! $this->valid_repo( $repo ) ) {
+		if ( ! self::valid_repo( $repo ) ) {
 			return new WP_Error( 'invalid_repo', 'Invalid repository format', [ 'status' => 400 ] );
 		}
 
@@ -1059,7 +1059,7 @@ class STUH_Plugin {
 		$path = $req->get_param( 'path' );
 		$pack = $req->get_param( 'pack' ) ?: basename( $repo );
 
-		if ( ! $this->valid_repo( $repo ) ) {
+		if ( ! self::valid_repo( $repo ) ) {
 			wp_send_json_error( [ 'message' => 'Invalid repository format' ], 400 );
 		}
 
@@ -1083,7 +1083,7 @@ class STUH_Plugin {
 	// Internal helpers
 	// --------------------------------------------------------
 
-	private function valid_repo( string $repo ): bool {
+	private static function valid_repo( string $repo ): bool {
 		return (bool) preg_match( '/^[a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+$/', $repo );
 	}
 
@@ -1249,53 +1249,38 @@ class STUH_Plugin {
 	}
 
 	/**
-	 * Return a theme's GitHub repository URL when its theme URI points to one.
+	 * Return a theme's GitHub repository URL from its GitHub Repo header.
 	 *
 	 * @param array<string, mixed> $theme
 	 */
-	private static function theme_github_uri( array $theme ): string {
-		$theme_uri = $theme['theme_uri'] ?? $theme['uri'] ?? '';
-		if ( ! is_scalar( $theme_uri ) || '' === trim( (string) $theme_uri ) ) {
+	private static function theme_github_repo_url( array $theme ): string {
+		$github_repo = $theme['github_repo'] ?? '';
+		if ( ! is_scalar( $github_repo ) ) {
 			return '';
 		}
 
-		$theme_uri = trim( (string) $theme_uri );
-		$parts     = wp_parse_url( $theme_uri );
-		if ( ! is_array( $parts ) ) {
+		$github_repo = trim( (string) $github_repo );
+		if ( ! self::valid_repo( $github_repo ) ) {
 			return '';
 		}
 
-		$host      = strtolower( (string) ( $parts['host'] ?? '' ) );
-		$path      = trim( (string) ( $parts['path'] ?? '' ), '/' );
-		$segments  = explode( '/', $path );
-
-		if (
-			! in_array( $parts['scheme'] ?? '', [ 'http', 'https' ], true )
-			|| ! in_array( $host, [ 'github.com', 'www.github.com' ], true )
-			|| count( $segments ) < 2
-			|| '' === $segments[0]
-			|| '' === $segments[1]
-		) {
-			return '';
-		}
-
-		return $theme_uri;
+		return 'https://github.com/' . $github_repo;
 	}
 
 	/**
-	 * Render one active-theme name, linking it when its theme URI is a GitHub repository.
+	 * Render one active-theme name, linking it to its GitHub repository.
 	 *
 	 * @param array<string, mixed> $theme
 	 */
 	private static function render_active_theme_name( array $theme ): void {
 		$theme_name    = is_scalar( $theme['name'] ?? null ) ? (string) $theme['name'] : '';
 		$theme_version = is_scalar( $theme['version'] ?? null ) ? (string) $theme['version'] : '';
-		$theme_uri     = self::theme_github_uri( $theme );
+		$github_url    = self::theme_github_repo_url( $theme );
 
-		if ( '' !== $theme_uri && '' !== $theme_name ) {
+		if ( '' !== $github_url && '' !== $theme_name ) {
 			printf(
 				'<a href="%1$s" target="_blank" rel="noopener">%2$s</a>',
-				esc_url( $theme_uri ),
+				esc_url( $github_url ),
 				esc_html( $theme_name )
 			);
 		} else {
