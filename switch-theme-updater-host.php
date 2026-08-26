@@ -44,6 +44,8 @@ class STUH_Plugin {
 		add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
 		add_action( 'admin_notices', [ $this, 'maybe_notice_no_token' ] );
 		add_action( 'admin_init',    [ $this, 'cleanup_legacy_mu_plugin' ] );
+		add_action( 'stuh_check_client_homepage', [ $this, 'run_scheduled_homepage_check' ] );
+		add_action( 'stuh_retry_client_homepage', [ $this, 'run_scheduled_homepage_retry' ] );
 
 		// Intercept our own plugin update before WordPress tries to HTTP-download
 		// from our REST API — which would hit maintenance mode on this same server.
@@ -512,12 +514,15 @@ class STUH_Plugin {
 	 * @param array<string, mixed> $telemetry
 	 */
 	private static function client_search_text( array $client, array $telemetry ): string {
+		$homepage_health = is_array( $client['homepage_health'] ?? null ) ? $client['homepage_health'] : [];
 		$values = [
 			...array_map( 'strval', (array) ( $client['site_urls'] ?? [] ) ),
 			(string) ( $client['site_url'] ?? '' ),
 			...array_map( 'strval', (array) ( $client['tags'] ?? [] ) ),
 			(string) ( $client['last_seen_ip'] ?? '' ),
 			self::ip_label( (string) ( $client['last_seen_ip'] ?? '' ) ),
+			(string) ( $homepage_health['status_code'] ?? '' ),
+			(string) ( $homepage_health['message'] ?? '' ),
 		];
 		$data = is_array( $telemetry['data'] ?? null ) ? $telemetry['data'] : [];
 		$collect_values = static function( array $items ) use ( &$collect_values ): array {
@@ -839,6 +844,232 @@ class STUH_Plugin {
 			'data'         => $data,
 		];
 		self::save_telemetry( $telemetry );
+		self::check_client_homepage( $client, $data );
+	}
+
+	/**
+	 * Fetch a client's homepage, persist its health, and notify the host admin
+	 * when a new problem is detected.
+	 *
+	 * @param array<string, mixed> $client Authenticated client record.
+	 * @param array<string, mixed> $data   Decoded diagnostics.
+	 * @param bool                 $is_5xx_retry Whether this is the delayed confirmation of a 5xx response.
+	 * @return array<string, mixed>|null Persisted health result, or null when the client could not be checked.
+	 */
+	private static function check_client_homepage( array $client, array $data, bool $is_5xx_retry = false ): ?array {
+		$client_id = is_string( $client['id'] ?? null ) ? $client['id'] : '';
+		if ( '' === $client_id ) {
+			error_log( '[STUH homepage] Cannot check a client without an ID' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return null;
+		}
+
+		$lock_key = 'stuh_homepage_check_' . md5( $client_id );
+		if ( ! $is_5xx_retry && get_transient( $lock_key ) ) {
+			return null;
+		}
+		set_transient( $lock_key, 1, MINUTE_IN_SECONDS );
+
+		$site             = is_array( $data['site'] ?? null ) ? $data['site'] : [];
+		$reported_home    = is_string( $site['home_url'] ?? null ) ? esc_url_raw( $site['home_url'] ) : '';
+		$registered_home  = is_string( $client['site_url'] ?? null ) ? esc_url_raw( $client['site_url'] ) : '';
+		$homepage_url     = self::is_http_url( $reported_home ) ? $reported_home : $registered_home;
+
+		if ( ! self::is_http_url( $homepage_url ) ) {
+			error_log( sprintf( '[STUH homepage] Client %s has no valid homepage URL', $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return null;
+		}
+
+		error_log( sprintf( '[STUH homepage] Checking homepage for client %s: %s', $client_id, $homepage_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		$response = wp_remote_get(
+			$homepage_url,
+			[
+				'timeout'     => 15,
+				'redirection' => 0,
+				'sslverify'   => self::client_sslverify( $client ),
+			]
+		);
+
+		$health = [
+			'checked_at'        => time(),
+			'url'               => $homepage_url,
+			'ok'                => false,
+			'status_code'       => null,
+			'status'            => 'request_error',
+			'message'           => '',
+			'alert_fingerprint' => '',
+		];
+
+		if ( is_wp_error( $response ) ) {
+			$health['message'] = sprintf(
+				__( 'Homepage request failed: %s', 'stuh' ),
+				$response->get_error_message()
+			);
+			error_log( sprintf( '[STUH homepage] Request failed for client %s (%s): %s', $client_id, $homepage_url, $health['message'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		} else {
+			$status_code           = wp_remote_retrieve_response_code( $response );
+			$body                  = wp_remote_retrieve_body( $response );
+			$health['status_code'] = $status_code;
+
+			if ( $status_code < 200 || $status_code >= 300 ) {
+				$health['status']  = 'http_error';
+				$health['message'] = sprintf( __( 'Homepage returned HTTP %d.', 'stuh' ), $status_code );
+				if ( $status_code >= 500 && $status_code < 600 && ! $is_5xx_retry ) {
+					$retry_args = [ $client_id ];
+					if ( wp_next_scheduled( 'stuh_retry_client_homepage', $retry_args ) ) {
+						$health['status']  = 'http_error_pending_retry';
+						$health['message'] = sprintf( __( 'Homepage returned HTTP %d. A confirmation check is pending.', 'stuh' ), $status_code );
+					} elseif ( wp_schedule_single_event( time() + ( 10 * MINUTE_IN_SECONDS ), 'stuh_retry_client_homepage', $retry_args ) ) {
+						$health['status']  = 'http_error_pending_retry';
+						$health['message'] = sprintf( __( 'Homepage returned HTTP %d. A confirmation check is scheduled in 10 minutes.', 'stuh' ), $status_code );
+						error_log( sprintf( '[STUH homepage] Scheduled 5xx retry for client %s in 10 minutes', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					} else {
+						$health['status']  = 'http_error_retry_failed';
+						$health['message'] = sprintf( __( 'Homepage returned HTTP %d, but the confirmation check could not be scheduled.', 'stuh' ), $status_code );
+						error_log( sprintf( '[STUH homepage] Could not schedule 5xx retry for client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					}
+				}
+			} elseif ( self::contains_wordpress_critical_error( $body ) ) {
+				$health['status']  = 'wordpress_critical_error';
+				$health['message'] = sprintf(
+					__( 'Homepage returned HTTP %d but contains a WordPress critical error.', 'stuh' ),
+					$status_code
+				);
+			} else {
+				$health['ok']      = true;
+				$health['status']  = 'healthy';
+				$health['message'] = sprintf( __( 'Homepage returned HTTP %d.', 'stuh' ), $status_code );
+			}
+
+			error_log( sprintf( '[STUH homepage] Result for client %s (%s): HTTP %s, status=%s, message=%s', $client_id, $homepage_url, (string) $status_code, (string) ( $health['status'] ?? 'unknown' ), (string) $health['message'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
+
+		$clients = self::get_clients();
+		foreach ( $clients as $index => $stored_client ) {
+			if ( $client['id'] !== ( $stored_client['id'] ?? '' ) ) {
+				continue;
+			}
+
+			$previous_health = is_array( $stored_client['homepage_health'] ?? null ) ? $stored_client['homepage_health'] : [];
+			$is_unconfirmed_5xx = ! $is_5xx_retry
+				&& (int) ( $health['status_code'] ?? 0 ) >= 500
+				&& (int) ( $health['status_code'] ?? 0 ) < 600;
+			if ( $is_unconfirmed_5xx ) {
+				$health['alert_fingerprint'] = (string) ( $previous_health['alert_fingerprint'] ?? '' );
+			} elseif ( ! $health['ok'] ) {
+				$fingerprint = hash( 'sha256', implode( '|', [
+					(string) $health['status'],
+					(string) $health['status_code'],
+					(string) $health['message'],
+				] ) );
+				$previous_fingerprint = (string) ( $previous_health['alert_fingerprint'] ?? '' );
+
+				if ( $fingerprint === $previous_fingerprint ) {
+					$health['alert_fingerprint'] = $fingerprint;
+				} elseif ( self::send_homepage_health_alert( $homepage_url, $health ) ) {
+					$health['alert_fingerprint'] = $fingerprint;
+				}
+			}
+
+			$clients[ $index ]['homepage_health'] = $health;
+			self::save_clients( $clients );
+			return $health;
+		}
+
+		error_log( sprintf( '[STUH homepage] Could not persist health for client %s', $client['id'] ?? '(unknown)' ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		return null;
+	}
+
+	private static function is_http_url( string $url ): bool {
+		$parts = wp_parse_url( $url );
+		return is_array( $parts )
+			&& in_array( strtolower( (string) ( $parts['scheme'] ?? '' ) ), [ 'http', 'https' ], true )
+			&& '' !== (string) ( $parts['host'] ?? '' );
+	}
+
+	private static function contains_wordpress_critical_error( string $html ): bool {
+		$needles = [
+			'there has been a critical error on this website',
+			'there has been a critical error on your website',
+			'<b>fatal error</b>',
+			'fatal error:',
+		];
+
+		foreach ( $needles as $needle ) {
+			if ( false !== stripos( $html, $needle ) ) {
+				return true;
+			}
+		}
+
+		return 1 === preg_match( '/class\s*=\s*["\'][^"\']*\bwp-die-message\b/i', $html );
+	}
+
+	/**
+	 * @param array<string, mixed> $health
+	 */
+	private static function send_homepage_health_alert( string $homepage_url, array $health ): bool {
+		$admin_email = sanitize_email( (string) get_option( 'admin_email' ) );
+		if ( ! is_email( $admin_email ) ) {
+			error_log( '[STUH homepage] Host admin email is invalid; health alert was not sent' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return false;
+		}
+
+		$sent = wp_mail(
+			$admin_email,
+			sprintf( __( '[Website health] Problem detected on %s', 'stuh' ), self::client_url_label( $homepage_url ) ),
+			sprintf(
+				__(
+					"A homepage health check detected a problem.\n\nWebsite: %1\$s\nProblem: %2\$s\nChecked: %3\$s\n\nReview the client site in WordPress:\n%4\$s",
+					'stuh'
+				),
+				$homepage_url,
+				(string) $health['message'],
+				wp_date( 'Y-m-d H:i:s T', (int) $health['checked_at'] ),
+				admin_url( 'admin.php?page=stuh' )
+			)
+		);
+
+		if ( ! $sent ) {
+			error_log( sprintf( '[STUH homepage] Failed to email health alert for %s', $homepage_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
+
+		return $sent;
+	}
+
+	/**
+	 * Run a queued homepage check outside the admin request.
+	 */
+	public function run_scheduled_homepage_check( string $client_id ): void {
+		$this->run_client_homepage_check( $client_id, false );
+	}
+
+	/**
+	 * Confirm a 5xx response after the ten-minute delay.
+	 */
+	public function run_scheduled_homepage_retry( string $client_id ): void {
+		$this->run_client_homepage_check( $client_id, true );
+	}
+
+	/**
+	 * @param bool $is_5xx_retry Whether this check confirms an earlier 5xx response.
+	 */
+	private function run_client_homepage_check( string $client_id, bool $is_5xx_retry ): void {
+		$client = null;
+		foreach ( self::get_clients() as $candidate ) {
+			if ( $client_id === ( $candidate['id'] ?? '' ) ) {
+				$client = $candidate;
+				break;
+			}
+		}
+
+		if ( null === $client ) {
+			error_log( sprintf( '[STUH homepage] Scheduled check could not find client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$telemetry = self::get_telemetry();
+		$report    = is_array( $telemetry[ $client_id ] ?? null ) ? $telemetry[ $client_id ] : [];
+		$data      = is_array( $report['data'] ?? null ) ? $report['data'] : [];
+		self::check_client_homepage( $client, $data, $is_5xx_retry );
 	}
 
 	// --------------------------------------------------------
@@ -1169,6 +1400,7 @@ class STUH_Plugin {
 	public function client_columns(): array {
 		return [
 			'site_url'        => __( 'URL', 'stuh' ),
+			'homepage_status' => __( 'Homepage Status', 'stuh' ),
 			'tags'            => __( 'Tags', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
@@ -1717,6 +1949,46 @@ class STUH_Plugin {
 					}
 					unset( $c );
 					self::save_clients( $clients );
+				} elseif ( 'check_homepage_status' === $bulk_action && $client_ids ) {
+					$selected_client_ids = array_flip( $client_ids );
+					$queued_count        = 0;
+					$already_queued      = 0;
+
+					foreach ( $clients as $client ) {
+						$client_id = (string) ( $client['id'] ?? '' );
+						if ( ! isset( $selected_client_ids[ $client_id ] ) ) {
+							continue;
+						}
+
+						$args = [ $client_id ];
+						if ( wp_next_scheduled( 'stuh_check_client_homepage', $args ) ) {
+							$already_queued++;
+							continue;
+						}
+
+						if ( wp_schedule_single_event( time(), 'stuh_check_client_homepage', $args ) ) {
+							$queued_count++;
+						}
+					}
+
+					if ( $queued_count > 0 ) {
+						spawn_cron( time() );
+					}
+
+					$failed_count = count( $selected_client_ids ) - $queued_count - $already_queued;
+					set_transient(
+						'stuh_bulk_homepage_check_' . get_current_user_id(),
+						[
+							'type'    => $failed_count > 0 ? 'warning' : 'success',
+							'message' => sprintf(
+								__( 'Homepage checks are running in the background: %1$d queued, %2$d already queued, %3$d could not be queued.', 'stuh' ),
+								$queued_count,
+								$already_queued,
+								$failed_count
+							),
+						],
+						MINUTE_IN_SECONDS
+					);
 				}
 				wp_safe_redirect( self::client_list_url() );
 				exit;
@@ -2369,6 +2641,7 @@ class STUH_Plugin {
 			'data'         => $data,
 		];
 		self::save_telemetry( $telemetry );
+		self::check_client_homepage( $client, $data );
 
 		return [
 			'type'    => 'success',
@@ -2805,6 +3078,10 @@ class STUH_Plugin {
 		if ( $disable_debugging ) {
 			delete_transient( 'stuh_disable_debugging_' . $uid );
 		}
+		$bulk_homepage_check = get_transient( 'stuh_bulk_homepage_check_' . $uid );
+		if ( $bulk_homepage_check ) {
+			delete_transient( 'stuh_bulk_homepage_check_' . $uid );
+		}
 		?>
 		<div class="wrap stuh-client-sites">
 			<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
@@ -2838,6 +3115,12 @@ class STUH_Plugin {
 			<?php if ( is_array( $diagnostics_refresh ) ) : ?>
 			<div class="notice notice-<?php echo 'success' === ( $diagnostics_refresh['type'] ?? '' ) ? 'success' : 'error'; ?> is-dismissible">
 				<p><?php echo esc_html( $diagnostics_refresh['message'] ?? '' ); ?></p>
+			</div>
+			<?php endif; ?>
+
+			<?php if ( is_array( $bulk_homepage_check ) ) : ?>
+			<div class="notice notice-<?php echo 'success' === ( $bulk_homepage_check['type'] ?? '' ) ? 'success' : 'warning'; ?> is-dismissible">
+				<p><?php echo esc_html( $bulk_homepage_check['message'] ?? '' ); ?></p>
 			</div>
 			<?php endif; ?>
 
@@ -2883,6 +3166,12 @@ class STUH_Plugin {
 			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry ) {
 				$va = $a[ $orderby ] ?? '';
 				$vb = $b[ $orderby ] ?? '';
+				if ( 'homepage_status' === $orderby ) {
+					$health_a = is_array( $a['homepage_health'] ?? null ) ? $a['homepage_health'] : [];
+					$health_b = is_array( $b['homepage_health'] ?? null ) ? $b['homepage_health'] : [];
+					$va       = sprintf( '%d-%03d', ! empty( $health_a['ok'] ) ? 2 : ( $health_a ? 1 : 0 ), (int) ( $health_a['status_code'] ?? 0 ) );
+					$vb       = sprintf( '%d-%03d', ! empty( $health_b['ok'] ) ? 2 : ( $health_b ? 1 : 0 ), (int) ( $health_b['status_code'] ?? 0 ) );
+				}
 				if ( 'site_url' === $orderby ) {
 					$va = self::client_url_label( (string) $va );
 					$vb = self::client_url_label( (string) $vb );
@@ -2964,6 +3253,7 @@ class STUH_Plugin {
 						<option value=""><?php esc_html_e( 'Bulk actions', 'stuh' ); ?></option>
 						<option value="enable"><?php esc_html_e( 'Enable', 'stuh' ); ?></option>
 						<option value="disable"><?php esc_html_e( 'Disable', 'stuh' ); ?></option>
+						<option value="check_homepage_status"><?php esc_html_e( 'Check homepage status', 'stuh' ); ?></option>
 					</select>
 					<button type="submit" class="button action"><?php esc_html_e( 'Apply', 'stuh' ); ?></button>
 					<?php if ( $client_tags ) : ?>
@@ -3006,13 +3296,17 @@ class STUH_Plugin {
 					<?php $row_index = 0; foreach ( $clients as $c ) :
 						$enabled  = (bool) ( $c['enabled'] ?? true );
 						$is_stale = self::is_client_stale( $c );
-						$row_bg   = $is_stale
+						$homepage_health = is_array( $c['homepage_health'] ?? null ) ? $c['homepage_health'] : [];
+						$homepage_unhealthy = $homepage_health && empty( $homepage_health['ok'] );
+						$row_bg   = $homepage_unhealthy
+							? 'background-color:#fbeaea;'
+							: ( $is_stale
 							? 'background-color:#fff9f2;'
-							: ( ( $row_index % 2 === 0 ) ? 'background-color:#f6f7f7;' : '' );
+							: ( ( $row_index % 2 === 0 ) ? 'background-color:#f6f7f7;' : '' ) );
 						$search_telemetry = is_array( $telemetry[ $c['id'] ] ?? null ) ? $telemetry[ $c['id'] ] : [];
 						$row_index++;
 					?>
-					<tr class="stuh-client-row<?php echo $is_stale ? ' stuh-client-row--stale' : ''; ?>" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-stale="<?php echo $is_stale ? 'true' : 'false'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo $row_bg; ?>">
+					<tr class="stuh-client-row<?php echo $is_stale ? ' stuh-client-row--stale' : ''; ?><?php echo $homepage_unhealthy ? ' stuh-client-row--unhealthy' : ''; ?>" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-stale="<?php echo $is_stale ? 'true' : 'false'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo esc_attr( $row_bg ); ?>">
 						<th scope="row" class="check-column">
 							<label class="screen-reader-text" for="cb-select-<?php echo esc_attr( $c['id'] ); ?>"><?php echo esc_html( sprintf( __( 'Select %s', 'stuh' ), $c['site_url'] ?? '' ) ); ?></label>
 							<input id="cb-select-<?php echo esc_attr( $c['id'] ); ?>" type="checkbox" name="client_ids[]" value="<?php echo esc_attr( $c['id'] ); ?>" form="stuh-client-bulk-actions">
@@ -3035,6 +3329,25 @@ class STUH_Plugin {
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
 							<?php endforeach; ?>
 							<?php self::render_client_row_actions( $c, $enabled, $login_url ); ?>
+						<?php elseif ( 'homepage_status' === $column_id ) : ?>
+							<?php if ( $homepage_health ) : ?>
+								<?php
+								$status_code = (int) ( $homepage_health['status_code'] ?? 0 );
+								$status_text = $status_code > 0
+									? sprintf( __( 'HTTP %d', 'stuh' ), $status_code )
+									: __( 'Request failed', 'stuh' );
+								if ( 'wordpress_critical_error' === ( $homepage_health['status'] ?? '' ) ) {
+									$status_text .= ' — ' . __( 'WordPress critical error', 'stuh' );
+								}
+								?>
+								<span style="color:<?php echo ! empty( $homepage_health['ok'] ) ? '#008a20' : '#b32d2e'; ?>;font-weight:600;" title="<?php echo esc_attr( (string) ( $homepage_health['message'] ?? '' ) ); ?>">
+									<?php echo ! empty( $homepage_health['ok'] ) ? '&#10003;' : '&#10007;'; ?>
+									<?php echo esc_html( $status_text ); ?>
+								</span><br>
+								<small><?php echo esc_html( wp_date( 'Y-m-d H:i', (int) ( $homepage_health['checked_at'] ?? 0 ) ) ); ?></small>
+							<?php else : ?>
+								<em><?php esc_html_e( 'Not checked', 'stuh' ); ?></em>
+							<?php endif; ?>
 						<?php elseif ( 'tags' === $column_id ) : ?>
 							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
 							<?php if ( $tags ) : ?>
