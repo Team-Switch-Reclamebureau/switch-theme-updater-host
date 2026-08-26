@@ -36,7 +36,11 @@
 	vertical-align: text-bottom;
 }
 
-.stuh-client-sites .stuh-client-site-title,
+.stuh-client-sites .stuh-client-site-heading {
+	display: flex;
+	align-items: center;
+}
+
 .stuh-client-sites .stuh-client-site-description {
 	display: block;
 }

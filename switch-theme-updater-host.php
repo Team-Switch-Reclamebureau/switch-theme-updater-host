@@ -3332,10 +3332,16 @@ class STUH_Plugin {
 							$site             = is_array( $data['site'] ?? null ) ? $data['site'] : [];
 							$site_title       = is_string( $site['title'] ?? null ) ? $site['title'] : '';
 							$site_description = is_string( $site['description'] ?? null ) ? $site['description'] : '';
+							$favicon_url      = is_string( $site['favicon_url'] ?? null ) ? esc_url( $site['favicon_url'] ) : '';
 							?>
 							<?php if ( '' !== $site_title || '' !== $site_description ) : ?>
 								<?php if ( '' !== $site_title ) : ?>
-									<strong class="stuh-client-site-title"><?php echo esc_html( $site_title ); ?></strong>
+									<span class="stuh-client-site-heading">
+										<?php if ( '' !== $favicon_url ) : ?>
+											<img class="stuh-client-favicon" src="<?php echo esc_url( $favicon_url ); ?>" alt="" width="16" height="16">
+										<?php endif; ?>
+										<strong class="stuh-client-site-title"><?php echo esc_html( $site_title ); ?></strong>
+									</span>
 								<?php endif; ?>
 								<?php if ( '' !== $site_description ) : ?>
 									<span class="stuh-client-site-description"><?php echo esc_html( $site_description ); ?></span>
@@ -3348,12 +3354,8 @@ class STUH_Plugin {
 							$all_urls   = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
 							$site       = is_array( $data['site'] ?? null ) ? $data['site'] : [];
 							$login_url  = is_string( $site['login_url'] ?? null ) ? $site['login_url'] : '';
-							$favicon_url = is_string( $site['favicon_url'] ?? null ) ? esc_url( $site['favicon_url'] ) : '';
 							foreach ( $all_urls as $url_index => $u ) :
 							?>
-							<?php if ( 0 === $url_index && '' !== $favicon_url ) : ?>
-								<img class="stuh-client-favicon" src="<?php echo esc_url( $favicon_url ); ?>" alt="" width="16" height="16">
-							<?php endif; ?>
 							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
 								<?php echo esc_html( self::client_url_label( $u ) ); ?>
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
