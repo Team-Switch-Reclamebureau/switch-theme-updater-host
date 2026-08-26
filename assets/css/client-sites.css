@@ -31,6 +31,21 @@
 	margin-right: 4px;
 }
 
+.stuh-client-sites .stuh-client-favicon {
+	margin-right: 4px;
+	vertical-align: text-bottom;
+}
+
+.stuh-client-sites .stuh-client-site-title,
+.stuh-client-sites .stuh-client-site-description {
+	display: block;
+}
+
+.stuh-client-sites .stuh-client-site-description {
+	margin-top: 2px;
+	color: #646970;
+}
+
 .stuh-client-tag--websquad {
 	background-color: #c6006d !important;
 	color: white;

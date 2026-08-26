@@ -1399,6 +1399,7 @@ class STUH_Plugin {
 	 */
 	public function client_columns(): array {
 		return [
+			'site'            => __( 'Site', 'stuh' ),
 			'site_url'        => __( 'URL', 'stuh' ),
 			'homepage_status' => __( 'Homepage Status', 'stuh' ),
 			'tags'            => __( 'Tags', 'stuh' ),
@@ -3172,6 +3173,14 @@ class STUH_Plugin {
 					$va       = sprintf( '%d-%03d', ! empty( $health_a['ok'] ) ? 2 : ( $health_a ? 1 : 0 ), (int) ( $health_a['status_code'] ?? 0 ) );
 					$vb       = sprintf( '%d-%03d', ! empty( $health_b['ok'] ) ? 2 : ( $health_b ? 1 : 0 ), (int) ( $health_b['status_code'] ?? 0 ) );
 				}
+				if ( 'site' === $orderby ) {
+					$data_a = is_array( $telemetry[ $a['id'] ]['data'] ?? null ) ? $telemetry[ $a['id'] ]['data'] : [];
+					$data_b = is_array( $telemetry[ $b['id'] ]['data'] ?? null ) ? $telemetry[ $b['id'] ]['data'] : [];
+					$site_a = is_array( $data_a['site'] ?? null ) ? $data_a['site'] : [];
+					$site_b = is_array( $data_b['site'] ?? null ) ? $data_b['site'] : [];
+					$va     = is_string( $site_a['title'] ?? null ) ? $site_a['title'] : '';
+					$vb     = is_string( $site_b['title'] ?? null ) ? $site_b['title'] : '';
+				}
 				if ( 'site_url' === $orderby ) {
 					$va = self::client_url_label( (string) $va );
 					$vb = self::client_url_label( (string) $vb );
@@ -3317,13 +3326,33 @@ class STUH_Plugin {
 						foreach ( $columns as $column_id => $column_label ) :
 						?>
 						<td class="column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>">
-						<?php if ( 'site_url' === $column_id ) : ?>
+						<?php if ( 'site' === $column_id ) : ?>
 							<?php
-							$all_urls  = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
-							$site      = is_array( $data['site'] ?? null ) ? $data['site'] : [];
-							$login_url = is_string( $site['login_url'] ?? null ) ? $site['login_url'] : '';
+							$site             = is_array( $data['site'] ?? null ) ? $data['site'] : [];
+							$site_title       = is_string( $site['title'] ?? null ) ? $site['title'] : '';
+							$site_description = is_string( $site['description'] ?? null ) ? $site['description'] : '';
+							?>
+							<?php if ( '' !== $site_title || '' !== $site_description ) : ?>
+								<?php if ( '' !== $site_title ) : ?>
+									<strong class="stuh-client-site-title"><?php echo esc_html( $site_title ); ?></strong>
+								<?php endif; ?>
+								<?php if ( '' !== $site_description ) : ?>
+									<span class="stuh-client-site-description"><?php echo esc_html( $site_description ); ?></span>
+								<?php endif; ?>
+							<?php else : ?>
+								<em>&mdash;</em>
+							<?php endif; ?>
+						<?php elseif ( 'site_url' === $column_id ) : ?>
+							<?php
+							$all_urls   = $c['site_urls'] ?? ( ( $c['site_url'] ?? '' ) !== '' ? [ $c['site_url'] ] : [] );
+							$site       = is_array( $data['site'] ?? null ) ? $data['site'] : [];
+							$login_url  = is_string( $site['login_url'] ?? null ) ? $site['login_url'] : '';
+							$favicon_url = is_string( $site['favicon_url'] ?? null ) ? esc_url( $site['favicon_url'] ) : '';
 							foreach ( $all_urls as $url_index => $u ) :
 							?>
+							<?php if ( 0 === $url_index && '' !== $favicon_url ) : ?>
+								<img class="stuh-client-favicon" src="<?php echo esc_url( $favicon_url ); ?>" alt="" width="16" height="16">
+							<?php endif; ?>
 							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
 								<?php echo esc_html( self::client_url_label( $u ) ); ?>
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
