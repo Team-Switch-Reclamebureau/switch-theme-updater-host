@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.2.29
+ * Version: 0.2.30
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -853,10 +853,10 @@ class STUH_Plugin {
 	 *
 	 * @param array<string, mixed> $client Authenticated client record.
 	 * @param array<string, mixed> $data   Decoded diagnostics.
-	 * @param bool                 $is_5xx_retry Whether this is the delayed confirmation of a 5xx response.
+	 * @param bool                 $is_confirmation_retry Whether this is a delayed confirmation check.
 	 * @return array<string, mixed>|null Persisted health result, or null when the client could not be checked.
 	 */
-	private static function check_client_homepage( array $client, array $data, bool $is_5xx_retry = false ): ?array {
+	private static function check_client_homepage( array $client, array $data, bool $is_confirmation_retry = false ): ?array {
 		$client_id = is_string( $client['id'] ?? null ) ? $client['id'] : '';
 		if ( '' === $client_id ) {
 			error_log( '[STUH homepage] Cannot check a client without an ID' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
@@ -864,7 +864,7 @@ class STUH_Plugin {
 		}
 
 		$lock_key = 'stuh_homepage_check_' . md5( $client_id );
-		if ( ! $is_5xx_retry && get_transient( $lock_key ) ) {
+		if ( ! $is_confirmation_retry && get_transient( $lock_key ) ) {
 			return null;
 		}
 		set_transient( $lock_key, 1, MINUTE_IN_SECONDS );
@@ -910,24 +910,9 @@ class STUH_Plugin {
 			$body                  = wp_remote_retrieve_body( $response );
 			$health['status_code'] = $status_code;
 
-			if ( $status_code < 200 || $status_code >= 300 ) {
+			if ( $status_code < 200 || $status_code >= 400 ) {
 				$health['status']  = 'http_error';
 				$health['message'] = sprintf( __( 'Homepage returned HTTP %d.', 'stuh' ), $status_code );
-				if ( $status_code >= 500 && $status_code < 600 && ! $is_5xx_retry ) {
-					$retry_args = [ $client_id ];
-					if ( wp_next_scheduled( 'stuh_retry_client_homepage', $retry_args ) ) {
-						$health['status']  = 'http_error_pending_retry';
-						$health['message'] = sprintf( __( 'Homepage returned HTTP %d. A confirmation check is pending.', 'stuh' ), $status_code );
-					} elseif ( wp_schedule_single_event( time() + ( 10 * MINUTE_IN_SECONDS ), 'stuh_retry_client_homepage', $retry_args ) ) {
-						$health['status']  = 'http_error_pending_retry';
-						$health['message'] = sprintf( __( 'Homepage returned HTTP %d. A confirmation check is scheduled in 10 minutes.', 'stuh' ), $status_code );
-						error_log( sprintf( '[STUH homepage] Scheduled 5xx retry for client %s in 10 minutes', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-					} else {
-						$health['status']  = 'http_error_retry_failed';
-						$health['message'] = sprintf( __( 'Homepage returned HTTP %d, but the confirmation check could not be scheduled.', 'stuh' ), $status_code );
-						error_log( sprintf( '[STUH homepage] Could not schedule 5xx retry for client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-					}
-				}
 			} elseif ( self::contains_wordpress_critical_error( $body ) ) {
 				$health['status']  = 'wordpress_critical_error';
 				$health['message'] = sprintf(
@@ -943,6 +928,25 @@ class STUH_Plugin {
 			error_log( sprintf( '[STUH homepage] Result for client %s (%s): HTTP %s, status=%s, message=%s', $client_id, $homepage_url, (string) $status_code, (string) ( $health['status'] ?? 'unknown' ), (string) $health['message'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		}
 
+		$confirmation_pending = false;
+		if ( ! $is_confirmation_retry && in_array( $health['status'], [ 'request_error', 'http_error' ], true ) ) {
+			$retry_args = [ $client_id ];
+			if ( wp_next_scheduled( 'stuh_retry_client_homepage', $retry_args ) ) {
+				$confirmation_pending = true;
+				$health['status']     .= '_pending_retry';
+				$health['message']    .= ' ' . __( 'A confirmation check is pending.', 'stuh' );
+			} elseif ( wp_schedule_single_event( time() + ( 10 * MINUTE_IN_SECONDS ), 'stuh_retry_client_homepage', $retry_args ) ) {
+				$confirmation_pending = true;
+				$health['status']     .= '_pending_retry';
+				$health['message']    .= ' ' . __( 'A confirmation check is scheduled in 10 minutes.', 'stuh' );
+				error_log( sprintf( '[STUH homepage] Scheduled failure retry for client %s in 10 minutes', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			} else {
+				$health['status']  .= '_retry_failed';
+				$health['message'] .= ' ' . __( 'The confirmation check could not be scheduled.', 'stuh' );
+				error_log( sprintf( '[STUH homepage] Could not schedule failure retry for client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			}
+		}
+
 		$clients = self::get_clients();
 		foreach ( $clients as $index => $stored_client ) {
 			if ( $client['id'] !== ( $stored_client['id'] ?? '' ) ) {
@@ -950,10 +954,7 @@ class STUH_Plugin {
 			}
 
 			$previous_health = is_array( $stored_client['homepage_health'] ?? null ) ? $stored_client['homepage_health'] : [];
-			$is_unconfirmed_5xx = ! $is_5xx_retry
-				&& (int) ( $health['status_code'] ?? 0 ) >= 500
-				&& (int) ( $health['status_code'] ?? 0 ) < 600;
-			if ( $is_unconfirmed_5xx ) {
+			if ( $confirmation_pending ) {
 				$health['alert_fingerprint'] = (string) ( $previous_health['alert_fingerprint'] ?? '' );
 			} elseif ( ! $health['ok'] ) {
 				$fingerprint = hash( 'sha256', implode( '|', [
@@ -1043,16 +1044,16 @@ class STUH_Plugin {
 	}
 
 	/**
-	 * Confirm a 5xx response after the ten-minute delay.
+	 * Confirm an HTTP or request failure after the ten-minute delay.
 	 */
 	public function run_scheduled_homepage_retry( string $client_id ): void {
 		$this->run_client_homepage_check( $client_id, true );
 	}
 
 	/**
-	 * @param bool $is_5xx_retry Whether this check confirms an earlier 5xx response.
+	 * @param bool $is_confirmation_retry Whether this check confirms an earlier failure.
 	 */
-	private function run_client_homepage_check( string $client_id, bool $is_5xx_retry ): void {
+	private function run_client_homepage_check( string $client_id, bool $is_confirmation_retry ): void {
 		$client = null;
 		foreach ( self::get_clients() as $candidate ) {
 			if ( $client_id === ( $candidate['id'] ?? '' ) ) {
@@ -1069,7 +1070,7 @@ class STUH_Plugin {
 		$telemetry = self::get_telemetry();
 		$report    = is_array( $telemetry[ $client_id ] ?? null ) ? $telemetry[ $client_id ] : [];
 		$data      = is_array( $report['data'] ?? null ) ? $report['data'] : [];
-		self::check_client_homepage( $client, $data, $is_5xx_retry );
+		self::check_client_homepage( $client, $data, $is_confirmation_retry );
 	}
 
 	// --------------------------------------------------------
