@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.4.0
+ * Version: 0.4.1
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -2403,7 +2403,7 @@ class STUH_Plugin {
 					static fn( array $party ): bool => 0 === strcasecmp( (string) ( $party['name'] ?? '' ), $name )
 				);
 				$status = 'invalid';
-				if ( '' !== $name && '' !== $contact_name && is_email( $email ) && ! $exists ) {
+				if ( '' !== $name && ( '' === $email || is_email( $email ) ) && ! $exists ) {
 					$parties[] = [
 						'id'           => uniqid( 'stuh_party_', true ),
 						'name'         => $name,
@@ -2437,7 +2437,7 @@ class STUH_Plugin {
 					$status = 'duplicate';
 				} elseif ( '' !== $email && ! is_email( $email ) ) {
 					$status = 'invalid_email';
-				} elseif ( '' !== $name && '' !== $contact_name && is_email( $email ) ) {
+				} elseif ( '' !== $name ) {
 					foreach ( $parties as &$party ) {
 						if ( ( $party['id'] ?? '' ) === $party_id ) {
 							$party['name']         = $name;
@@ -4287,11 +4287,11 @@ class STUH_Plugin {
 										</tr>
 										<tr>
 											<th scope="row"><label for="stuh-party-contact-<?php echo esc_attr( $party['id'] ); ?>"><?php esc_html_e( 'Contact name', 'stuh' ); ?></label></th>
-											<td><input type="text" id="stuh-party-contact-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_contact_name" class="regular-text" value="<?php echo esc_attr( $party['contact_name'] ?? '' ); ?>" required></td>
+											<td><input type="text" id="stuh-party-contact-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_contact_name" class="regular-text" value="<?php echo esc_attr( $party['contact_name'] ?? '' ); ?>"></td>
 										</tr>
 										<tr>
 											<th scope="row"><label for="stuh-party-email-<?php echo esc_attr( $party['id'] ); ?>"><?php esc_html_e( 'Contact email', 'stuh' ); ?></label></th>
-											<td><input type="email" id="stuh-party-email-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_email" class="regular-text" value="<?php echo esc_attr( $party['email'] ?? '' ); ?>" required></td>
+											<td><input type="email" id="stuh-party-email-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_email" class="regular-text" value="<?php echo esc_attr( $party['email'] ?? '' ); ?>"></td>
 										</tr>
 									</table>
 									<?php submit_button( __( 'Update External Party', 'stuh' ), 'primary', 'submit', false ); ?>
@@ -4317,11 +4317,11 @@ class STUH_Plugin {
 					</tr>
 					<tr>
 						<th scope="row"><label for="stuh-external-party-contact-name"><?php esc_html_e( 'Contact name', 'stuh' ); ?></label></th>
-						<td><input type="text" id="stuh-external-party-contact-name" name="external_party_contact_name" class="regular-text" required></td>
+						<td><input type="text" id="stuh-external-party-contact-name" name="external_party_contact_name" class="regular-text"></td>
 					</tr>
 					<tr>
 						<th scope="row"><label for="stuh-external-party-email"><?php esc_html_e( 'Contact email', 'stuh' ); ?></label></th>
-						<td><input type="email" id="stuh-external-party-email" name="external_party_email" class="regular-text" required></td>
+						<td><input type="email" id="stuh-external-party-email" name="external_party_email" class="regular-text"></td>
 					</tr>
 				</table>
 				<?php submit_button( __( 'Add External Party', 'stuh' ), 'primary', 'submit', false ); ?>
