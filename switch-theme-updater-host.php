@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.3.0
+ * Version: 0.4.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -20,6 +20,7 @@ define( 'STUH_OPTION_SETTINGS',   'stuh_settings' );
 define( 'STUH_OPTION_UNVERIFIED', 'stuh_unverified' );
 define( 'STUH_OPTION_WHITELIST',  'stuh_whitelist' );
 define( 'STUH_OPTION_TELEMETRY',  'stuh_telemetry' );
+define( 'STUH_OPTION_EXTERNAL_PARTIES', 'stuh_external_parties' );
 define( 'STUH_REST_NS',           'stu-host/v1' );
 
 // ============================================================
@@ -496,6 +497,20 @@ class STUH_Plugin {
 	}
 
 	/**
+	 * @return array<int, array<string, mixed>>
+	 */
+	public static function get_external_parties(): array {
+		return (array) get_option( STUH_OPTION_EXTERNAL_PARTIES, [] );
+	}
+
+	/**
+	 * @param array<int, array<string, mixed>> $parties
+	 */
+	private static function save_external_parties( array $parties ): void {
+		update_option( STUH_OPTION_EXTERNAL_PARTIES, array_values( $parties ) );
+	}
+
+	/**
 	 * @return array<int, string>
 	 */
 	private static function sanitize_client_tags( string $raw_tags ): array {
@@ -513,12 +528,20 @@ class STUH_Plugin {
 	 * @param array<string, mixed> $client
 	 * @param array<string, mixed> $telemetry
 	 */
-	private static function client_search_text( array $client, array $telemetry ): string {
+	private static function client_search_text( array $client, array $telemetry, array $external_parties = [] ): string {
 		$homepage_health = is_array( $client['homepage_health'] ?? null ) ? $client['homepage_health'] : [];
+		$party_names     = [];
+		foreach ( [ 'domain_external_party_id', 'server_external_party_id', 'email_external_party_id' ] as $party_key ) {
+			$party_id = (string) ( $client[ $party_key ] ?? '' );
+			if ( isset( $external_parties[ $party_id ] ) ) {
+				$party_names[] = (string) $external_parties[ $party_id ];
+			}
+		}
 		$values = [
 			...array_map( 'strval', (array) ( $client['site_urls'] ?? [] ) ),
 			(string) ( $client['site_url'] ?? '' ),
 			...array_map( 'strval', (array) ( $client['tags'] ?? [] ) ),
+			...$party_names,
 			(string) ( $client['last_seen_ip'] ?? '' ),
 			self::ip_label( (string) ( $client['last_seen_ip'] ?? '' ) ),
 			(string) ( $homepage_health['status_code'] ?? '' ),
@@ -1355,6 +1378,14 @@ class STUH_Plugin {
 		);
 		add_submenu_page(
 			'stuh',
+			__( 'External Parties', 'stuh' ),
+			__( 'External Parties', 'stuh' ),
+			'manage_options',
+			'stuh-external-parties',
+			[ $this, 'render_external_parties_page' ]
+		);
+		add_submenu_page(
+			'stuh',
 			__( 'Settings', 'stuh' ),
 			__( 'Settings', 'stuh' ),
 			'manage_options',
@@ -1401,15 +1432,18 @@ class STUH_Plugin {
 	public function client_columns(): array {
 		return [
 			'site'            => __( 'Site', 'stuh' ),
-			'site_url'        => __( 'URL', 'stuh' ),
+			'site_url'        => __( 'Domain', 'stuh' ),
+			'domain_owner'    => __( 'Domain Owner', 'stuh' ),
 			'homepage_status' => __( 'Homepage Status', 'stuh' ),
 			'tags'            => __( 'Tags', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
-			'last_seen_ip'    => __( 'Server / IP', 'stuh' ),
+			'last_seen_ip'    => __( 'Server', 'stuh' ),
+			'server_owner'    => __( 'Server Owner', 'stuh' ),
 			'telemetry_site'  => __( 'Reported Site URL', 'stuh' ),
 			'telemetry_home'  => __( 'Home URL', 'stuh' ),
 			'telemetry_admin_email' => __( 'Admin Email', 'stuh' ),
+			'email_owner'     => __( 'Email Owner', 'stuh' ),
 			'telemetry_locale'=> __( 'Locale', 'stuh' ),
 			'telemetry_wp'    => __( 'WordPress', 'stuh' ),
 			'telemetry_php'   => __( 'PHP', 'stuh' ),
@@ -1479,6 +1513,111 @@ class STUH_Plugin {
 				</form>
 			</span>
 		</div>
+		<?php
+	}
+
+	/**
+	 * Render an ownership value and its edit action.
+	 *
+	 * @param array<string, mixed> $client
+	 * @param array<string, array<string, mixed>> $external_parties_by_id
+	 */
+	private static function render_external_party_owner( array $client, array $external_parties_by_id, string $connection_type ): void {
+		$party_id = (string) ( $client[ $connection_type . '_external_party_id' ] ?? '' );
+		$party    = $external_parties_by_id[ $party_id ] ?? null;
+		?>
+		<?php if ( is_array( $party ) ) : ?>
+			<?php $dialog_id = 'stuh-party-' . $connection_type . '-' . md5( (string) $client['id'] . $party_id ); ?>
+			<a href="#TB_inline?width=420&amp;height=260&amp;inlineId=<?php echo esc_attr( $dialog_id ); ?>" class="thickbox">
+				<?php echo esc_html( $party['name'] ?? '' ); ?>
+			</a>
+			<?php self::render_external_party_contact_dialog( $dialog_id, $party ); ?>
+		<?php else : ?>
+			-
+		<?php endif; ?>
+		<div class="row-actions stuh-client-row-actions">
+			<span class="edit-owner">
+				<button type="button" id="stuh-toggle-<?php echo esc_attr( $connection_type ); ?>-owner-<?php echo esc_attr( $client['id'] ); ?>" onclick="(function(btn){ var row = document.getElementById('stuh-edit-<?php echo esc_js( $connection_type ); ?>-owner-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit'; })(this)"><?php esc_html_e( 'Edit', 'stuh' ); ?></button>
+			</span>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render an external party's contact details in a ThickBox dialog.
+	 *
+	 * @param array<string, mixed> $party
+	 */
+	private static function render_external_party_contact_dialog( string $dialog_id, array $party ): void {
+		$contact_name = (string) ( $party['contact_name'] ?? '' );
+		$email        = (string) ( $party['email'] ?? '' );
+		?>
+		<div id="<?php echo esc_attr( $dialog_id ); ?>" style="display:none;">
+			<div style="padding:16px;">
+				<h2 style="margin-top:0;"><?php echo esc_html( $party['name'] ?? '' ); ?></h2>
+				<table class="widefat striped">
+					<tbody>
+						<tr>
+							<th style="width:35%;"><?php esc_html_e( 'Contact name', 'stuh' ); ?></th>
+							<td><?php echo '' !== $contact_name ? esc_html( $contact_name ) : '—'; ?></td>
+						</tr>
+						<tr>
+							<th><?php esc_html_e( 'Contact email', 'stuh' ); ?></th>
+							<td>
+								<?php if ( is_email( $email ) ) : ?>
+									<a href="mailto:<?php echo esc_attr( $email ); ?>"><?php echo esc_html( $email ); ?></a>
+								<?php else : ?>
+									&mdash;
+								<?php endif; ?>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render the ownership editor below a client row.
+	 *
+	 * @param array<string, mixed>              $client
+	 * @param array<int, array<string, mixed>> $external_parties
+	 */
+	private static function render_external_party_owner_editor( array $client, array $external_parties, string $connection_type, int $column_count ): void {
+		$field       = $connection_type . '_external_party_id';
+		$selected_id = (string) ( $client[ $field ] ?? '' );
+		$labels      = [
+			'domain' => __( 'Domain Owner', 'stuh' ),
+			'server' => __( 'Server Owner', 'stuh' ),
+			'email'  => __( 'Email Owner', 'stuh' ),
+		];
+		$label       = $labels[ $connection_type ] ?? __( 'Owner', 'stuh' );
+		?>
+		<tr id="stuh-edit-<?php echo esc_attr( $connection_type ); ?>-owner-<?php echo esc_attr( $client['id'] ); ?>" class="stuh-client-detail-row" data-client-id="<?php echo esc_attr( $client['id'] ); ?>" style="display:none;background:#f6f7f7;">
+			<td colspan="<?php echo esc_attr( $column_count ); ?>" class="colspanchange" style="padding:12px 16px;">
+				<form method="post">
+					<?php wp_nonce_field( 'stuh_admin' ); ?>
+					<input type="hidden" name="stuh_action" value="assign_external_party">
+					<input type="hidden" name="client_id" value="<?php echo esc_attr( $client['id'] ); ?>">
+					<input type="hidden" name="connection_type" value="<?php echo esc_attr( $connection_type ); ?>">
+					<label for="stuh-<?php echo esc_attr( $connection_type ); ?>-owner-<?php echo esc_attr( $client['id'] ); ?>" style="display:block;font-weight:600;margin-bottom:6px;">
+						<?php echo esc_html( $label ); ?>
+					</label>
+					<select id="stuh-<?php echo esc_attr( $connection_type ); ?>-owner-<?php echo esc_attr( $client['id'] ); ?>" name="external_party_id">
+						<option value=""><?php esc_html_e( '-', 'stuh' ); ?></option>
+						<?php foreach ( $external_parties as $party ) : ?>
+							<option value="<?php echo esc_attr( $party['id'] ); ?>" <?php selected( $selected_id, $party['id'] ); ?>>
+								<?php echo esc_html( $party['name'] ); ?>
+							</option>
+						<?php endforeach; ?>
+					</select>
+					<p class="description"><?php esc_html_e( 'A dash means this is owned by us.', 'stuh' ); ?></p>
+					<button type="submit" class="button button-primary"><?php esc_html_e( 'Save Owner', 'stuh' ); ?></button>
+					<button type="button" class="button" onclick="(function(){ document.getElementById('stuh-edit-<?php echo esc_js( $connection_type ); ?>-owner-<?php echo esc_js( $client['id'] ); ?>').style.display='none'; var toggle = document.getElementById('stuh-toggle-<?php echo esc_js( $connection_type ); ?>-owner-<?php echo esc_js( $client['id'] ); ?>'); if (toggle) { toggle.textContent='Edit'; } })();"><?php esc_html_e( 'Cancel', 'stuh' ); ?></button>
+				</form>
+			</td>
+		</tr>
 		<?php
 	}
 
@@ -1908,6 +2047,9 @@ class STUH_Plugin {
 						'created_at'   => time(),
 						'last_seen'    => null,
 						'last_seen_ip' => null,
+						'domain_external_party_id' => '',
+						'server_external_party_id' => '',
+						'email_external_party_id'  => '',
 					];
 					self::save_clients( $clients );
 					set_transient(
@@ -2227,6 +2369,113 @@ class STUH_Plugin {
 				wp_safe_redirect( self::client_list_url() );
 				exit;
 
+			case 'assign_external_party':
+				$id              = sanitize_text_field( wp_unslash( $_POST['client_id'] ?? '' ) );
+				$connection_type = sanitize_key( wp_unslash( $_POST['connection_type'] ?? '' ) );
+				$party_id        = sanitize_text_field( wp_unslash( $_POST['external_party_id'] ?? '' ) );
+				$party_ids       = array_column( self::get_external_parties(), 'id' );
+				if ( ! in_array( $connection_type, [ 'domain', 'server', 'email' ], true ) || ( '' !== $party_id && ! in_array( $party_id, $party_ids, true ) ) ) {
+					wp_die( esc_html__( 'Invalid external-party assignment.', 'stuh' ) );
+				}
+				$client_found = false;
+				foreach ( $clients as &$c ) {
+					if ( $c['id'] === $id ) {
+						$c[ $connection_type . '_external_party_id' ] = $party_id;
+						$client_found = true;
+						break;
+					}
+				}
+				unset( $c );
+				if ( ! $client_found ) {
+					wp_die( esc_html__( 'The selected client site could not be found.', 'stuh' ) );
+				}
+				self::save_clients( $clients );
+				wp_safe_redirect( self::client_list_url() );
+				exit;
+
+			case 'add_external_party':
+				$name         = sanitize_text_field( trim( (string) wp_unslash( $_POST['external_party_name'] ?? '' ) ) );
+				$contact_name = sanitize_text_field( trim( (string) wp_unslash( $_POST['external_party_contact_name'] ?? '' ) ) );
+				$email        = sanitize_email( (string) wp_unslash( $_POST['external_party_email'] ?? '' ) );
+				$parties      = self::get_external_parties();
+				$exists       = array_filter(
+					$parties,
+					static fn( array $party ): bool => 0 === strcasecmp( (string) ( $party['name'] ?? '' ), $name )
+				);
+				$status = 'invalid';
+				if ( '' !== $name && '' !== $contact_name && is_email( $email ) && ! $exists ) {
+					$parties[] = [
+						'id'           => uniqid( 'stuh_party_', true ),
+						'name'         => $name,
+						'contact_name' => $contact_name,
+						'email'        => $email,
+						'created_at'   => time(),
+					];
+					self::save_external_parties( $parties );
+					$status = 'added';
+				} elseif ( $exists ) {
+					$status = 'duplicate';
+				} elseif ( '' !== $email && ! is_email( $email ) ) {
+					$status = 'invalid_email';
+				}
+				wp_safe_redirect( add_query_arg( 'stuh_party_status', $status, admin_url( 'admin.php?page=stuh-external-parties' ) ) );
+				exit;
+
+			case 'save_external_party':
+				$party_id     = sanitize_text_field( wp_unslash( $_POST['external_party_id'] ?? '' ) );
+				$name         = sanitize_text_field( trim( (string) wp_unslash( $_POST['external_party_name'] ?? '' ) ) );
+				$contact_name = sanitize_text_field( trim( (string) wp_unslash( $_POST['external_party_contact_name'] ?? '' ) ) );
+				$email        = sanitize_email( (string) wp_unslash( $_POST['external_party_email'] ?? '' ) );
+				$parties      = self::get_external_parties();
+				$duplicate    = array_filter(
+					$parties,
+					static fn( array $party ): bool => ( $party['id'] ?? '' ) !== $party_id
+						&& 0 === strcasecmp( (string) ( $party['name'] ?? '' ), $name )
+				);
+				$status = 'invalid';
+				if ( $duplicate ) {
+					$status = 'duplicate';
+				} elseif ( '' !== $email && ! is_email( $email ) ) {
+					$status = 'invalid_email';
+				} elseif ( '' !== $name && '' !== $contact_name && is_email( $email ) ) {
+					foreach ( $parties as &$party ) {
+						if ( ( $party['id'] ?? '' ) === $party_id ) {
+							$party['name']         = $name;
+							$party['contact_name'] = $contact_name;
+							$party['email']        = $email;
+							$status                = 'updated';
+							break;
+						}
+					}
+					unset( $party );
+					if ( 'updated' === $status ) {
+						self::save_external_parties( $parties );
+					}
+				}
+				wp_safe_redirect( add_query_arg( 'stuh_party_status', $status, admin_url( 'admin.php?page=stuh-external-parties' ) ) );
+				exit;
+
+			case 'delete_external_party':
+				$party_id = sanitize_text_field( wp_unslash( $_POST['external_party_id'] ?? '' ) );
+				$parties  = array_values(
+					array_filter(
+						self::get_external_parties(),
+						static fn( array $party ): bool => ( $party['id'] ?? '' ) !== $party_id
+					)
+				);
+				self::save_external_parties( $parties );
+				foreach ( $clients as &$c ) {
+					foreach ( [ 'domain_external_party_id', 'server_external_party_id', 'email_external_party_id' ] as $field ) {
+						if ( ( $c[ $field ] ?? '' ) === $party_id ) {
+							$c[ $field ] = '';
+						}
+					}
+				}
+				unset( $c );
+				self::save_clients( $clients );
+				wp_safe_redirect( add_query_arg( 'stuh_party_status', 'deleted', admin_url( 'admin.php?page=stuh-external-parties' ) ) );
+				exit;
+
 			case 'regenerate_key':
 				$id       = sanitize_text_field( $_POST['client_id'] ?? '' );
 				$site_url = '';
@@ -2336,6 +2585,9 @@ class STUH_Plugin {
 						'created_at'   => time(),
 						'last_seen'    => null,
 						'last_seen_ip' => null,
+						'domain_external_party_id' => '',
+						'server_external_party_id' => '',
+						'email_external_party_id'  => '',
 					];
 					self::save_clients( $clients );
 					// Remove from unverified.
@@ -3025,6 +3277,27 @@ class STUH_Plugin {
 
 		$clients = self::get_clients();
 		$telemetry = self::get_telemetry();
+		$external_parties = self::get_external_parties();
+		$external_party_names = [];
+		$external_party_search_values = [];
+		$external_parties_by_id = [];
+		foreach ( $external_parties as $party ) {
+			if ( isset( $party['id'], $party['name'] ) ) {
+				$party_id = (string) $party['id'];
+				$external_party_names[ $party_id ] = (string) $party['name'];
+				$external_parties_by_id[ $party_id ] = $party;
+				$external_party_search_values[ $party_id ] = implode(
+					' ',
+					array_filter(
+						[
+							(string) $party['name'],
+							(string) ( $party['contact_name'] ?? '' ),
+							(string) ( $party['email'] ?? '' ),
+						]
+					)
+				);
+			}
+		}
 		$enabled_client_count = count( array_filter( $clients, fn( array $client ): bool => (bool) ( $client['enabled'] ?? true ) ) );
 		$disabled_client_count = count( $clients ) - $enabled_client_count;
 		$stale_client_count = count( array_filter( $clients, fn( array $client ): bool => self::is_client_stale( $client ) ) );
@@ -3165,7 +3438,7 @@ class STUH_Plugin {
 			$opposite     = $order === 'asc' ? 'desc' : 'asc';
 			$search_query = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
 
-			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry ) {
+			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry, $external_party_names ) {
 				$va = $a[ $orderby ] ?? '';
 				$vb = $b[ $orderby ] ?? '';
 				if ( 'homepage_status' === $orderby ) {
@@ -3190,6 +3463,12 @@ class STUH_Plugin {
 					$va = implode( ', ', (array) $va );
 					$vb = implode( ', ', (array) $vb );
 				}
+				if ( in_array( $orderby, [ 'domain_owner', 'server_owner', 'email_owner' ], true ) ) {
+					$connection_type = str_replace( '_owner', '', $orderby );
+					$field           = $connection_type . '_external_party_id';
+					$va              = $external_party_names[ (string) ( $a[ $field ] ?? '' ) ] ?? '';
+					$vb              = $external_party_names[ (string) ( $b[ $field ] ?? '' ) ] ?? '';
+				}
 				if ( str_starts_with( $orderby, 'telemetry_' ) ) {
 					$data_a = is_array( $telemetry[ $a['id'] ]['data'] ?? null ) ? $telemetry[ $a['id'] ]['data'] : [];
 					$data_b = is_array( $telemetry[ $b['id'] ]['data'] ?? null ) ? $telemetry[ $b['id'] ]['data'] : [];
@@ -3212,6 +3491,7 @@ class STUH_Plugin {
 					}
 				}
 				// Nulls last.
+				if ( ( $va === null || $va === '' ) && ( $vb === null || $vb === '' ) ) return 0;
 				if ( $va === null || $va === '' ) return $order === 'asc' ? 1 : -1;
 				if ( $vb === null || $vb === '' ) return $order === 'asc' ? -1 : 1;
 				if ( 'last_seen_ip' === $orderby ) {
@@ -3316,7 +3596,7 @@ class STUH_Plugin {
 						$search_telemetry = is_array( $telemetry[ $c['id'] ] ?? null ) ? $telemetry[ $c['id'] ] : [];
 						$row_index++;
 					?>
-					<tr class="stuh-client-row<?php echo $is_stale ? ' stuh-client-row--stale' : ''; ?><?php echo $homepage_unhealthy ? ' stuh-client-row--unhealthy' : ''; ?>" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-stale="<?php echo $is_stale ? 'true' : 'false'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry ) ); ?>" style="<?php echo esc_attr( $row_bg ); ?>">
+					<tr class="stuh-client-row<?php echo $is_stale ? ' stuh-client-row--stale' : ''; ?><?php echo $homepage_unhealthy ? ' stuh-client-row--unhealthy' : ''; ?>" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-stale="<?php echo $is_stale ? 'true' : 'false'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry, $external_party_search_values ) ); ?>" style="<?php echo esc_attr( $row_bg ); ?>">
 						<th scope="row" class="check-column">
 							<label class="screen-reader-text" for="cb-select-<?php echo esc_attr( $c['id'] ); ?>"><?php echo esc_html( sprintf( __( 'Select %s', 'stuh' ), $c['site_url'] ?? '' ) ); ?></label>
 							<input id="cb-select-<?php echo esc_attr( $c['id'] ); ?>" type="checkbox" name="client_ids[]" value="<?php echo esc_attr( $c['id'] ); ?>" form="stuh-client-bulk-actions">
@@ -3361,6 +3641,8 @@ class STUH_Plugin {
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
 							<?php endforeach; ?>
 							<?php self::render_client_row_actions( $c, $enabled, $login_url ); ?>
+						<?php elseif ( in_array( $column_id, [ 'domain_owner', 'server_owner', 'email_owner' ], true ) ) : ?>
+							<?php self::render_external_party_owner( $c, $external_parties_by_id, str_replace( '_owner', '', $column_id ) ); ?>
 						<?php elseif ( 'homepage_status' === $column_id ) : ?>
 							<?php if ( $homepage_health ) : ?>
 								<?php
@@ -3611,6 +3893,9 @@ class STUH_Plugin {
 						</td>
 						<?php endforeach; ?>
 					</tr>
+					<?php self::render_external_party_owner_editor( $c, $external_parties, 'domain', $visible_column_count ); ?>
+					<?php self::render_external_party_owner_editor( $c, $external_parties, 'server', $visible_column_count ); ?>
+					<?php self::render_external_party_owner_editor( $c, $external_parties, 'email', $visible_column_count ); ?>
 					<!-- Inline edit-URLs row (hidden by default) -->
 					<tr id="stuh-edit-urls-<?php echo esc_attr( $c['id'] ); ?>" class="stuh-client-detail-row" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" style="display:none;background:#f6f7f7;">
 						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding:12px 16px;">
@@ -3903,6 +4188,146 @@ class STUH_Plugin {
 		</form>
 	</div>
 	<?php
+	}
+
+	// --------------------------------------------------------
+	// Admin page: external parties
+	// --------------------------------------------------------
+
+	public function render_external_parties_page(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Insufficient permissions', 'stuh' ) );
+		}
+
+		$parties = self::get_external_parties();
+		usort( $parties, static fn( array $a, array $b ): int => strcasecmp( (string) ( $a['name'] ?? '' ), (string) ( $b['name'] ?? '' ) ) );
+		$status = sanitize_key( wp_unslash( $_GET['stuh_party_status'] ?? '' ) );
+		?>
+		<div class="wrap">
+			<h1><?php esc_html_e( 'External Parties', 'stuh' ); ?></h1>
+			<p><?php esc_html_e( 'Manage third parties that own or manage client domains and servers.', 'stuh' ); ?></p>
+
+			<?php if ( 'added' === $status ) : ?>
+				<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'External party added.', 'stuh' ); ?></p></div>
+			<?php elseif ( 'updated' === $status ) : ?>
+				<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'External party updated.', 'stuh' ); ?></p></div>
+			<?php elseif ( 'deleted' === $status ) : ?>
+				<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'External party deleted and its client connections removed.', 'stuh' ); ?></p></div>
+			<?php elseif ( 'duplicate' === $status ) : ?>
+				<div class="notice notice-error is-dismissible"><p><?php esc_html_e( 'An external party with that name already exists.', 'stuh' ); ?></p></div>
+			<?php elseif ( 'invalid_email' === $status ) : ?>
+				<div class="notice notice-error is-dismissible"><p><?php esc_html_e( 'Enter a valid contact email address.', 'stuh' ); ?></p></div>
+			<?php elseif ( 'invalid' === $status ) : ?>
+				<div class="notice notice-error is-dismissible"><p><?php esc_html_e( 'Enter a party name, contact name, and valid contact email address.', 'stuh' ); ?></p></div>
+			<?php endif; ?>
+
+			<table class="wp-list-table widefat fixed striped">
+				<thead>
+					<tr>
+						<th scope="col" class="manage-column column-primary"><?php esc_html_e( 'Party name', 'stuh' ); ?></th>
+						<th scope="col" class="manage-column"><?php esc_html_e( 'Contact name', 'stuh' ); ?></th>
+						<th scope="col" class="manage-column"><?php esc_html_e( 'Contact email', 'stuh' ); ?></th>
+						<th scope="col" class="manage-column"><?php esc_html_e( 'Added', 'stuh' ); ?></th>
+					</tr>
+				</thead>
+				<tfoot>
+					<tr>
+						<th scope="col" class="manage-column column-primary"><?php esc_html_e( 'Party name', 'stuh' ); ?></th>
+						<th scope="col" class="manage-column"><?php esc_html_e( 'Contact name', 'stuh' ); ?></th>
+						<th scope="col" class="manage-column"><?php esc_html_e( 'Contact email', 'stuh' ); ?></th>
+						<th scope="col" class="manage-column"><?php esc_html_e( 'Added', 'stuh' ); ?></th>
+					</tr>
+				</tfoot>
+				<tbody>
+				<?php if ( $parties ) : ?>
+					<?php foreach ( $parties as $party ) : ?>
+						<tr>
+							<td class="column-primary" data-colname="<?php esc_attr_e( 'Party name', 'stuh' ); ?>">
+								<strong><?php echo esc_html( $party['name'] ?? '' ); ?></strong>
+								<div class="row-actions">
+									<span class="edit">
+										<button type="button" class="button-link" onclick="(function(){ var row = document.getElementById('stuh-edit-party-<?php echo esc_js( $party['id'] ); ?>'); row.style.display = row.style.display === 'none' ? 'table-row' : 'none'; })();"><?php esc_html_e( 'Edit', 'stuh' ); ?></button>
+									</span>
+									<?php if ( is_email( $party['email'] ?? '' ) ) : ?>
+										| <span class="email"><a href="mailto:<?php echo esc_attr( $party['email'] ); ?>"><?php esc_html_e( 'Email', 'stuh' ); ?></a></span>
+									<?php endif; ?>
+									| <span class="delete">
+										<form method="post" style="display:inline;" onsubmit="return confirm('<?php echo esc_js( __( 'Delete this external party and remove all of its client connections?', 'stuh' ) ); ?>');">
+											<?php wp_nonce_field( 'stuh_admin' ); ?>
+											<input type="hidden" name="stuh_action" value="delete_external_party">
+											<input type="hidden" name="external_party_id" value="<?php echo esc_attr( $party['id'] ); ?>">
+											<button type="submit" class="button-link button-link-delete"><?php esc_html_e( 'Delete', 'stuh' ); ?></button>
+										</form>
+									</span>
+								</div>
+								<button type="button" class="toggle-row"><span class="screen-reader-text"><?php esc_html_e( 'Show more details', 'stuh' ); ?></span></button>
+							</td>
+							<td data-colname="<?php esc_attr_e( 'Contact name', 'stuh' ); ?>">
+								<?php echo '' !== ( $party['contact_name'] ?? '' ) ? esc_html( $party['contact_name'] ) : '<span aria-hidden="true">—</span>'; ?>
+							</td>
+							<td data-colname="<?php esc_attr_e( 'Contact email', 'stuh' ); ?>">
+								<?php if ( is_email( $party['email'] ?? '' ) ) : ?>
+									<a href="mailto:<?php echo esc_attr( $party['email'] ); ?>"><?php echo esc_html( $party['email'] ); ?></a>
+								<?php else : ?>
+									<span aria-hidden="true">—</span>
+								<?php endif; ?>
+							</td>
+							<td data-colname="<?php esc_attr_e( 'Added', 'stuh' ); ?>"><?php echo esc_html( ! empty( $party['created_at'] ) ? date_i18n( 'Y-m-d', (int) $party['created_at'] ) : '—' ); ?></td>
+						</tr>
+						<tr id="stuh-edit-party-<?php echo esc_attr( $party['id'] ); ?>" style="display:none;">
+							<td colspan="4">
+								<form method="post">
+									<?php wp_nonce_field( 'stuh_admin' ); ?>
+									<input type="hidden" name="stuh_action" value="save_external_party">
+									<input type="hidden" name="external_party_id" value="<?php echo esc_attr( $party['id'] ); ?>">
+									<table class="form-table" role="presentation">
+										<tr>
+											<th scope="row"><label for="stuh-party-name-<?php echo esc_attr( $party['id'] ); ?>"><?php esc_html_e( 'Party name', 'stuh' ); ?></label></th>
+											<td><input type="text" id="stuh-party-name-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_name" class="regular-text" value="<?php echo esc_attr( $party['name'] ?? '' ); ?>" required></td>
+										</tr>
+										<tr>
+											<th scope="row"><label for="stuh-party-contact-<?php echo esc_attr( $party['id'] ); ?>"><?php esc_html_e( 'Contact name', 'stuh' ); ?></label></th>
+											<td><input type="text" id="stuh-party-contact-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_contact_name" class="regular-text" value="<?php echo esc_attr( $party['contact_name'] ?? '' ); ?>" required></td>
+										</tr>
+										<tr>
+											<th scope="row"><label for="stuh-party-email-<?php echo esc_attr( $party['id'] ); ?>"><?php esc_html_e( 'Contact email', 'stuh' ); ?></label></th>
+											<td><input type="email" id="stuh-party-email-<?php echo esc_attr( $party['id'] ); ?>" name="external_party_email" class="regular-text" value="<?php echo esc_attr( $party['email'] ?? '' ); ?>" required></td>
+										</tr>
+									</table>
+									<?php submit_button( __( 'Update External Party', 'stuh' ), 'primary', 'submit', false ); ?>
+									<button type="button" class="button" onclick="document.getElementById('stuh-edit-party-<?php echo esc_js( $party['id'] ); ?>').style.display='none';"><?php esc_html_e( 'Cancel', 'stuh' ); ?></button>
+								</form>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				<?php else : ?>
+					<tr><td colspan="4"><?php esc_html_e( 'No external parties added yet.', 'stuh' ); ?></td></tr>
+				<?php endif; ?>
+				</tbody>
+			</table>
+
+			<h2><?php esc_html_e( 'Add External Party', 'stuh' ); ?></h2>
+			<form method="post">
+				<?php wp_nonce_field( 'stuh_admin' ); ?>
+				<input type="hidden" name="stuh_action" value="add_external_party">
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><label for="stuh-external-party-name"><?php esc_html_e( 'Party name', 'stuh' ); ?></label></th>
+						<td><input type="text" id="stuh-external-party-name" name="external_party_name" class="regular-text" placeholder="<?php esc_attr_e( 'Hosting provider or domain registrar', 'stuh' ); ?>" required></td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="stuh-external-party-contact-name"><?php esc_html_e( 'Contact name', 'stuh' ); ?></label></th>
+						<td><input type="text" id="stuh-external-party-contact-name" name="external_party_contact_name" class="regular-text" required></td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="stuh-external-party-email"><?php esc_html_e( 'Contact email', 'stuh' ); ?></label></th>
+						<td><input type="email" id="stuh-external-party-email" name="external_party_email" class="regular-text" required></td>
+					</tr>
+				</table>
+				<?php submit_button( __( 'Add External Party', 'stuh' ), 'primary', 'submit', false ); ?>
+			</form>
+		</div>
+		<?php
 	}
 
 	// --------------------------------------------------------
