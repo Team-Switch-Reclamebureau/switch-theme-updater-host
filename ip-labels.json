@@ -33,6 +33,8 @@
 	"2a01:7c8:bb0b:368:5054:ff:fe87:ec6c": { "label": "VServs 3", "url": "https://switchserver3.vservs.net:2222/evo/" },
 	"95.170.74.155": { "label": "VServs 4", "url": "https://switchserver4.vservs.net:2222/evo/" },
 	"2a01:7c8:bb07:14a:5054:ff:feed:5e3f": { "label": "VServs 4", "url": "https://switchserver4.vservs.net:2222/evo/" },
+	"185.108.113.213": { "label": "VServs 5", "url": "https://switchserver5.vservs.net:2222/evo/" },
+	"2a01:7c8:bb03:13:5054:ff:fe2f:6431": { "label": "VServs 5", "url": "https://switchserver5.vservs.net:2222/evo/" },
 
 	"109.94.151.43": { "label": "FEKA DFG", "url": "https://dfg.fekahost.nl/smb/web/view" },
 	"2a02:fe9:1b41:1::43": { "label": "FEKA DFG", "url": "https://dfg.fekahost.nl/smb/web/view" },
