@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.4.3
+ * Version: 0.5.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -21,13 +21,18 @@ define( 'STUH_OPTION_UNVERIFIED', 'stuh_unverified' );
 define( 'STUH_OPTION_WHITELIST',  'stuh_whitelist' );
 define( 'STUH_OPTION_TELEMETRY',  'stuh_telemetry' );
 define( 'STUH_OPTION_EXTERNAL_PARTIES', 'stuh_external_parties' );
+define( 'STUH_OPTION_CLONE_SCHEMA_VERSION', 'stuh_clone_schema_version' );
 define( 'STUH_REST_NS',           'stu-host/v1' );
+if ( ! defined( 'STUH_CLONE_ARTIFACT_DIR' ) ) {
+	define( 'STUH_CLONE_ARTIFACT_DIR', trailingslashit( get_temp_dir() ) . 'stuh-clone-artifacts' );
+}
 
 // ============================================================
 // Main plugin class
 // ============================================================
 class STUH_Plugin {
 	private $clients_page_hook = '';
+	private const CLONE_SCHEMA_VERSION = '2';
 
 	/**
 	 * Legacy mu-plugin this plugin used to write. It never worked: it hooked a
@@ -42,7 +47,10 @@ class STUH_Plugin {
 		add_action( 'admin_menu',    [ $this, 'register_admin_menu' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_clients_styles' ] );
 		add_action( 'admin_init',    [ $this, 'handle_admin_actions' ] );
+		add_action( 'init',          [ $this, 'maybe_create_clone_tables' ] );
+		add_action( 'init',          [ $this, 'maybe_schedule_clone_artifact_cleanup' ] );
 		add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
+		add_action( 'stuh_cleanup_expired_clone_artifacts', [ $this, 'cleanup_expired_clone_artifacts' ] );
 		add_action( 'admin_notices', [ $this, 'maybe_notice_no_token' ] );
 		add_action( 'admin_init',    [ $this, 'cleanup_legacy_mu_plugin' ] );
 		add_action( 'stuh_check_client_homepage', [ $this, 'run_scheduled_homepage_check' ] );
@@ -494,6 +502,243 @@ class STUH_Plugin {
 
 	private static function save_clients( array $clients ): void {
 		update_option( STUH_OPTION_CLIENTS, array_values( $clients ) );
+	}
+
+	/**
+	 * Create the non-autoloaded clone-job audit tables on activation and upgrade.
+	 *
+	 * Jobs and their append-only audit events grow independently of the client
+	 * registry, so storing them in an option would not scale safely.
+	 */
+	public static function maybe_create_clone_tables(): void {
+		if ( self::CLONE_SCHEMA_VERSION === get_option( STUH_OPTION_CLONE_SCHEMA_VERSION ) ) {
+			return;
+		}
+
+		global $wpdb;
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		$charset_collate = $wpdb->get_charset_collate();
+		$jobs_table      = self::clone_jobs_table();
+		$events_table    = self::clone_events_table();
+
+		dbDelta( "CREATE TABLE {$jobs_table} (
+			id varchar(64) NOT NULL,
+			client_id varchar(80) NOT NULL,
+			requested_by bigint(20) unsigned NOT NULL,
+			status varchar(32) NOT NULL,
+			sanitization_profile varchar(64) NOT NULL,
+			uploads_mode varchar(32) NOT NULL,
+			artifact_sha256 char(64) NULL,
+			artifact_size bigint(20) unsigned NULL,
+			created_at datetime NOT NULL,
+			updated_at datetime NOT NULL,
+			expires_at datetime NULL,
+			PRIMARY KEY  (id),
+			KEY client_id (client_id),
+			KEY requested_by (requested_by),
+			KEY status (status)
+		) {$charset_collate};" );
+
+		dbDelta( "CREATE TABLE {$events_table} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			job_id varchar(64) NOT NULL,
+			actor_type varchar(32) NOT NULL,
+			actor_id bigint(20) unsigned NULL,
+			event varchar(64) NOT NULL,
+			event_data longtext NULL,
+			created_at datetime NOT NULL,
+			PRIMARY KEY  (id),
+			KEY job_id (job_id),
+			KEY created_at (created_at)
+		) {$charset_collate};" );
+
+		$jobs_table_exists   = $jobs_table === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $jobs_table ) );
+		$events_table_exists = $events_table === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $events_table ) );
+		if ( ! $jobs_table_exists || ! $events_table_exists ) {
+			error_log( '[STUH clones] Could not create clone-job audit tables.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		update_option( STUH_OPTION_CLONE_SCHEMA_VERSION, self::CLONE_SCHEMA_VERSION, false );
+		self::clone_artifact_directory();
+	}
+
+	private static function clone_jobs_table(): string {
+		global $wpdb;
+		return $wpdb->prefix . 'stuh_clone_jobs';
+	}
+
+	private static function clone_events_table(): string {
+		global $wpdb;
+		return $wpdb->prefix . 'stuh_clone_events';
+	}
+
+	private static function clone_artifact_directory(): string {
+		$directory = STUH_CLONE_ARTIFACT_DIR;
+		if ( ! wp_mkdir_p( $directory ) ) {
+			return '';
+		}
+
+		return $directory;
+	}
+
+	private static function clone_artifact_path( string $job_id ): string {
+		return trailingslashit( self::clone_artifact_directory() ) . $job_id . '.sql.gz';
+	}
+
+	/**
+	 * Create a pending clone job and its immutable initial audit event.
+	 *
+	 * @return string|\WP_Error Job ID on success.
+	 */
+	public static function create_clone_job( int $user_id, string $client_id, string $sanitization_profile = 'standard-v1', string $uploads_mode = 'none' ) {
+		$user = get_userdata( $user_id );
+		if ( ! $user || ! $user->exists() || ! user_can( $user, 'manage_options' ) ) {
+			return new WP_Error( 'clone_forbidden', __( 'Only updater-host administrators can request client clones.', 'stuh' ) );
+		}
+
+		if ( 'standard-v1' !== $sanitization_profile || 'none' !== $uploads_mode ) {
+			return new WP_Error( 'clone_request_unsupported', __( 'The requested clone options are not supported.', 'stuh' ) );
+		}
+
+		$client = self::find_client_by_id( $client_id );
+		if ( ! $client || ! ( $client['enabled'] ?? true ) ) {
+			return new WP_Error( 'clone_client_unavailable', __( 'The selected client site is unavailable for cloning.', 'stuh' ) );
+		}
+
+		$job_id = 'stuh_clone_' . bin2hex( random_bytes( 16 ) );
+		$now    = current_time( 'mysql', true );
+
+		global $wpdb;
+		$inserted = $wpdb->insert(
+			self::clone_jobs_table(),
+			[
+				'id'                   => $job_id,
+				'client_id'            => $client_id,
+				'requested_by'         => $user_id,
+				'status'               => 'pending',
+				'sanitization_profile' => $sanitization_profile,
+				'uploads_mode'         => $uploads_mode,
+				'artifact_sha256'      => null,
+				'artifact_size'        => null,
+				'created_at'           => $now,
+				'updated_at'           => $now,
+				'expires_at'           => null,
+			],
+			[ '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' ]
+		);
+
+		if ( false === $inserted ) {
+			return new WP_Error( 'clone_job_create_failed', __( 'The clone job could not be recorded.', 'stuh' ) );
+		}
+
+		self::record_clone_job_event( $job_id, 'developer', $user_id, 'requested', [
+			'sanitization_profile' => $sanitization_profile,
+			'uploads_mode'         => $uploads_mode,
+		] );
+
+		return $job_id;
+	}
+
+	/**
+	 * @param array<string, scalar|null> $event_data
+	 */
+	public static function record_clone_job_event( string $job_id, string $actor_type, ?int $actor_id, string $event, array $event_data = [] ): bool {
+		global $wpdb;
+		return false !== $wpdb->insert(
+			self::clone_events_table(),
+			[
+				'job_id'     => $job_id,
+				'actor_type' => $actor_type,
+				'actor_id'   => $actor_id,
+				'event'      => $event,
+				'event_data' => $event_data ? wp_json_encode( $event_data ) : null,
+				'created_at' => current_time( 'mysql', true ),
+			],
+			[ '%s', '%s', '%d', '%s', '%s', '%s' ]
+		);
+	}
+
+	/**
+	 * @return array<string, mixed>|false
+	 */
+	private static function find_client_by_id( string $client_id ) {
+		foreach ( self::get_clients() as $client ) {
+			if ( $client_id === (string) ( $client['id'] ?? '' ) ) {
+				return $client;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Find an enabled client by its registered URL hostname.
+	 *
+	 * @return array<string, mixed>|false
+	 */
+	private static function find_client_by_domain( string $domain ) {
+		$domain = strtolower( rtrim( $domain, '.' ) );
+		if ( '' === $domain ) {
+			return false;
+		}
+
+		foreach ( self::get_clients() as $client ) {
+			if ( ! ( $client['enabled'] ?? true ) ) {
+				continue;
+			}
+
+			$urls = $client['site_urls'] ?? [ $client['site_url'] ?? '' ];
+			foreach ( (array) $urls as $url ) {
+				$host = strtolower( (string) wp_parse_url( (string) $url, PHP_URL_HOST ) );
+				if ( $domain === $host || 'www.' . $domain === $host || $domain === substr( $host, 4 ) ) {
+					return $client;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * @return array<string, mixed>|false
+	 */
+	public static function get_clone_job_for_user( string $job_id, int $user_id ) {
+		global $wpdb;
+		$job = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT id, client_id, requested_by, status, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
+				$job_id
+			),
+			ARRAY_A
+		);
+
+		if ( ! is_array( $job ) || $user_id !== (int) $job['requested_by'] ) {
+			return false;
+		}
+
+		$client = self::find_client_by_id( (string) $job['client_id'] );
+		if ( $client ) {
+			$job['site_urls'] = array_values( array_filter(
+				(array) ( $client['site_urls'] ?? [ $client['site_url'] ?? '' ] ),
+				'is_string'
+			) );
+			$telemetry = self::get_telemetry();
+			$report    = is_array( $telemetry[ (string) $job['client_id'] ] ?? null ) ? $telemetry[ (string) $job['client_id'] ] : [];
+			$data      = is_array( $report['data'] ?? null ) ? $report['data'] : [];
+			$packages  = is_array( $data['packages'] ?? null ) ? $data['packages'] : [];
+			$job['package_inventory'] = [
+				'plugins' => array_values( array_filter( (array) ( $packages['plugins'] ?? [] ), static function( $package ): bool {
+					return is_array( $package ) && ! empty( $package['active'] );
+				} ) ),
+				'themes' => array_values( array_filter( (array) ( $packages['themes'] ?? [] ), static function( $package ): bool {
+					return is_array( $package ) && ! empty( $package['active'] );
+				} ) ),
+			];
+		}
+
+		return $job;
 	}
 
 	/**
@@ -1142,6 +1387,50 @@ class STUH_Plugin {
 				'pack' => [ 'default'  => '',    'sanitize_callback' => 'sanitize_text_field' ],
 			],
 		] );
+
+		register_rest_route( STUH_REST_NS, '/clones', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_create_clone_job' ],
+			'permission_callback' => [ $this, 'rest_clone_permission' ],
+			'args'                => [
+				'domain' => [ 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ],
+			],
+		] );
+
+		register_rest_route( STUH_REST_NS, '/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_clone_job_status' ],
+			'permission_callback' => [ $this, 'rest_clone_permission' ],
+		] );
+		register_rest_route( STUH_REST_NS, '/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/download', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_download_clone_artifact' ],
+			'permission_callback' => [ $this, 'rest_clone_permission' ],
+		] );
+
+		register_rest_route( STUH_REST_NS, '/client/clones/pending', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_client_pending_clone_jobs' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+		] );
+
+		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/claim', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_claim_clone_job' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+		] );
+
+		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/artifact/(?P<part>\d+)', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_upload_clone_artifact_part' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+		] );
+
+		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/complete', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_complete_clone_artifact' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+		] );
 	}
 
 	// --------------------------------------------------------
@@ -1200,6 +1489,345 @@ class STUH_Plugin {
 		}
 		self::record_client_telemetry( $client, $req );
 		return true;
+	}
+
+	/**
+	 * Clone endpoints use WordPress Application Password authentication. An
+	 * updater-host administrator can request a clone of any enabled client.
+	 */
+	public function rest_clone_permission() {
+		if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) {
+			return new WP_Error( 'clone_forbidden', __( 'An updater-host administrator Application Password is required.', 'stuh' ), [ 'status' => 403 ] );
+		}
+
+		return true;
+	}
+
+	public function rest_create_clone_job( WP_REST_Request $req ) {
+		$domain = strtolower( preg_replace( '#^https?://#i', '', trim( (string) $req->get_param( 'domain' ) ) ) );
+		$domain = preg_replace( '#/.*$#', '', $domain );
+		$domain = is_string( $domain ) ? $domain : '';
+		$client = self::find_client_by_domain( $domain );
+		if ( ! $client ) {
+			return new WP_Error( 'clone_client_not_found', __( 'No enabled registered client site matches this domain.', 'stuh' ), [ 'status' => 404 ] );
+		}
+
+		$job_id = self::create_clone_job( get_current_user_id(), (string) $client['id'] );
+		if ( is_wp_error( $job_id ) ) {
+			return $job_id;
+		}
+
+		$dispatched = $this->dispatch_clone_job_to_client( $client, $job_id );
+		return new WP_REST_Response( [
+			'job_id'     => $job_id,
+			'status'     => 'pending',
+			'domain'     => $domain,
+			'dispatched' => $dispatched,
+		], 201 );
+	}
+
+	/**
+	 * Ask the known client to claim and begin a clone job now. A network failure
+	 * leaves the job pending so the client's scheduled poll can recover it.
+	 *
+	 * @param array<string, mixed> $client
+	 */
+	private function dispatch_clone_job_to_client( array $client, string $job_id ): bool {
+		$site_url = esc_url_raw( (string) ( $client['site_url'] ?? '' ) );
+		$api_key  = (string) ( $client['api_key'] ?? '' );
+		if ( '' === $site_url || '' === $api_key ) {
+			self::record_clone_job_event( $job_id, 'host', null, 'dispatch_failed', [ 'reason' => 'missing_client_connection' ] );
+			return false;
+		}
+
+		$response = wp_remote_post(
+			trailingslashit( $site_url ) . 'wp-json/stu-client/v1/clones/start',
+			[
+				'headers'   => [
+					'X-STU-Key'   => $api_key,
+					'Content-Type' => 'application/json',
+				],
+				'body'      => wp_json_encode( [ 'job_id' => $job_id ] ),
+				'sslverify' => self::client_sslverify( $client ),
+				'timeout'   => 15,
+			]
+		);
+		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) < 200 || wp_remote_retrieve_response_code( $response ) >= 300 ) {
+			self::record_clone_job_event( $job_id, 'host', null, 'dispatch_failed', [
+				'reason' => is_wp_error( $response ) ? 'request_error' : 'http_error',
+			] );
+			return false;
+		}
+
+		self::record_clone_job_event( $job_id, 'host', null, 'dispatched' );
+		return true;
+	}
+
+	public function rest_clone_job_status( WP_REST_Request $req ) {
+		$job = self::get_clone_job_for_user( (string) $req['job_id'], get_current_user_id() );
+		if ( ! $job ) {
+			return new WP_Error( 'clone_job_not_found', __( 'Clone job not found.', 'stuh' ), [ 'status' => 404 ] );
+		}
+
+		return rest_ensure_response( $job );
+	}
+
+	public function rest_download_clone_artifact( WP_REST_Request $req ): void {
+		$job_id = (string) $req['job_id'];
+		$job    = self::get_clone_job_for_user( $job_id, get_current_user_id() );
+		$expired = ! empty( $job['expires_at'] ) && strtotime( (string) $job['expires_at'] . ' UTC' ) <= time();
+		$path    = self::clone_artifact_path( $job_id );
+		if ( ! $job || 'ready' !== $job['status'] || $expired || ! is_readable( $path ) ) {
+			wp_send_json_error( [ 'message' => __( 'The clone artifact is unavailable or has expired.', 'stuh' ) ], 404 );
+		}
+
+		header( 'Content-Type: application/gzip' );
+		header( 'Content-Disposition: attachment; filename="' . $job_id . '.sql.gz"' );
+		header( 'Content-Length: ' . filesize( $path ) );
+		header( 'Cache-Control: no-store' );
+		readfile( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_readfile
+		exit;
+	}
+
+	public function maybe_schedule_clone_artifact_cleanup(): void {
+		if ( ! wp_next_scheduled( 'stuh_cleanup_expired_clone_artifacts' ) ) {
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', 'stuh_cleanup_expired_clone_artifacts' );
+		}
+	}
+
+	public function cleanup_expired_clone_artifacts(): void {
+		global $wpdb;
+		$expired_jobs = $wpdb->get_col(
+			$wpdb->prepare(
+				'SELECT id FROM ' . self::clone_jobs_table() . ' WHERE status = %s AND expires_at IS NOT NULL AND expires_at <= %s',
+				'ready',
+				current_time( 'mysql', true )
+			)
+		);
+		foreach ( $expired_jobs as $job_id ) {
+			$job_id = (string) $job_id;
+			@unlink( self::clone_artifact_path( $job_id ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			$wpdb->update(
+				self::clone_jobs_table(),
+				[ 'status' => 'expired', 'updated_at' => current_time( 'mysql', true ) ],
+				[ 'id' => $job_id, 'status' => 'ready' ],
+				[ '%s', '%s' ],
+				[ '%s', '%s' ]
+			);
+			self::record_clone_job_event( $job_id, 'host', null, 'expired' );
+		}
+	}
+
+	/**
+	 * Client clone endpoints deliberately require the per-site key. IP
+	 * whitelisting is sufficient for update reads but cannot identify a client
+	 * safely enough to disclose or claim a clone job.
+	 *
+	 * @return array<string, mixed>|\WP_Error
+	 */
+	private function clone_client_from_request( WP_REST_Request $req ) {
+		$key = $req->get_header( 'X-STU-Key' );
+		if ( '' === $key ) {
+			return new WP_Error( 'missing_key', __( 'A client API key is required.', 'stuh' ), [ 'status' => 401 ] );
+		}
+
+		$site_url = '';
+		$ua       = sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' );
+		if ( preg_match( '#WordPress/[\d.]+;\s*(https?://[^\s]+)#i', $ua, $matches ) ) {
+			$site_url = self::strip_language_prefix( esc_url_raw( rtrim( $matches[1], '/' ) ) );
+		}
+
+		$client = self::authenticate_client( $key, $site_url );
+		if ( ! $client ) {
+			return new WP_Error( 'invalid_key', __( 'A valid client API key is required.', 'stuh' ), [ 'status' => 403 ] );
+		}
+
+		self::record_client_telemetry( $client, $req );
+		return $client;
+	}
+
+	public function rest_clone_client_permission( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		return is_wp_error( $client ) ? $client : true;
+	}
+
+	public function rest_client_pending_clone_jobs( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+
+		global $wpdb;
+		$jobs = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT id, sanitization_profile, uploads_mode, created_at FROM ' . self::clone_jobs_table() . ' WHERE client_id = %s AND status = %s ORDER BY created_at ASC LIMIT 1',
+				$client['id'],
+				'pending'
+			),
+			ARRAY_A
+		);
+
+		return rest_ensure_response( [ 'jobs' => is_array( $jobs ) ? $jobs : [] ] );
+	}
+
+	public function rest_claim_clone_job( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+
+		$job_id = (string) $req['job_id'];
+		$now    = current_time( 'mysql', true );
+		global $wpdb;
+		$job = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT sanitization_profile, uploads_mode FROM ' . self::clone_jobs_table() . ' WHERE id = %s AND client_id = %s AND status = %s',
+				$job_id,
+				$client['id'],
+				'pending'
+			),
+			ARRAY_A
+		);
+		if ( ! is_array( $job ) ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job is no longer available to claim.', 'stuh' ), [ 'status' => 409 ] );
+		}
+		$claimed = $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . self::clone_jobs_table() . ' SET status = %s, updated_at = %s WHERE id = %s AND client_id = %s AND status = %s',
+				'claimed',
+				$now,
+				$job_id,
+				$client['id'],
+				'pending'
+			)
+		);
+
+		if ( 1 !== $claimed ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job is no longer available to claim.', 'stuh' ), [ 'status' => 409 ] );
+		}
+
+		self::record_clone_job_event( $job_id, 'client', null, 'claimed', [ 'client_id' => (string) $client['id'] ] );
+		return rest_ensure_response( [
+			'job_id'               => $job_id,
+			'status'               => 'claimed',
+			'sanitization_profile' => $job['sanitization_profile'],
+			'uploads_mode'         => $job['uploads_mode'],
+		] );
+	}
+
+	public function rest_upload_clone_artifact_part( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+
+		$job_id = (string) $req['job_id'];
+		$part   = absint( $req['part'] );
+		$body   = $req->get_body();
+		$sha256 = strtolower( $req->get_header( 'X-STU-Chunk-SHA256' ) );
+		if ( '' === $body || ! preg_match( '/^[a-f0-9]{64}$/', $sha256 ) || ! hash_equals( $sha256, hash( 'sha256', $body ) ) ) {
+			return new WP_Error( 'invalid_clone_artifact_part', __( 'The clone artifact chunk is invalid.', 'stuh' ), [ 'status' => 400 ] );
+		}
+
+		global $wpdb;
+		$status = $wpdb->get_var( $wpdb->prepare(
+			'SELECT status FROM ' . self::clone_jobs_table() . ' WHERE id = %s AND client_id = %s',
+			$job_id,
+			$client['id']
+		) );
+		if ( 'claimed' !== $status ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job is not accepting artifacts.', 'stuh' ), [ 'status' => 409 ] );
+		}
+
+		$directory = self::clone_artifact_directory();
+		if ( '' === $directory ) {
+			return new WP_Error( 'clone_artifact_storage_unavailable', __( 'The host artifact directory is unavailable.', 'stuh' ), [ 'status' => 500 ] );
+		}
+
+		$part_path = trailingslashit( $directory ) . $job_id . '.' . $part . '.part';
+		if ( file_exists( $part_path ) && hash_equals( $sha256, hash_file( 'sha256', $part_path ) ) ) {
+			return rest_ensure_response( [ 'part' => $part, 'status' => 'already_uploaded' ] );
+		}
+
+		if ( false === file_put_contents( $part_path, $body, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+			return new WP_Error( 'clone_artifact_write_failed', __( 'The host could not write the clone artifact chunk.', 'stuh' ), [ 'status' => 500 ] );
+		}
+
+		return rest_ensure_response( [ 'part' => $part, 'status' => 'uploaded' ] );
+	}
+
+	public function rest_complete_clone_artifact( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+
+		$job_id = (string) $req['job_id'];
+		$params = $req->get_json_params();
+		$parts  = absint( $params['parts'] ?? 0 );
+		$sha256 = strtolower( sanitize_text_field( $params['sha256'] ?? '' ) );
+		if ( $parts < 1 || ! preg_match( '/^[a-f0-9]{64}$/', $sha256 ) ) {
+			return new WP_Error( 'invalid_clone_artifact', __( 'The clone artifact completion data is invalid.', 'stuh' ), [ 'status' => 400 ] );
+		}
+
+		global $wpdb;
+		$status = $wpdb->get_var( $wpdb->prepare(
+			'SELECT status FROM ' . self::clone_jobs_table() . ' WHERE id = %s AND client_id = %s',
+			$job_id,
+			$client['id']
+		) );
+		if ( 'claimed' !== $status ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job is not awaiting an artifact.', 'stuh' ), [ 'status' => 409 ] );
+		}
+
+		$artifact_path = self::clone_artifact_path( $job_id );
+		$target        = fopen( $artifact_path, 'wb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		if ( false === $target ) {
+			return new WP_Error( 'clone_artifact_write_failed', __( 'The host could not create the clone artifact.', 'stuh' ), [ 'status' => 500 ] );
+		}
+		for ( $part = 0; $part < $parts; $part++ ) {
+			$part_path = trailingslashit( self::clone_artifact_directory() ) . $job_id . '.' . $part . '.part';
+			$source    = is_readable( $part_path ) ? fopen( $part_path, 'rb' ) : false; // phpcs:ignore WordPress.WP.AlternativeFunctions
+			if ( false === $source || false === stream_copy_to_stream( $source, $target ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+				if ( is_resource( $source ) ) {
+					fclose( $source ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+				}
+				fclose( $target ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+				@unlink( $artifact_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+				return new WP_Error( 'clone_artifact_incomplete', __( 'The clone artifact is incomplete.', 'stuh' ), [ 'status' => 409 ] );
+			}
+			fclose( $source ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		}
+		fclose( $target ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+
+		$actual_sha256 = hash_file( 'sha256', $artifact_path );
+		if ( ! hash_equals( $sha256, $actual_sha256 ) ) {
+			@unlink( $artifact_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			return new WP_Error( 'clone_artifact_checksum_failed', __( 'The clone artifact checksum does not match.', 'stuh' ), [ 'status' => 422 ] );
+		}
+
+		$updated = $wpdb->update(
+			self::clone_jobs_table(),
+			[
+				'status'          => 'ready',
+				'artifact_sha256' => $actual_sha256,
+				'artifact_size'   => filesize( $artifact_path ),
+				'updated_at'      => current_time( 'mysql', true ),
+				'expires_at'      => gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS ),
+			],
+			[ 'id' => $job_id, 'client_id' => $client['id'], 'status' => 'claimed' ],
+			[ '%s', '%s', '%d', '%s', '%s' ],
+			[ '%s', '%s', '%s' ]
+		);
+		if ( 1 !== $updated ) {
+			return new WP_Error( 'clone_job_complete_failed', __( 'The host could not mark the clone job ready.', 'stuh' ), [ 'status' => 500 ] );
+		}
+
+		self::record_clone_job_event( $job_id, 'client', null, 'artifact_uploaded', [ 'sha256' => $actual_sha256, 'size' => filesize( $artifact_path ) ] );
+		for ( $part = 0; $part < $parts; $part++ ) {
+			@unlink( trailingslashit( self::clone_artifact_directory() ) . $job_id . '.' . $part . '.part' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		}
+		return rest_ensure_response( [ 'job_id' => $job_id, 'status' => 'ready' ] );
 	}
 
 	// --------------------------------------------------------
@@ -2503,7 +3131,10 @@ class STUH_Plugin {
 			case 'save_settings':
 				$token            = sanitize_text_field( $_POST['token'] ?? '' );
 				$allow_unverified = ! empty( $_POST['allow_unverified'] );
-				update_option( STUH_OPTION_SETTINGS, [ 'token' => $token, 'allow_unverified' => $allow_unverified ] );
+				update_option( STUH_OPTION_SETTINGS, [
+					'token'            => $token,
+					'allow_unverified' => $allow_unverified,
+				] );
 				wp_safe_redirect( add_query_arg( 'stuh_saved', '1', admin_url( 'admin.php?page=stuh-settings' ) ) );
 				exit;
 
@@ -4488,6 +5119,8 @@ class STUH_Plugin {
 		<?php
 	}
 }
+
+register_activation_hook( __FILE__, [ 'STUH_Plugin', 'maybe_create_clone_tables' ] );
 
 // ============================================================
 // GitHub client (adapted from switch-theme-updater)
