@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.1
+ * Version: 0.5.2
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1539,12 +1539,22 @@ class STUH_Plugin {
 	 * Clone endpoints use WordPress Application Password authentication. An
 	 * updater-host administrator can request a clone of any enabled client.
 	 */
-	public function rest_clone_permission() {
-		if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) {
-			return new WP_Error( 'clone_forbidden', __( 'An updater-host administrator Application Password is required.', 'stuh' ), [ 'status' => 403 ] );
+	public function rest_clone_permission( WP_REST_Request $req ) {
+		if ( is_user_logged_in() && current_user_can( 'manage_options' ) ) {
+			return true;
 		}
 
-		return true;
+		$username = trim( (string) $req->get_header( 'X-STU-Clone-Username' ) );
+		$password = (string) $req->get_header( 'X-STU-Clone-Application-Password' );
+		if ( '' !== $username && '' !== $password && function_exists( 'wp_authenticate_application_password' ) ) {
+			$user = wp_authenticate_application_password( $username, $password );
+			if ( $user instanceof WP_User && user_can( $user, 'manage_options' ) ) {
+				wp_set_current_user( $user->ID );
+				return true;
+			}
+		}
+
+		return new WP_Error( 'clone_forbidden', __( 'An updater-host administrator Application Password is required.', 'stuh' ), [ 'status' => 403 ] );
 	}
 
 	public function rest_create_clone_job( WP_REST_Request $req ) {
