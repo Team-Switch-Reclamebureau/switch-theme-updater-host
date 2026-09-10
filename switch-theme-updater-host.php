@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.3
+ * Version: 0.5.4
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -761,7 +761,11 @@ class STUH_Plugin {
 			$telemetry = self::get_telemetry();
 			$report    = is_array( $telemetry[ (string) $job['client_id'] ] ?? null ) ? $telemetry[ (string) $job['client_id'] ] : [];
 			$data      = is_array( $report['data'] ?? null ) ? $report['data'] : [];
+			$site      = is_array( $data['site'] ?? null ) ? $data['site'] : [];
 			$packages  = is_array( $data['packages'] ?? null ) ? $data['packages'] : [];
+			if ( is_string( $site['login_url'] ?? null ) ) {
+				$job['login_url'] = $site['login_url'];
+			}
 			$job['package_inventory'] = [
 				'plugins' => array_values( array_filter( (array) ( $packages['plugins'] ?? [] ), static function( $package ): bool {
 					return is_array( $package ) && ! empty( $package['active'] );
