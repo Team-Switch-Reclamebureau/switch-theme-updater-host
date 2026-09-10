@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.2
+ * Version: 0.5.3
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1547,7 +1547,7 @@ class STUH_Plugin {
 		$username = trim( (string) $req->get_header( 'X-STU-Clone-Username' ) );
 		$password = (string) $req->get_header( 'X-STU-Clone-Application-Password' );
 		if ( '' !== $username && '' !== $password && function_exists( 'wp_authenticate_application_password' ) ) {
-			$user = wp_authenticate_application_password( $username, $password );
+			$user = wp_authenticate_application_password( null, $username, $password );
 			if ( $user instanceof WP_User && user_can( $user, 'manage_options' ) ) {
 				wp_set_current_user( $user->ID );
 				return true;
