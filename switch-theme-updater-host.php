@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.0
+ * Version: 0.5.1
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -32,7 +32,7 @@ if ( ! defined( 'STUH_CLONE_ARTIFACT_DIR' ) ) {
 // ============================================================
 class STUH_Plugin {
 	private $clients_page_hook = '';
-	private const CLONE_SCHEMA_VERSION = '2';
+	private const CLONE_SCHEMA_VERSION = '3';
 
 	/**
 	 * Legacy mu-plugin this plugin used to write. It never worked: it hooked a
@@ -531,6 +531,9 @@ class STUH_Plugin {
 			uploads_mode varchar(32) NOT NULL,
 			artifact_sha256 char(64) NULL,
 			artifact_size bigint(20) unsigned NULL,
+			theme_artifact_sha256 char(64) NULL,
+			theme_artifact_size bigint(20) unsigned NULL,
+			theme_stylesheet varchar(191) NULL,
 			created_at datetime NOT NULL,
 			updated_at datetime NOT NULL,
 			expires_at datetime NULL,
@@ -587,6 +590,34 @@ class STUH_Plugin {
 		return trailingslashit( self::clone_artifact_directory() ) . $job_id . '.sql.gz';
 	}
 
+	private static function clone_theme_artifact_path( string $job_id ): string {
+		return trailingslashit( self::clone_artifact_directory() ) . $job_id . '.theme.zip';
+	}
+
+	private static function clone_artifact_part_path( string $job_id, string $artifact, int $part ): string {
+		if ( ! preg_match( '/^stuh_clone_[a-f0-9]{32}$/', $job_id ) || ! in_array( $artifact, [ 'database', 'theme' ], true ) || $part < 0 ) {
+			return '';
+		}
+
+		$suffix = 'theme' === $artifact ? '.theme.' : '.';
+		return trailingslashit( self::clone_artifact_directory() ) . $job_id . $suffix . $part . '.part';
+	}
+
+	private static function delete_clone_artifact_parts( string $job_id ): void {
+		if ( ! preg_match( '/^stuh_clone_[a-f0-9]{32}$/', $job_id ) ) {
+			return;
+		}
+
+		$parts = glob( trailingslashit( self::clone_artifact_directory() ) . $job_id . '.*.part' );
+		foreach ( is_array( $parts ) ? $parts : [] as $part ) {
+			@unlink( $part ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		}
+	}
+
+	private static function is_safe_theme_stylesheet( string $stylesheet ): bool {
+		return 1 === preg_match( '/^[A-Za-z0-9][A-Za-z0-9_.-]*$/', $stylesheet );
+	}
+
 	/**
 	 * Create a pending clone job and its immutable initial audit event.
 	 *
@@ -622,11 +653,14 @@ class STUH_Plugin {
 				'uploads_mode'         => $uploads_mode,
 				'artifact_sha256'      => null,
 				'artifact_size'        => null,
+				'theme_artifact_sha256' => null,
+				'theme_artifact_size'   => null,
+				'theme_stylesheet'      => null,
 				'created_at'           => $now,
 				'updated_at'           => $now,
 				'expires_at'           => null,
 			],
-			[ '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' ]
+			[ '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%s', '%s', '%s', '%s' ]
 		);
 
 		if ( false === $inserted ) {
@@ -708,7 +742,7 @@ class STUH_Plugin {
 		global $wpdb;
 		$job = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT id, client_id, requested_by, status, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
+				'SELECT id, client_id, requested_by, status, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, theme_artifact_sha256, theme_artifact_size, theme_stylesheet, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
 				$job_id
 			),
 			ARRAY_A
@@ -1407,6 +1441,11 @@ class STUH_Plugin {
 			'callback'            => [ $this, 'rest_download_clone_artifact' ],
 			'permission_callback' => [ $this, 'rest_clone_permission' ],
 		] );
+		register_rest_route( STUH_REST_NS, '/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/theme-download', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_download_clone_theme_artifact' ],
+			'permission_callback' => [ $this, 'rest_clone_permission' ],
+		] );
 
 		register_rest_route( STUH_REST_NS, '/client/clones/pending', [
 			'methods'             => WP_REST_Server::READABLE,
@@ -1423,6 +1462,11 @@ class STUH_Plugin {
 		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/artifact/(?P<part>\d+)', [
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => [ $this, 'rest_upload_clone_artifact_part' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+		] );
+		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/theme/(?P<part>\d+)', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_upload_clone_theme_artifact_part' ],
 			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
 		] );
 
@@ -1549,12 +1593,13 @@ class STUH_Plugin {
 				],
 				'body'      => wp_json_encode( [ 'job_id' => $job_id ] ),
 				'sslverify' => self::client_sslverify( $client ),
-				'timeout'   => 15,
+				'blocking'  => false,
+				'timeout'   => 1,
 			]
 		);
-		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) < 200 || wp_remote_retrieve_response_code( $response ) >= 300 ) {
+		if ( is_wp_error( $response ) ) {
 			self::record_clone_job_event( $job_id, 'host', null, 'dispatch_failed', [
-				'reason' => is_wp_error( $response ) ? 'request_error' : 'http_error',
+				'reason' => 'request_error',
 			] );
 			return false;
 		}
@@ -1589,6 +1634,23 @@ class STUH_Plugin {
 		exit;
 	}
 
+	public function rest_download_clone_theme_artifact( WP_REST_Request $req ): void {
+		$job_id  = (string) $req['job_id'];
+		$job     = self::get_clone_job_for_user( $job_id, get_current_user_id() );
+		$expired = ! empty( $job['expires_at'] ) && strtotime( (string) $job['expires_at'] . ' UTC' ) <= time();
+		$path    = self::clone_theme_artifact_path( $job_id );
+		if ( ! $job || 'ready' !== $job['status'] || $expired || ! preg_match( '/^[a-f0-9]{64}$/', (string) $job['theme_artifact_sha256'] ) || ! is_readable( $path ) ) {
+			wp_send_json_error( [ 'message' => __( 'The clone theme artifact is unavailable or has expired.', 'stuh' ) ], 404 );
+		}
+
+		header( 'Content-Type: application/zip' );
+		header( 'Content-Disposition: attachment; filename="' . $job_id . '.theme.zip"' );
+		header( 'Content-Length: ' . filesize( $path ) );
+		header( 'Cache-Control: no-store' );
+		readfile( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_readfile
+		exit;
+	}
+
 	public function maybe_schedule_clone_artifact_cleanup(): void {
 		if ( ! wp_next_scheduled( 'stuh_cleanup_expired_clone_artifacts' ) ) {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', 'stuh_cleanup_expired_clone_artifacts' );
@@ -1607,6 +1669,8 @@ class STUH_Plugin {
 		foreach ( $expired_jobs as $job_id ) {
 			$job_id = (string) $job_id;
 			@unlink( self::clone_artifact_path( $job_id ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			@unlink( self::clone_theme_artifact_path( $job_id ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			self::delete_clone_artifact_parts( $job_id );
 			$wpdb->update(
 				self::clone_jobs_table(),
 				[ 'status' => 'expired', 'updated_at' => current_time( 'mysql', true ) ],
@@ -1716,6 +1780,14 @@ class STUH_Plugin {
 	}
 
 	public function rest_upload_clone_artifact_part( WP_REST_Request $req ) {
+		return $this->upload_clone_artifact_part( $req, 'database' );
+	}
+
+	public function rest_upload_clone_theme_artifact_part( WP_REST_Request $req ) {
+		return $this->upload_clone_artifact_part( $req, 'theme' );
+	}
+
+	private function upload_clone_artifact_part( WP_REST_Request $req, string $artifact ) {
 		$client = $this->clone_client_from_request( $req );
 		if ( is_wp_error( $client ) ) {
 			return $client;
@@ -1744,8 +1816,12 @@ class STUH_Plugin {
 			return new WP_Error( 'clone_artifact_storage_unavailable', __( 'The host artifact directory is unavailable.', 'stuh' ), [ 'status' => 500 ] );
 		}
 
-		$part_path = trailingslashit( $directory ) . $job_id . '.' . $part . '.part';
-		if ( file_exists( $part_path ) && hash_equals( $sha256, hash_file( 'sha256', $part_path ) ) ) {
+		$part_path = self::clone_artifact_part_path( $job_id, $artifact, $part );
+		if ( '' === $part_path ) {
+			return new WP_Error( 'invalid_clone_artifact_part', __( 'The clone artifact chunk is invalid.', 'stuh' ), [ 'status' => 400 ] );
+		}
+		$existing_sha256 = file_exists( $part_path ) ? hash_file( 'sha256', $part_path ) : false;
+		if ( is_string( $existing_sha256 ) && hash_equals( $sha256, $existing_sha256 ) ) {
 			return rest_ensure_response( [ 'part' => $part, 'status' => 'already_uploaded' ] );
 		}
 
@@ -1756,38 +1832,19 @@ class STUH_Plugin {
 		return rest_ensure_response( [ 'part' => $part, 'status' => 'uploaded' ] );
 	}
 
-	public function rest_complete_clone_artifact( WP_REST_Request $req ) {
-		$client = $this->clone_client_from_request( $req );
-		if ( is_wp_error( $client ) ) {
-			return $client;
-		}
-
-		$job_id = (string) $req['job_id'];
-		$params = $req->get_json_params();
-		$parts  = absint( $params['parts'] ?? 0 );
-		$sha256 = strtolower( sanitize_text_field( $params['sha256'] ?? '' ) );
-		if ( $parts < 1 || ! preg_match( '/^[a-f0-9]{64}$/', $sha256 ) ) {
-			return new WP_Error( 'invalid_clone_artifact', __( 'The clone artifact completion data is invalid.', 'stuh' ), [ 'status' => 400 ] );
-		}
-
-		global $wpdb;
-		$status = $wpdb->get_var( $wpdb->prepare(
-			'SELECT status FROM ' . self::clone_jobs_table() . ' WHERE id = %s AND client_id = %s',
-			$job_id,
-			$client['id']
-		) );
-		if ( 'claimed' !== $status ) {
-			return new WP_Error( 'clone_job_unavailable', __( 'The clone job is not awaiting an artifact.', 'stuh' ), [ 'status' => 409 ] );
-		}
-
-		$artifact_path = self::clone_artifact_path( $job_id );
+	/**
+	 * @return array{sha256: string, size: int}|\WP_Error
+	 */
+	private function reassemble_clone_artifact( string $job_id, string $artifact, int $parts, string $sha256 ) {
+		$artifact_path = 'theme' === $artifact ? self::clone_theme_artifact_path( $job_id ) : self::clone_artifact_path( $job_id );
 		$target        = fopen( $artifact_path, 'wb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 		if ( false === $target ) {
 			return new WP_Error( 'clone_artifact_write_failed', __( 'The host could not create the clone artifact.', 'stuh' ), [ 'status' => 500 ] );
 		}
+
 		for ( $part = 0; $part < $parts; $part++ ) {
-			$part_path = trailingslashit( self::clone_artifact_directory() ) . $job_id . '.' . $part . '.part';
-			$source    = is_readable( $part_path ) ? fopen( $part_path, 'rb' ) : false; // phpcs:ignore WordPress.WP.AlternativeFunctions
+			$part_path = self::clone_artifact_part_path( $job_id, $artifact, $part );
+			$source    = '' !== $part_path && is_readable( $part_path ) ? fopen( $part_path, 'rb' ) : false; // phpcs:ignore WordPress.WP.AlternativeFunctions
 			if ( false === $source || false === stream_copy_to_stream( $source, $target ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
 				if ( is_resource( $source ) ) {
 					fclose( $source ); // phpcs:ignore WordPress.WP.AlternativeFunctions
@@ -1801,32 +1858,98 @@ class STUH_Plugin {
 		fclose( $target ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 
 		$actual_sha256 = hash_file( 'sha256', $artifact_path );
-		if ( ! hash_equals( $sha256, $actual_sha256 ) ) {
+		if ( ! is_string( $actual_sha256 ) || ! hash_equals( $sha256, $actual_sha256 ) ) {
 			@unlink( $artifact_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 			return new WP_Error( 'clone_artifact_checksum_failed', __( 'The clone artifact checksum does not match.', 'stuh' ), [ 'status' => 422 ] );
+		}
+
+		return [
+			'sha256' => $actual_sha256,
+			'size'   => (int) filesize( $artifact_path ),
+		];
+	}
+
+	public function rest_complete_clone_artifact( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+
+		$job_id = (string) $req['job_id'];
+		$params = $req->get_json_params();
+		$parts  = absint( $params['parts'] ?? 0 );
+		$sha256 = is_string( $params['sha256'] ?? null ) ? $params['sha256'] : '';
+		$theme  = $params['theme'] ?? null;
+		if ( $parts < 1 || ! preg_match( '/^[a-f0-9]{64}$/', $sha256 ) || ( null !== $theme && ! is_array( $theme ) ) ) {
+			return new WP_Error( 'invalid_clone_artifact', __( 'The clone artifact completion data is invalid.', 'stuh' ), [ 'status' => 400 ] );
+		}
+		$theme_parts      = 0;
+		$theme_sha256     = '';
+		$theme_stylesheet = '';
+		if ( is_array( $theme ) ) {
+			$theme_parts      = absint( $theme['parts'] ?? 0 );
+			$theme_sha256     = is_string( $theme['sha256'] ?? null ) ? $theme['sha256'] : '';
+			$theme_stylesheet = is_string( $theme['stylesheet'] ?? null ) ? $theme['stylesheet'] : '';
+			if ( $theme_parts < 1 || ! preg_match( '/^[a-f0-9]{64}$/', $theme_sha256 ) || ! self::is_safe_theme_stylesheet( $theme_stylesheet ) ) {
+				return new WP_Error( 'invalid_clone_theme_artifact', __( 'The clone theme artifact completion data is invalid.', 'stuh' ), [ 'status' => 400 ] );
+			}
+		}
+
+		global $wpdb;
+		$status = $wpdb->get_var( $wpdb->prepare(
+			'SELECT status FROM ' . self::clone_jobs_table() . ' WHERE id = %s AND client_id = %s',
+			$job_id,
+			$client['id']
+		) );
+		if ( 'claimed' !== $status ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job is not awaiting an artifact.', 'stuh' ), [ 'status' => 409 ] );
+		}
+
+		$database_artifact = $this->reassemble_clone_artifact( $job_id, 'database', $parts, $sha256 );
+		if ( is_wp_error( $database_artifact ) ) {
+			return $database_artifact;
+		}
+		$theme_artifact = null;
+		if ( $theme_parts > 0 ) {
+			$theme_artifact = $this->reassemble_clone_artifact( $job_id, 'theme', $theme_parts, $theme_sha256 );
+			if ( is_wp_error( $theme_artifact ) ) {
+				@unlink( self::clone_artifact_path( $job_id ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+				return $theme_artifact;
+			}
 		}
 
 		$updated = $wpdb->update(
 			self::clone_jobs_table(),
 			[
 				'status'          => 'ready',
-				'artifact_sha256' => $actual_sha256,
-				'artifact_size'   => filesize( $artifact_path ),
+				'artifact_sha256'       => $database_artifact['sha256'],
+				'artifact_size'         => $database_artifact['size'],
+				'theme_artifact_sha256' => is_array( $theme_artifact ) ? $theme_artifact['sha256'] : null,
+				'theme_artifact_size'   => is_array( $theme_artifact ) ? $theme_artifact['size'] : null,
+				'theme_stylesheet'      => $theme_parts > 0 ? $theme_stylesheet : null,
 				'updated_at'      => current_time( 'mysql', true ),
 				'expires_at'      => gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS ),
 			],
 			[ 'id' => $job_id, 'client_id' => $client['id'], 'status' => 'claimed' ],
-			[ '%s', '%s', '%d', '%s', '%s' ],
+			[ '%s', '%s', '%d', '%s', '%d', '%s', '%s', '%s' ],
 			[ '%s', '%s', '%s' ]
 		);
 		if ( 1 !== $updated ) {
 			return new WP_Error( 'clone_job_complete_failed', __( 'The host could not mark the clone job ready.', 'stuh' ), [ 'status' => 500 ] );
 		}
 
-		self::record_clone_job_event( $job_id, 'client', null, 'artifact_uploaded', [ 'sha256' => $actual_sha256, 'size' => filesize( $artifact_path ) ] );
-		for ( $part = 0; $part < $parts; $part++ ) {
-			@unlink( trailingslashit( self::clone_artifact_directory() ) . $job_id . '.' . $part . '.part' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		self::record_clone_job_event( $job_id, 'client', null, 'artifact_uploaded', [
+			'sha256' => $database_artifact['sha256'],
+			'size'   => $database_artifact['size'],
+		] );
+		if ( is_array( $theme_artifact ) ) {
+			self::record_clone_job_event( $job_id, 'client', null, 'theme_artifact_uploaded', [
+				'sha256'    => $theme_artifact['sha256'],
+				'size'      => $theme_artifact['size'],
+				'stylesheet' => $theme_stylesheet,
+			] );
 		}
+		self::delete_clone_artifact_parts( $job_id );
 		return rest_ensure_response( [ 'job_id' => $job_id, 'status' => 'ready' ] );
 	}
 
