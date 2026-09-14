@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.7
+ * Version: 0.5.8
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -32,7 +32,7 @@ if ( ! defined( 'STUH_CLONE_ARTIFACT_DIR' ) ) {
 // ============================================================
 class STUH_Plugin {
 	private $clients_page_hook = '';
-	private const CLONE_SCHEMA_VERSION = '5';
+	private const CLONE_SCHEMA_VERSION = '6';
 
 	/**
 	 * Legacy mu-plugin this plugin used to write. It never worked: it hooked a
@@ -527,6 +527,7 @@ class STUH_Plugin {
 			client_id varchar(80) NOT NULL,
 			requested_by bigint(20) unsigned NOT NULL,
 			status varchar(32) NOT NULL,
+			stage varchar(32) NOT NULL DEFAULT 'queued',
 			sanitization_profile varchar(64) NOT NULL,
 			uploads_mode varchar(32) NOT NULL,
 			artifact_sha256 char(64) NULL,
@@ -668,6 +669,7 @@ class STUH_Plugin {
 				'client_id'            => $client_id,
 				'requested_by'         => $user_id,
 				'status'               => 'pending',
+				'stage'                => 'queued',
 				'sanitization_profile' => $sanitization_profile,
 				'uploads_mode'         => $uploads_mode,
 				'artifact_sha256'      => null,
@@ -683,7 +685,7 @@ class STUH_Plugin {
 				'updated_at'           => $now,
 				'expires_at'           => null,
 			],
-			[ '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s' ]
+			[ '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s' ]
 		);
 
 		if ( false === $inserted ) {
@@ -765,7 +767,7 @@ class STUH_Plugin {
 		global $wpdb;
 		$job = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT id, client_id, requested_by, status, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, theme_artifact_sha256, theme_artifact_size, theme_stylesheet, parent_theme_artifact_sha256, parent_theme_artifact_size, parent_theme_stylesheet, failure_message, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
+				'SELECT id, client_id, requested_by, status, stage, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, theme_artifact_sha256, theme_artifact_size, theme_stylesheet, parent_theme_artifact_sha256, parent_theme_artifact_size, parent_theme_stylesheet, failure_message, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
 				$job_id
 			),
 			ARRAY_A
@@ -1514,6 +1516,14 @@ class STUH_Plugin {
 			'callback'            => [ $this, 'rest_claim_clone_job' ],
 			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
 		] );
+		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/progress', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_report_clone_job_progress' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+			'args'                => [
+				'stage' => [ 'required' => true, 'sanitize_callback' => 'sanitize_key' ],
+			],
+		] );
 
 		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/artifact/(?P<part>\d+)', [
 			'methods'             => WP_REST_Server::CREATABLE,
@@ -1644,6 +1654,7 @@ class STUH_Plugin {
 		return new WP_REST_Response( [
 			'job_id'     => $job_id,
 			'status'     => 'pending',
+			'stage'      => 'queued',
 			'domain'     => $domain,
 			'dispatched' => $dispatched,
 		], 201 );
@@ -1885,8 +1896,9 @@ class STUH_Plugin {
 		}
 		$claimed = $wpdb->query(
 			$wpdb->prepare(
-				'UPDATE ' . self::clone_jobs_table() . ' SET status = %s, updated_at = %s WHERE id = %s AND client_id = %s AND status = %s',
+				'UPDATE ' . self::clone_jobs_table() . ' SET status = %s, stage = %s, updated_at = %s WHERE id = %s AND client_id = %s AND status = %s',
 				'claimed',
+				'queued',
 				$now,
 				$job_id,
 				$client['id'],
@@ -1902,9 +1914,51 @@ class STUH_Plugin {
 		return rest_ensure_response( [
 			'job_id'               => $job_id,
 			'status'               => 'claimed',
+			'stage'                => 'queued',
 			'sanitization_profile' => $job['sanitization_profile'],
 			'uploads_mode'         => $job['uploads_mode'],
 		] );
+	}
+
+	public function rest_report_clone_job_progress( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+
+		$job_id = (string) $req['job_id'];
+		$stage  = sanitize_key( (string) $req->get_param( 'stage' ) );
+		$stages = [
+			'queued',
+			'exporting',
+			'uploading_database',
+			'archiving_theme',
+			'uploading_theme',
+			'archiving_parent_theme',
+			'uploading_parent_theme',
+			'finalizing',
+		];
+		if ( ! in_array( $stage, $stages, true ) ) {
+			return new WP_Error( 'invalid_clone_job_stage', __( 'The clone job stage is invalid.', 'stuh' ), [ 'status' => 400 ] );
+		}
+
+		global $wpdb;
+		$updated = $wpdb->update(
+			self::clone_jobs_table(),
+			[
+				'stage'      => $stage,
+				'updated_at' => current_time( 'mysql', true ),
+			],
+			[ 'id' => $job_id, 'client_id' => $client['id'], 'status' => 'claimed' ],
+			[ '%s', '%s' ],
+			[ '%s', '%s', '%s' ]
+		);
+		if ( 1 !== $updated ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job cannot accept progress updates.', 'stuh' ), [ 'status' => 409 ] );
+		}
+
+		self::record_clone_job_event( $job_id, 'client', null, 'progress', [ 'stage' => $stage ] );
+		return rest_ensure_response( [ 'job_id' => $job_id, 'status' => 'claimed', 'stage' => $stage ] );
 	}
 
 	public function rest_fail_clone_job( WP_REST_Request $req ) {
