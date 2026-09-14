@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.4
+ * Version: 0.5.5
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1435,6 +1435,12 @@ class STUH_Plugin {
 			],
 		] );
 
+		register_rest_route( STUH_REST_NS, '/clone-sites', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_clone_sites' ],
+			'permission_callback' => [ $this, 'rest_clone_permission' ],
+		] );
+
 		register_rest_route( STUH_REST_NS, '/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'rest_clone_job_status' ],
@@ -1582,6 +1588,37 @@ class STUH_Plugin {
 			'domain'     => $domain,
 			'dispatched' => $dispatched,
 		], 201 );
+	}
+
+	/**
+	 * Return the enabled sites that an authenticated host administrator can clone.
+	 *
+	 * @return \WP_REST_Response
+	 */
+	public function rest_clone_sites(): WP_REST_Response {
+		$sites = [];
+		foreach ( self::get_clients() as $client ) {
+			if ( ! ( $client['enabled'] ?? true ) ) {
+				continue;
+			}
+			$urls = $client['site_urls'] ?? [ $client['site_url'] ?? '' ];
+			$urls = array_values( array_filter( array_map( 'esc_url_raw', (array) $urls ) ) );
+			if ( empty( $urls ) ) {
+				continue;
+			}
+			$sites[] = [
+				'id'        => sanitize_text_field( (string) ( $client['id'] ?? '' ) ),
+				'site_url'  => $urls[0],
+				'site_urls' => $urls,
+			];
+		}
+		usort(
+			$sites,
+			static function ( array $left, array $right ): int {
+				return strcasecmp( $left['site_url'], $right['site_url'] );
+			}
+		);
+		return rest_ensure_response( [ 'sites' => $sites ] );
 	}
 
 	/**
