@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.5
+ * Version: 0.5.6
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -32,7 +32,7 @@ if ( ! defined( 'STUH_CLONE_ARTIFACT_DIR' ) ) {
 // ============================================================
 class STUH_Plugin {
 	private $clients_page_hook = '';
-	private const CLONE_SCHEMA_VERSION = '3';
+	private const CLONE_SCHEMA_VERSION = '4';
 
 	/**
 	 * Legacy mu-plugin this plugin used to write. It never worked: it hooked a
@@ -534,6 +534,7 @@ class STUH_Plugin {
 			theme_artifact_sha256 char(64) NULL,
 			theme_artifact_size bigint(20) unsigned NULL,
 			theme_stylesheet varchar(191) NULL,
+			failure_message varchar(500) NULL,
 			created_at datetime NOT NULL,
 			updated_at datetime NOT NULL,
 			expires_at datetime NULL,
@@ -656,6 +657,7 @@ class STUH_Plugin {
 				'theme_artifact_sha256' => null,
 				'theme_artifact_size'   => null,
 				'theme_stylesheet'      => null,
+				'failure_message'       => null,
 				'created_at'           => $now,
 				'updated_at'           => $now,
 				'expires_at'           => null,
@@ -742,7 +744,7 @@ class STUH_Plugin {
 		global $wpdb;
 		$job = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT id, client_id, requested_by, status, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, theme_artifact_sha256, theme_artifact_size, theme_stylesheet, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
+				'SELECT id, client_id, requested_by, status, sanitization_profile, uploads_mode, artifact_sha256, artifact_size, theme_artifact_sha256, theme_artifact_size, theme_stylesheet, failure_message, created_at, updated_at, expires_at FROM ' . self::clone_jobs_table() . ' WHERE id = %s',
 				$job_id
 			),
 			ARRAY_A
@@ -750,6 +752,24 @@ class STUH_Plugin {
 
 		if ( ! is_array( $job ) || $user_id !== (int) $job['requested_by'] ) {
 			return false;
+		}
+		if ( 'claimed' === $job['status'] && strtotime( (string) $job['updated_at'] . ' UTC' ) <= time() - ( 10 * MINUTE_IN_SECONDS ) ) {
+			$job['status']          = 'failed';
+			$job['failure_message'] = __( 'The client did not report export progress within 10 minutes. Check the client PHP error log for a timeout, memory limit, or fatal error.', 'stuh' );
+			$updated                 = $wpdb->update(
+				self::clone_jobs_table(),
+				[
+					'status'          => $job['status'],
+					'failure_message' => $job['failure_message'],
+					'updated_at'      => current_time( 'mysql', true ),
+				],
+				[ 'id' => $job_id, 'status' => 'claimed' ],
+				[ '%s', '%s', '%s' ],
+				[ '%s', '%s' ]
+			);
+			if ( 1 === $updated ) {
+				self::record_clone_job_event( $job_id, 'host', null, 'failed', [ 'reason' => 'client_progress_timeout' ] );
+			}
 		}
 
 		$client = self::find_client_by_id( (string) $job['client_id'] );
@@ -1485,6 +1505,14 @@ class STUH_Plugin {
 			'callback'            => [ $this, 'rest_complete_clone_artifact' ],
 			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
 		] );
+		register_rest_route( STUH_REST_NS, '/client/clones/(?P<job_id>stuh_clone_[a-f0-9]{32})/fail', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_fail_clone_job' ],
+			'permission_callback' => [ $this, 'rest_clone_client_permission' ],
+			'args'                => [
+				'message' => [ 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ],
+			],
+		] );
 	}
 
 	// --------------------------------------------------------
@@ -1828,6 +1856,36 @@ class STUH_Plugin {
 			'sanitization_profile' => $job['sanitization_profile'],
 			'uploads_mode'         => $job['uploads_mode'],
 		] );
+	}
+
+	public function rest_fail_clone_job( WP_REST_Request $req ) {
+		$client = $this->clone_client_from_request( $req );
+		if ( is_wp_error( $client ) ) {
+			return $client;
+		}
+		$job_id  = (string) $req['job_id'];
+		$message = substr( sanitize_text_field( (string) $req->get_param( 'message' ) ), 0, 500 );
+		if ( '' === $message ) {
+			return new WP_Error( 'invalid_clone_failure', __( 'The clone failure message is required.', 'stuh' ), [ 'status' => 400 ] );
+		}
+		global $wpdb;
+		$updated = $wpdb->update(
+			self::clone_jobs_table(),
+			[
+				'status'          => 'failed',
+				'failure_message' => $message,
+				'updated_at'      => current_time( 'mysql', true ),
+			],
+			[ 'id' => $job_id, 'client_id' => $client['id'], 'status' => 'claimed' ],
+			[ '%s', '%s', '%s' ],
+			[ '%s', '%s', '%s' ]
+		);
+		if ( 1 !== $updated ) {
+			return new WP_Error( 'clone_job_unavailable', __( 'The clone job cannot be marked as failed.', 'stuh' ), [ 'status' => 409 ] );
+		}
+		self::record_clone_job_event( $job_id, 'client', null, 'failed', [ 'message' => $message ] );
+		self::delete_clone_artifact_parts( $job_id );
+		return rest_ensure_response( [ 'job_id' => $job_id, 'status' => 'failed' ] );
 	}
 
 	public function rest_upload_clone_artifact_part( WP_REST_Request $req ) {
