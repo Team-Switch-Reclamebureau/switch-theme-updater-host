@@ -13,6 +13,11 @@ field. New and claimed jobs begin at `queued`; clients report
 the authenticated client progress endpoint. This lets clone consumers show the
 current operation while the job status remains `claimed`.
 
+When a client administrator cancels an active clone, the client reports
+`Cancellation requested from client plugin.` through the authenticated failure
+endpoint. The host changes the claimed job to `failed`, records that message,
+and removes its uploaded artifact parts.
+
 ## Child-theme clone support
 
 Clone-job status returns a `package_inventory` containing the active theme and,
