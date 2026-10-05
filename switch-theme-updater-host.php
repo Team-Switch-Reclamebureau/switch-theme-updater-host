@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.5.8
+ * Version: 0.6.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -55,6 +55,7 @@ class STUH_Plugin {
 		add_action( 'admin_init',    [ $this, 'cleanup_legacy_mu_plugin' ] );
 		add_action( 'stuh_check_client_homepage', [ $this, 'run_scheduled_homepage_check' ] );
 		add_action( 'stuh_retry_client_homepage', [ $this, 'run_scheduled_homepage_retry' ] );
+		add_action( 'stuh_check_client_ssl', [ $this, 'run_scheduled_ssl_check' ] );
 
 		// Intercept our own plugin update before WordPress tries to HTTP-download
 		// from our REST API — which would hit maintenance mode on this same server.
@@ -2433,6 +2434,7 @@ class STUH_Plugin {
 			'site_url'        => __( 'Domain', 'stuh' ),
 			'domain_owner'    => __( 'Domain Owner', 'stuh' ),
 			'homepage_status' => __( 'Homepage Status', 'stuh' ),
+			'ssl'             => __( 'SSL', 'stuh' ),
 			'tags'            => __( 'Tags', 'stuh' ),
 			'created_at'      => __( 'Created', 'stuh' ),
 			'last_seen'       => __( 'Last Seen', 'stuh' ),
@@ -3137,6 +3139,7 @@ class STUH_Plugin {
 
 			case 'delete_client':
 				$id      = sanitize_text_field( $_POST['client_id'] ?? '' );
+				wp_clear_scheduled_hook( 'stuh_check_client_ssl', [ $id ] );
 				$clients = array_values( array_filter( $clients, fn( $c ) => $c['id'] !== $id ) );
 				self::save_clients( $clients );
 				$telemetry = self::get_telemetry();
@@ -3199,6 +3202,13 @@ class STUH_Plugin {
 					$result,
 					MINUTE_IN_SECONDS
 				);
+				wp_safe_redirect( self::client_list_url() );
+				exit;
+
+			case 'check_client_ssl':
+				$id = sanitize_text_field( wp_unslash( $_POST['client_id'] ?? '' ) );
+				wp_clear_scheduled_hook( 'stuh_check_client_ssl', [ $id ] );
+				$this->run_scheduled_ssl_check( $id );
 				wp_safe_redirect( self::client_list_url() );
 				exit;
 
@@ -4267,6 +4277,142 @@ class STUH_Plugin {
 		return false !== ( $wp_config['ssl_verify'] ?? true );
 	}
 
+	/**
+	 * @param array<string, mixed> $client
+	 */
+	private static function client_ssl_url( array $client ): string {
+		$urls = (array) ( $client['site_urls'] ?? [ $client['site_url'] ?? '' ] );
+		return (string) ( reset( $urls ) ?: '' );
+	}
+
+	/**
+	 * Retain the last result while a background refresh is queued.
+	 *
+	 * @param array<string, mixed> $client
+	 * @return array<string, mixed>
+	 */
+	private static function client_ssl_status( array $client ): array {
+		$url    = self::client_ssl_url( $client );
+		$cached = get_transient( 'stuh_ssl_' . md5( $url ) );
+		$status = is_array( $cached ) ? $cached : [];
+		$age    = empty( $status['error'] ) ? DAY_IN_SECONDS : HOUR_IN_SECONDS;
+		if ( (int) ( $status['checked_at'] ?? 0 ) <= time() - $age && ! wp_next_scheduled( 'stuh_check_client_ssl', [ $client['id'] ] ) ) {
+			$scheduled = wp_schedule_single_event( time(), 'stuh_check_client_ssl', [ $client['id'] ], true );
+			if ( is_wp_error( $scheduled ) || false === $scheduled ) {
+				$status['error'] = is_wp_error( $scheduled ) ? $scheduled->get_error_message() : __( 'Could not schedule the SSL check.', 'stuh' );
+				error_log( sprintf( '[STUH SSL] Could not queue client %s: %s', $client['id'], $status['error'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			}
+		}
+		return $status;
+	}
+
+	public function run_scheduled_ssl_check( string $client_id ): void {
+		$client = self::find_client_by_id( $client_id );
+		if ( false === $client ) {
+			error_log( sprintf( '[STUH SSL] Could not find client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return;
+		}
+
+		$url    = self::client_ssl_url( $client );
+		$result = self::inspect_ssl_certificate( $url );
+		$status = [ 'checked_at' => time(), 'url' => $url ];
+		if ( is_wp_error( $result ) ) {
+			$status['error'] = $result->get_error_message();
+			error_log( sprintf( '[STUH SSL] Check failed for %s: %s', $url, $status['error'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		} else {
+			$status = array_merge( $status, $result );
+		}
+		set_transient( 'stuh_ssl_' . md5( $url ), $status, 7 * DAY_IN_SECONDS );
+	}
+
+	/**
+	 * Inspect the first domain directly, without following HTTP redirects.
+	 *
+	 * @return array<string, mixed>|WP_Error
+	 */
+	private static function inspect_ssl_certificate( string $url ) {
+		if ( ! extension_loaded( 'openssl' ) || ! function_exists( 'stream_socket_client' ) ) {
+			return new WP_Error( 'ssl_unavailable', __( 'SSL checks require PHP OpenSSL and stream sockets.', 'stuh' ) );
+		}
+		$parts = wp_parse_url( $url );
+		$host  = is_array( $parts ) ? (string) ( $parts['host'] ?? '' ) : '';
+		if ( ! self::is_http_url( $url ) || '' === $host || ! preg_match( '/^[a-z0-9.\-\[\]:]+$/i', $host ) ) {
+			return new WP_Error( 'ssl_invalid_url', __( 'The first site URL has no valid hostname.', 'stuh' ) );
+		}
+		$port = 'https' === strtolower( $parts['scheme'] ) ? (int) ( $parts['port'] ?? 443 ) : 443;
+		$context = stream_context_create( [
+			'ssl' => [
+				'capture_peer_cert' => true,
+				'SNI_enabled'      => true,
+				'peer_name'        => trim( $host, '[]' ),
+				// Inspect metadata even for expired/untrusted certificates; this is not an HTTPS request.
+				'verify_peer'      => false,
+				'verify_peer_name' => false,
+			],
+		] );
+		$errno  = 0;
+		$error  = '';
+		$socket = @stream_socket_client( 'ssl://' . $host . ':' . $port, $errno, $error, 10, STREAM_CLIENT_CONNECT, $context ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions
+		if ( false === $socket ) {
+			return new WP_Error( 'ssl_connection_failed', sprintf( __( 'TLS connection failed: %s', 'stuh' ), $error ?: __( 'No certificate could be retrieved.', 'stuh' ) ) );
+		}
+		$params = stream_context_get_params( $socket );
+		fclose( $socket );
+		$certificate = $params['options']['ssl']['peer_certificate'] ?? null;
+		$details     = null !== $certificate ? openssl_x509_parse( $certificate ) : false;
+		if ( ! is_array( $details ) ) {
+			return new WP_Error( 'ssl_invalid_certificate', __( 'The server certificate could not be read.', 'stuh' ) );
+		}
+		return self::ssl_certificate_details( $details );
+	}
+
+	/**
+	 * @param array<string, mixed> $details Parsed leaf certificate.
+	 * @return array<string, mixed>|WP_Error
+	 */
+	private static function ssl_certificate_details( array $details ) {
+		$expires_at = (int) ( $details['validTo_time_t'] ?? 0 );
+		if ( $expires_at <= 0 ) {
+			return new WP_Error( 'ssl_missing_expiry', __( 'The certificate has no readable expiry date.', 'stuh' ) );
+		}
+		$issuer = is_array( $details['issuer'] ?? null ) ? $details['issuer'] : [];
+		$organizations = (array) ( $issuer['O'] ?? [] );
+		$is_lets_encrypt = false;
+		foreach ( $organizations as $organization ) {
+			if ( 0 === strcasecmp( trim( (string) $organization ), "Let's Encrypt" ) ) {
+				$is_lets_encrypt = true;
+			}
+		}
+		return [
+			'issuer'          => implode( ', ', $organizations ) ?: (string) ( $issuer['CN'] ?? '' ),
+			'is_lets_encrypt' => $is_lets_encrypt,
+			'expires_at'      => $expires_at,
+		];
+	}
+
+	/**
+	 * @param array<string, mixed> $status
+	 */
+	private static function ssl_expiry_days( array $status ): ?int {
+		if ( ! empty( $status['error'] ) || ! empty( $status['is_lets_encrypt'] ) || empty( $status['expires_at'] ) ) {
+			return null;
+		}
+		return (int) floor( ( (int) $status['expires_at'] - time() ) / DAY_IN_SECONDS );
+	}
+
+	/**
+	 * @param array<string, mixed> $a
+	 * @param array<string, mixed> $b
+	 */
+	private static function compare_ssl_status( array $a, array $b, string $order ): int {
+		$days_a = self::ssl_expiry_days( $a );
+		$days_b = self::ssl_expiry_days( $b );
+		if ( null === $days_a || null === $days_b ) {
+			return null === $days_a ? ( null === $days_b ? 0 : 1 ) : -1;
+		}
+		return 'desc' === $order ? $days_b <=> $days_a : $days_a <=> $days_b;
+	}
+
 	// --------------------------------------------------------
 	// Admin page: client site list
 	// --------------------------------------------------------
@@ -4279,6 +4425,10 @@ class STUH_Plugin {
 		$clients = self::get_clients();
 		$telemetry = self::get_telemetry();
 		$external_parties = self::get_external_parties();
+		$ssl_statuses = [];
+		foreach ( $clients as $client ) {
+			$ssl_statuses[ $client['id'] ] = self::client_ssl_status( $client );
+		}
 		$external_party_names = [];
 		$external_party_search_values = [];
 		$external_parties_by_id = [];
@@ -4439,7 +4589,10 @@ class STUH_Plugin {
 			$opposite     = $order === 'asc' ? 'desc' : 'asc';
 			$search_query = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
 
-			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry, $external_party_names ) {
+			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry, $external_party_names, $ssl_statuses ) {
+				if ( 'ssl' === $orderby ) {
+					return self::compare_ssl_status( $ssl_statuses[ $a['id'] ], $ssl_statuses[ $b['id'] ], $order );
+				}
 				$va = $a[ $orderby ] ?? '';
 				$vb = $b[ $orderby ] ?? '';
 				if ( 'homepage_status' === $orderby ) {
@@ -4663,6 +4816,39 @@ class STUH_Plugin {
 							<?php else : ?>
 								<em><?php esc_html_e( 'Not checked', 'stuh' ); ?></em>
 							<?php endif; ?>
+						<?php elseif ( 'ssl' === $column_id ) : ?>
+							<?php
+							$ssl = $ssl_statuses[ $c['id'] ];
+							$ssl_days = self::ssl_expiry_days( $ssl );
+							$ssl_title = ! empty( $ssl['error'] )
+								? (string) $ssl['error']
+								: ( ! empty( $ssl['expires_at'] )
+									? sprintf( __( '%1$s — expires %2$s', 'stuh' ), $ssl['issuer'], wp_date( 'Y-m-d H:i', (int) $ssl['expires_at'] ) )
+									: __( 'A background SSL check is queued.', 'stuh' ) );
+							?>
+							<span title="<?php echo esc_attr( $ssl_title ); ?>">
+								<?php if ( ! empty( $ssl['error'] ) ) : ?>
+									<strong style="color:#b32d2e;"><?php esc_html_e( 'Check failed', 'stuh' ); ?></strong>
+									<br><small><?php echo esc_html( $ssl['error'] ); ?></small>
+								<?php elseif ( ! empty( $ssl['is_lets_encrypt'] ) ) : ?>
+									<?php echo esc_html__( "Let's Encrypt", 'stuh' ); ?>
+								<?php elseif ( null !== $ssl_days ) : ?>
+									<?php echo esc_html( sprintf( _n( '%d day', '%d days', abs( $ssl_days ), 'stuh' ), $ssl_days ) ); ?>
+								<?php else : ?>
+									<em><?php esc_html_e( 'Pending check', 'stuh' ); ?></em>
+								<?php endif; ?>
+							</span>
+							<?php if ( ! empty( $ssl['checked_at'] ) ) : ?>
+								<br><small><?php echo esc_html( wp_date( 'Y-m-d H:i', (int) $ssl['checked_at'] ) ); ?></small>
+							<?php endif; ?>
+							<div class="row-actions stuh-client-row-actions">
+								<form method="post">
+									<?php wp_nonce_field( 'stuh_admin' ); ?>
+									<input type="hidden" name="stuh_action" value="check_client_ssl">
+									<input type="hidden" name="client_id" value="<?php echo esc_attr( $c['id'] ); ?>">
+									<button type="submit"><?php esc_html_e( 'Check SSL', 'stuh' ); ?></button>
+								</form>
+							</div>
 						<?php elseif ( 'tags' === $column_id ) : ?>
 							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
 							<?php if ( $tags ) : ?>
