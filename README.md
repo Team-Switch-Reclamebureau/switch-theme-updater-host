@@ -4,6 +4,21 @@ The host authenticates Switch Updater clients, brokers GitHub package updates,
 and securely retains short-lived sanitized clone artifacts for authorized host
 administrators.
 
+## Package download failures
+
+GitHub package downloads return a local ZIP path on success or a `WP_Error` on
+failure. The download endpoint reports failures as HTTP 502 with the error
+message; local self-updates pass the error to the WordPress upgrader instead of
+falling back to a loopback request.
+
+If an update reports `Failed to extract zip`, check the host's PHP temporary
+directory permissions, available disk space, and the downloaded archive.
+PHP's `ZipArchive` extension is required for extraction and repackaging.
+
+Run the standalone download regression checks with
+`php tests/download-zipball.php`. These use mocked HTTP responses and local ZIP
+fixtures, without contacting GitHub.
+
 ## SSL certificate column
 
 The Client Sites table includes an SSL column (also available in Screen Options).

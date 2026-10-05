@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.6.0
+ * Version: 0.6.1
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -5790,8 +5790,10 @@ class STUH_GitHubClient {
 	/**
 	 * Download a GitHub zipball, repackage it with the correct folder name,
 	 * and return the path to the final zip file.
+	 *
+	 * @return string|WP_Error Local ZIP path on success, or the download/packaging error.
 	 */
-	public function download_zipball( string $repo, string $ref, string $path = '/', string $pack = '' ): string {
+	public function download_zipball( string $repo, string $ref, string $path = '/', string $pack = '' ): string|WP_Error {
 		if ( ! $pack ) {
 			$pack = basename( $repo );
 		}
