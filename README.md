@@ -19,6 +19,54 @@ Run the standalone download regression checks with
 `php tests/download-zipball.php`. These use mocked HTTP responses and local ZIP
 fixtures, without contacting GitHub.
 
+## PHP version colors and tooltips
+
+Hover over a PHP version in Client Sites to see its support status and dates:
+
+- **Red:** PHP is end-of-life, or outside the locally configured PHP support
+  range for the site's WordPress version.
+- **Orange:** PHP receives security fixes only, or the installed patch version
+  is behind the latest release in its branch.
+- **Normal:** PHP is actively supported, no newer patch is listed, and no local
+  compatibility problem was found. Missing patch versions are explicitly
+  identified as unverified in the tooltip.
+
+PHP lifecycle dates and latest patch versions are fetched from
+`https://endoflife.date/api/php.json` and cached across all client sites for one
+hour. Dates are evaluated in UTC, with
+support ending after the listed date. Only the public release catalogue is
+requested; no client URLs or telemetry are sent to that service.
+
+Patch comparisons stay within the installed major/minor branch and ignore
+distribution suffixes. Tooltips show the installed and latest versions when an
+update is available. This detects release lag, not specific vulnerabilities;
+catalogue updates can lag upstream releases, and hosting providers may backport
+fixes without changing the upstream PHP version.
+
+WordPress/PHP compatibility uses the local table checked on 2026-10-21 against
+the [official compatibility chart](https://make.wordpress.org/core/handbook/references/php-compatibility-and-wordpress-versions/),
+not a live compatibility API:
+
+| WordPress | Compatible PHP branches |
+|-----------|-------------------------|
+| 7.1, 7.0 | 7.4 through 8.5 |
+| 6.9 | 7.2 through 8.5 |
+| 6.8, 6.7 | 7.2 through 8.4 |
+| 6.6 | 7.2 through 8.3 |
+| 6.5, 6.4 | 7.0 through 8.3 |
+
+Compatibility does not imply PHP still receives security fixes; the separate
+live lifecycle check flags end-of-life branches red even within these ranges.
+WordPress versions not listed have an unknown compatibility status.
+Tooltips distinguish the local check from the live lifecycle check and
+explicitly report unknown versions or unavailable data. Failed
+requests or invalid responses are cached for 15 minutes before retrying; no
+active-support status is assumed on failure. A known local compatibility
+problem still appears red when the lifecycle service is unavailable.
+
+Run the standalone regression checks with `php tests/php-versions.php`.
+They use mocked HTTP responses, without contacting external services.
+
 ## SSL certificate column
 
 The Client Sites table includes an SSL column (also available in Screen Options).

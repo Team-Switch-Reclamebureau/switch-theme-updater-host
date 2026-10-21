@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.6.1
+ * Version: 0.7.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -2895,25 +2895,25 @@ class STUH_Plugin {
 	/**
 	 * Whether a reported PHP version is supported by the reported WordPress version.
 	 *
-	 * This reflects the WordPress/PHP compatibility table as of WordPress 7.0.
+	 * This reflects the WordPress/PHP compatibility table checked on 2026-10-21.
 	 */
 	private static function is_php_version_supported_by_wordpress( string $php_version, string $wordpress_version ): ?bool {
 		if ( ! preg_match( '/^(\d+\.\d+)/', $wordpress_version, $wordpress_matches ) || ! preg_match( '/^(\d+\.\d+)/', $php_version, $php_matches ) ) {
 			return null;
 		}
 
-		// this table below is a combination of wordpress php compatibility and php supported versions, as of 2026-08-12
-		// https://www.php.net/supported-versions.php
+		// PHP lifecycle support is checked separately using live data.
 		// https://make.wordpress.org/core/handbook/references/php-compatibility-and-wordpress-versions/
 
 		$supported_php_ranges = [
-			'7.0' => [ '8.2', '8.5' ],
-			'6.9' => [ '8.2', '8.5' ],
-			'6.8' => [ '8.2', '8.4' ],
-			'6.7' => [ '8.2', '8.4' ],
-			'6.6' => [ '8.2', '8.3' ],
-			'6.5' => [ '8.2', '8.3' ],
-			'6.4' => [ '8.2', '8.3' ],
+			'7.1' => [ '7.4', '8.5' ],
+			'7.0' => [ '7.4', '8.5' ],
+			'6.9' => [ '7.2', '8.5' ],
+			'6.8' => [ '7.2', '8.4' ],
+			'6.7' => [ '7.2', '8.4' ],
+			'6.6' => [ '7.2', '8.3' ],
+			'6.5' => [ '7.0', '8.3' ],
+			'6.4' => [ '7.0', '8.3' ],
 		];
 		$wordpress_minor = $wordpress_matches[1];
 		$php_minor       = $php_matches[1];
@@ -2928,17 +2928,124 @@ class STUH_Plugin {
 	}
 
 	/**
-	 * Whether a PHP version receives regular, non-security-only support from PHP.
+	 * Fetch the shared PHP lifecycle catalogue, caching failures briefly.
 	 *
-	 * This reflects https://www.php.net/supported-versions.php as of 2026-08-12.
+	 * @return array{releases: array, error: string}
 	 */
-	private static function is_php_version_regularly_supported( string $php_version ): ?bool {
-		if ( ! preg_match( '/^(\d+\.\d+)/', $php_version, $matches ) ) {
-			return null;
+	private static function php_lifecycle_data(): array {
+		$cache_key = 'stuh_php_lifecycle_v2';
+		$cached    = get_transient( $cache_key );
+		if ( is_array( $cached ) ) {
+			return $cached;
 		}
 
-		[ $minimum_php, $maximum_php ] = [ '8.4', '8.5' ];
-		return version_compare( $matches[1], $minimum_php, '>=' ) && version_compare( $matches[1], $maximum_php, '<=' );
+		$result   = [ 'releases' => [], 'error' => '' ];
+		$response = wp_remote_get( 'https://endoflife.date/api/php.json', [ 'timeout' => 5 ] );
+		if ( is_wp_error( $response ) ) {
+			$result['error'] = $response->get_error_message();
+		} elseif ( 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			$result['error'] = sprintf( __( 'Lifecycle service returned HTTP %d.', 'stuh' ), wp_remote_retrieve_response_code( $response ) );
+		} else {
+			$payload = json_decode( wp_remote_retrieve_body( $response ), true );
+			if ( is_array( $payload ) && [] !== $payload ) {
+				foreach ( $payload as $release ) {
+					if ( ! is_array( $release ) || ! is_string( $release['cycle'] ?? null ) || ! preg_match( '/^\d+\.\d+$/', $release['cycle'] ) ) {
+						$result['error'] = __( 'Lifecycle service returned invalid release data.', 'stuh' );
+						break;
+					}
+					if ( ! is_string( $release['latest'] ?? null )
+						|| ! preg_match( '/^(\d+\.\d+)\.\d+$/D', $release['latest'], $latest_matches )
+						|| $latest_matches[1] !== $release['cycle'] ) {
+						$result['error'] = __( 'Lifecycle service returned invalid latest patch versions.', 'stuh' );
+						break;
+					}
+					foreach ( [ 'releaseDate', 'support', 'eol' ] as $field ) {
+						$value = $release[ $field ] ?? null;
+						$date  = is_string( $value ) && preg_match( '/^\d{4}-\d{2}-\d{2}$/D', $value )
+							? DateTimeImmutable::createFromFormat( '!Y-m-d', $value )
+							: false;
+						if ( ! $date || $date->format( 'Y-m-d' ) !== $value ) {
+							$result['error'] = __( 'Lifecycle service returned invalid support dates.', 'stuh' );
+							break 2;
+						}
+					}
+					if ( $release['releaseDate'] > $release['support'] || $release['support'] > $release['eol'] ) {
+						$result['error'] = __( 'Lifecycle service returned inconsistent support dates.', 'stuh' );
+						break;
+					}
+					$result['releases'][ $release['cycle'] ] = $release;
+				}
+			} else {
+				$result['error'] = __( 'Lifecycle service returned invalid release data.', 'stuh' );
+			}
+		}
+
+		if ( $result['error'] ) {
+			$result['releases'] = [];
+		}
+		set_transient( $cache_key, $result, $result['error'] ? 15 * MINUTE_IN_SECONDS : HOUR_IN_SECONDS );
+		return $result;
+	}
+
+	/**
+	 * Combine live PHP lifecycle data with the local WordPress compatibility check.
+	 *
+	 * @return array{status: 'current'|'warning'|'outdated'|'unknown', title: string}
+	 */
+	private static function php_version_safety( string $php_version, string $wordpress_version ): array {
+		$result = [ 'status' => 'unknown', 'title' => __( 'No valid PHP version was reported.', 'stuh' ) ];
+		if ( ! preg_match( '/^(\d+\.\d+)(\.\d+)?(?:[-+].*)?$/', $php_version, $matches ) ) {
+			return $result;
+		}
+
+		$compatible = self::is_php_version_supported_by_wordpress( $php_version, $wordpress_version );
+		$lifecycle  = self::php_lifecycle_data();
+		$release    = $lifecycle['releases'][ $matches[1] ] ?? null;
+		$today      = gmdate( 'Y-m-d' );
+		if ( $lifecycle['error'] ) {
+			$result['title'] = sprintf( __( 'Could not verify PHP lifecycle status: %s', 'stuh' ), $lifecycle['error'] );
+		} elseif ( ! $release || $release['releaseDate'] > $today ) {
+			$result['title'] = __( 'No released PHP branch was found in the lifecycle service for this version.', 'stuh' );
+		} elseif ( $today > $release['eol'] ) {
+			$result = [
+				'status' => 'outdated',
+				'title'  => sprintf( __( 'PHP is end-of-life. Security support ended on %s (endoflife.date).', 'stuh' ), $release['eol'] ),
+			];
+		} elseif ( $today > $release['support'] ) {
+			$result = [
+				'status' => 'warning',
+				'title'  => sprintf( __( 'PHP receives security fixes only until %s; active support ended on %s (endoflife.date).', 'stuh' ), $release['eol'], $release['support'] ),
+			];
+		} else {
+			$result = [
+				'status' => 'current',
+				'title'  => sprintf( __( 'PHP is actively supported until %s; security support ends on %s (endoflife.date).', 'stuh' ), $release['support'], $release['eol'] ),
+			];
+		}
+
+		if ( ! $lifecycle['error'] && $release && $release['releaseDate'] <= $today ) {
+			if ( empty( $matches[2] ) ) {
+				$result['title'] .= ' ' . __( 'Patch level could not be verified: no patch version was reported.', 'stuh' );
+			} elseif ( version_compare( $matches[1] . $matches[2], $release['latest'], '<' ) ) {
+				if ( 'outdated' !== $result['status'] ) {
+					$result['status'] = 'warning';
+				}
+				$result['title'] .= ' ' . sprintf( __( 'PHP patch update available: installed %1$s; latest in this branch is %2$s (endoflife.date).', 'stuh' ), $php_version, $release['latest'] );
+			} else {
+				$result['title'] .= ' ' . sprintf( __( 'Latest listed patch in this branch: %s (endoflife.date).', 'stuh' ), $release['latest'] );
+			}
+		}
+
+		if ( false === $compatible ) {
+			$result['status'] = 'outdated';
+			$result['title'] .= ' ' . sprintf( __( 'PHP is outside the locally configured support range for WordPress %s (table checked 2026-10-21).', 'stuh' ), $wordpress_version );
+		} elseif ( null === $compatible ) {
+			$result['title'] .= ' ' . __( 'WordPress/PHP compatibility could not be verified using the local table.', 'stuh' );
+		} else {
+			$result['title'] .= ' ' . sprintf( __( 'PHP is within the locally configured support range for WordPress %s (table checked 2026-10-21).', 'stuh' ), $wordpress_version );
+		}
+
+		return $result;
 	}
 
 	/**
@@ -4900,22 +5007,23 @@ class STUH_Plugin {
 							$value             = self::telemetry_column_value( $column_id, $data );
 							$wordpress_version = self::telemetry_column_value( 'telemetry_wp', $data );
 							$php_version       = self::telemetry_column_value( 'telemetry_php', $data );
-							$php_wordpress_supported = self::is_php_version_supported_by_wordpress( $php_version, $wordpress_version );
-							$php_regularly_supported = self::is_php_version_regularly_supported( $php_version );
+							$php_safety = 'telemetry_php' === $column_id
+								? self::php_version_safety( $php_version, $wordpress_version )
+								: [ 'status' => 'unknown', 'title' => '' ];
 							$wp_safety = 'telemetry_wp' === $column_id && $value
 								? self::wordpress_version_safety( $wordpress_version, $php_version )
 								: [ 'status' => 'unknown', 'latest' => '', 'update' => '' ];
 							$is_problem = ( 'telemetry_wp' === $column_id && 'outdated' === $wp_safety['status'] )
-								|| ( 'telemetry_php' === $column_id && $value && false === $php_wordpress_supported );
+								|| ( 'telemetry_php' === $column_id && $value && 'outdated' === $php_safety['status'] );
 							$is_warning = ( 'telemetry_wp' === $column_id
 									&& 'current' === $wp_safety['status']
 									&& $wp_safety['latest']
 									&& $value !== $wp_safety['latest'] )
-								|| ( 'telemetry_php' === $column_id && $value && ! $is_problem && false === $php_regularly_supported );
+								|| ( 'telemetry_php' === $column_id && $value && ! $is_problem && 'warning' === $php_safety['status'] );
 							$style             = $is_problem
 								? ' style="color:#d63638;font-weight:600;"'
 								: ( $is_warning ? ' style="color:#dba617;font-weight:600;"' : '' );
-							$title = '';
+							$title = 'telemetry_php' === $column_id ? $php_safety['title'] : '';
 							if ( 'telemetry_wp' === $column_id && 'outdated' === $wp_safety['status'] ) {
 								$title = sprintf( __( 'Security or maintenance update available: %s', 'stuh' ), $wp_safety['update'] );
 							} elseif ( 'telemetry_wp' === $column_id && 'current' === $wp_safety['status'] && $wp_safety['latest'] && $value !== $wp_safety['latest'] ) {
