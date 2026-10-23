@@ -102,8 +102,8 @@
 }
 
 .stuh-client-sites .stuh-client-row-actions button,
-.stuh-client-sites .stuh-client-row-actions .login a,
-.stuh-client-sites .stuh-client-row-actions .login a:visited {
+.stuh-client-sites .stuh-client-row-actions a,
+.stuh-client-sites .stuh-client-row-actions a:visited {
 	min-height: 0;
 	margin: 0;
 	padding: 0;
@@ -118,12 +118,200 @@
 
 .stuh-client-sites .stuh-client-row-actions button:hover,
 .stuh-client-sites .stuh-client-row-actions button:focus,
-.stuh-client-sites .stuh-client-row-actions .login a:hover,
-.stuh-client-sites .stuh-client-row-actions .login a:focus {
+.stuh-client-sites .stuh-client-row-actions a:hover,
+.stuh-client-sites .stuh-client-row-actions a:focus {
 	color: #135e96;
 	text-decoration: underline;
 }
 
 .stuh-client-sites .stuh-client-row-actions .delete button {
 	color: #b32d2e;
+}
+
+.stuh-client-details-meta {
+	color: #646970;
+	overflow-wrap: anywhere;
+}
+
+.stuh-client-details-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	align-items: start;
+	gap: 16px;
+	margin-top: 16px;
+}
+
+.stuh-client-detail-group {
+	min-width: 0;
+	padding: 0 16px;
+	border: 1px solid #dcdcde;
+	border-radius: 6px;
+	background: #fff;
+	overflow-wrap: anywhere;
+}
+
+/* Keep labels aligned while allowing long values and actions to wrap. */
+.stuh-client-detail-field {
+	display: grid;
+	grid-template-columns: minmax(110px, 32%) minmax(0, 1fr);
+	align-items: baseline;
+	gap: 12px;
+	padding: 8px 0;
+	border-top: 1px solid #f0f0f1;
+}
+
+.stuh-client-detail-group > h2 {
+	margin: 0;
+	padding: 13px 0;
+	font-size: 14px;
+	line-height: 1.4;
+}
+
+.stuh-client-detail-field > h3 {
+	margin: 0;
+	color: #646970;
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 1.5;
+}
+
+.stuh-client-detail-value {
+	min-width: 0;
+	line-height: 1.5;
+}
+
+.stuh-client-detail-group--packages,
+.stuh-client-detail-group--diagnostics {
+	grid-column: 1 / -1;
+}
+
+.stuh-client-package-inventory {
+	overflow-x: auto;
+}
+
+.stuh-package-table {
+	margin-bottom: 16px;
+	table-layout: fixed;
+}
+
+.stuh-package-table caption {
+	padding: 10px 0;
+	font-size: 14px;
+	font-weight: 600;
+	text-align: left;
+}
+
+.stuh-package-table th:first-child {
+	width: 65%;
+}
+
+.stuh-package-table code {
+	font-size: 11px;
+	overflow-wrap: anywhere;
+}
+
+.stuh-client-detail-group--packages .stuh-client-detail-field--telemetry_packages {
+	display: block;
+}
+
+.stuh-client-detail-field--telemetry_packages > h3 {
+	display: none;
+}
+
+.stuh-client-details .stuh-client-row-actions {
+	position: static;
+	left: 0;
+	display: inline;
+	visibility: visible;
+	margin: 0 0 0 8px !important;
+	padding: 0;
+}
+
+.stuh-client-detail-field--site_url .stuh-client-row-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 6px 0 0 !important;
+}
+
+.stuh-client-detail-field--site_url .stuh-client-row-actions > span {
+	font-size: 0;
+}
+
+.stuh-client-details .stuh-client-detail-field--site_url .stuh-client-row-actions a,
+.stuh-client-details .stuh-client-detail-field--site_url .stuh-client-row-actions button {
+	padding: 3px 8px;
+	border: 1px solid #dcdcde;
+	border-radius: 3px;
+	background: #f6f7f7;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.stuh-client-details .stuh-client-detail-field--site_url .stuh-client-row-actions a:hover,
+.stuh-client-details .stuh-client-detail-field--site_url .stuh-client-row-actions button:hover {
+	border-color: #2271b1;
+	background: #f0f6fc;
+	text-decoration: none;
+}
+
+.stuh-client-detail-group--packages .stuh-client-detail-field,
+.stuh-client-detail-group--diagnostics .stuh-client-detail-field {
+	grid-template-columns: minmax(110px, 16%) minmax(0, 1fr);
+}
+
+.stuh-client-details .stuh-client-row-actions button,
+.stuh-client-details .stuh-client-row-actions a {
+	display: inline-block;
+	padding: 0;
+}
+
+.stuh-client-details .stuh-client-tag {
+	margin-bottom: 0;
+	cursor: default;
+}
+
+.stuh-client-details summary {
+	color: #2271b1;
+	cursor: pointer;
+}
+
+.stuh-client-details summary:hover {
+	color: #135e96;
+}
+
+.stuh-client-details .stuh-client-site-heading {
+	display: inline-flex;
+}
+
+.stuh-client-details .stuh-client-site-description {
+	margin-top: 0;
+}
+
+.stuh-client-detail-editors {
+	margin-top: 12px;
+	border: 0;
+	background: transparent;
+}
+
+@media screen and (max-width: 960px) {
+	.stuh-client-details-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+@media screen and (max-width: 480px) {
+	.stuh-client-detail-group {
+		padding: 0 12px;
+	}
+
+	.stuh-client-detail-field {
+		grid-template-columns: minmax(90px, 35%) minmax(0, 1fr);
+		gap: 8px;
+	}
+
+	.stuh-client-detail-group--packages .stuh-client-detail-field,
+	.stuh-client-detail-group--diagnostics .stuh-client-detail-field {
+		grid-template-columns: minmax(90px, 35%) minmax(0, 1fr);
+	}
 }

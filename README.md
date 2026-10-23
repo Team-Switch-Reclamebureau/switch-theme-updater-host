@@ -4,6 +4,26 @@ The host authenticates Switch Updater clients, brokers GitHub package updates,
 and securely retains short-lived sanitized clone artifacts for authorized host
 administrators.
 
+## Website details
+
+Click a website's title or domain in **Updater Host → Client Sites** to open its
+details page. Six compact panels group website/access, health/updates,
+hosting/contacts, WordPress settings, themes/plugins, and diagnostics.
+Aligned label/value rows show every field, even columns hidden by Screen
+Options. Separate, always-visible inventory tables show themes first and plugins
+second, including names, identifiers, versions, and active status. Raw diagnostics
+expand on demand.
+Available actions stay visible beside the relevant details, including URL, tag,
+and ownership editing, health checks, access controls, and applicable remote
+maintenance actions. Actions return to the same website; deleting it returns to
+the list. **Back to Client Sites** retains the list's search and status filters.
+
+Use **Open site**, immediately before **Login** in the main table's row actions,
+to visit the first registered URL in a new tab. Login remains available when the
+client reports a login URL.
+
+Run the standalone view regression checks with `php tests/client-details.php`.
+
 ## Batched version checks
 
 New clients use authenticated `POST /wp-json/stu-host/v1/versions`. Authentication

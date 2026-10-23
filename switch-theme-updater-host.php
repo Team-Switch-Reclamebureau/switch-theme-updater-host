@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.8.0
+ * Version: 0.8.1
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -2524,8 +2524,14 @@ class STUH_Plugin {
 	 */
 	private static function render_client_row_actions( array $client, bool $enabled, string $login_url ): void {
 		$login_url = esc_url( $login_url );
+		$open_url  = self::client_ssl_url( $client );
 		?>
 		<div class="row-actions stuh-client-row-actions">
+			<?php if ( '' !== $open_url ) : ?>
+			<span class="open-site">
+				<a href="<?php echo esc_url( $open_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Open site', 'stuh' ); ?></a> |
+			</span>
+			<?php endif; ?>
 			<?php if ( '' !== $login_url ) : ?>
 			<span class="login">
 				<a href="<?php echo esc_url( $login_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Login', 'stuh' ); ?></a> |
@@ -2554,7 +2560,7 @@ class STUH_Plugin {
 				</form> |
 			</span>
 			<?php endif; ?>
-			<span class="edit-urls">
+			<span class="edit-urls" data-stuh-editor="stuh-edit-urls-<?php echo esc_attr( $client['id'] ); ?>">
 				<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-urls-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit URLs'; })(this)"><?php esc_html_e( 'Edit URLs', 'stuh' ); ?></button> |
 			</span>
 			<span class="delete">
@@ -2589,7 +2595,7 @@ class STUH_Plugin {
 			-
 		<?php endif; ?>
 		<div class="row-actions stuh-client-row-actions">
-			<span class="edit-owner">
+			<span class="edit-owner" data-stuh-editor="stuh-edit-<?php echo esc_attr( $connection_type ); ?>-owner-<?php echo esc_attr( $client['id'] ); ?>">
 				<button type="button" id="stuh-toggle-<?php echo esc_attr( $connection_type ); ?>-owner-<?php echo esc_attr( $client['id'] ); ?>" onclick="(function(btn){ var row = document.getElementById('stuh-edit-<?php echo esc_js( $connection_type ); ?>-owner-<?php echo esc_js( $client['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit'; })(this)"><?php esc_html_e( 'Edit', 'stuh' ); ?></button>
 			</span>
 		</div>
@@ -3106,50 +3112,40 @@ class STUH_Plugin {
 	 *
 	 * @param array<string, mixed> $packages
 	 */
-	private static function render_packages_dialog( string $dialog_id, array $packages ): void {
-		$plugins = is_array( $packages['plugins'] ?? null ) ? $packages['plugins'] : [];
-		$themes  = is_array( $packages['themes'] ?? null ) ? $packages['themes'] : [];
+	private static function render_packages_dialog( string $dialog_id, array $packages, bool $inline = false ): void {
 		?>
-		<div id="<?php echo esc_attr( $dialog_id ); ?>" style="display:none;">
-			<div style="padding:16px;">
-				<h2 style="margin-top:0;"><?php esc_html_e( 'Reported Packages', 'stuh' ); ?></h2>
-				<table class="widefat striped">
+		<div id="<?php echo esc_attr( $dialog_id ); ?>" class="stuh-client-package-inventory"<?php echo $inline ? '' : ' style="display:none;"'; ?>>
+			<?php foreach ( [ 'themes' => __( 'Themes', 'stuh' ), 'plugins' => __( 'Plugins', 'stuh' ) ] as $type => $label ) : ?>
+				<?php $items = is_array( $packages[ $type ] ?? null ) ? array_filter( $packages[ $type ], 'is_array' ) : []; ?>
+				<table class="widefat striped stuh-package-table stuh-package-table--<?php echo esc_attr( $type ); ?>">
+					<caption><?php echo esc_html( $label ); ?> <span class="count">(<?php echo esc_html( count( $items ) ); ?>)</span></caption>
 					<thead>
 						<tr>
-							<th><?php esc_html_e( 'Package', 'stuh' ); ?></th>
-							<th><?php esc_html_e( 'Type', 'stuh' ); ?></th>
-							<th><?php esc_html_e( 'Version', 'stuh' ); ?></th>
-							<th><?php esc_html_e( 'Active', 'stuh' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'Name', 'stuh' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'Version', 'stuh' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'Active', 'stuh' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
-					<?php foreach ( $plugins as $plugin ) : ?>
-						<?php if ( ! is_array( $plugin ) ) { continue; } ?>
+					<?php foreach ( $items as $item ) : ?>
+						<?php $identifier = $item[ 'themes' === $type ? 'stylesheet' : 'file' ] ?? ''; ?>
 						<tr>
 							<td>
-								<strong><?php echo esc_html( $plugin['name'] ?? $plugin['file'] ?? '' ); ?></strong><br>
-								<code><?php echo esc_html( $plugin['file'] ?? '' ); ?></code>
+								<strong><?php echo esc_html( $item['name'] ?? $identifier ); ?></strong><br>
+								<code><?php echo esc_html( $identifier ); ?></code>
 							</td>
-							<td><?php esc_html_e( 'Plugin', 'stuh' ); ?></td>
-							<td><?php echo esc_html( $plugin['version'] ?? '' ); ?></td>
-							<td><?php echo ! empty( $plugin['active'] ) ? esc_html__( 'Yes', 'stuh' ) : esc_html__( 'No', 'stuh' ); ?></td>
+							<td><?php echo esc_html( $item['version'] ?? '' ); ?></td>
+							<td><?php echo ! empty( $item['active'] ) ? esc_html__( 'Yes', 'stuh' ) : esc_html__( 'No', 'stuh' ); ?></td>
 						</tr>
 					<?php endforeach; ?>
-					<?php foreach ( $themes as $theme ) : ?>
-						<?php if ( ! is_array( $theme ) ) { continue; } ?>
+					<?php if ( ! $items ) : ?>
 						<tr>
-							<td>
-								<strong><?php echo esc_html( $theme['name'] ?? $theme['stylesheet'] ?? '' ); ?></strong><br>
-								<code><?php echo esc_html( $theme['stylesheet'] ?? '' ); ?></code>
-							</td>
-							<td><?php esc_html_e( 'Theme', 'stuh' ); ?></td>
-							<td><?php echo esc_html( $theme['version'] ?? '' ); ?></td>
-							<td><?php echo ! empty( $theme['active'] ) ? esc_html__( 'Yes', 'stuh' ) : esc_html__( 'No', 'stuh' ); ?></td>
+							<td colspan="3"><?php esc_html_e( 'None reported.', 'stuh' ); ?></td>
 						</tr>
-					<?php endforeach; ?>
+					<?php endif; ?>
 					</tbody>
 				</table>
-			</div>
+			<?php endforeach; ?>
 		</div>
 		<?php
 	}
@@ -3159,10 +3155,14 @@ class STUH_Plugin {
 	// --------------------------------------------------------
 
 	/**
-	 * Return the client list URL while retaining its active filters.
+	 * Return to the current client view after an action, retaining list filters.
 	 */
 	private static function client_list_url(): string {
 		$args = [ 'page' => 'stuh' ];
+		$client_id = sanitize_text_field( wp_unslash( $_GET['client_id'] ?? '' ) );
+		if ( '' !== $client_id && 'delete_client' !== ( $_POST['stuh_action'] ?? '' ) ) {
+			$args['client_id'] = $client_id;
+		}
 
 		$search = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
 		if ( '' !== $search ) {
@@ -3170,11 +3170,15 @@ class STUH_Plugin {
 		}
 
 		$status = sanitize_key( wp_unslash( $_GET['stuh_status'] ?? '' ) );
-		if ( in_array( $status, [ 'enabled', 'disabled' ], true ) ) {
+		if ( in_array( $status, [ 'enabled', 'disabled', 'stale' ], true ) ) {
 			$args['stuh_status'] = $status;
 		}
 
 		return add_query_arg( $args, admin_url( 'admin.php' ) );
+	}
+
+	private static function client_details_url( string $client_id ): string {
+		return add_query_arg( 'client_id', $client_id, self::client_list_url() );
 	}
 
 	public function handle_admin_actions(): void {
@@ -4583,6 +4587,14 @@ class STUH_Plugin {
 		}
 
 		$clients = self::get_clients();
+		$client_id = sanitize_text_field( wp_unslash( $_GET['client_id'] ?? '' ) );
+		$is_detail = '' !== $client_id;
+		if ( $is_detail ) {
+			$clients = array_values( array_filter( $clients, fn( array $client ): bool => $client['id'] === $client_id ) );
+			if ( ! $clients ) {
+				wp_die( esc_html__( 'The selected client site could not be found.', 'stuh' ) );
+			}
+		}
 		$telemetry = self::get_telemetry();
 		$external_parties = self::get_external_parties();
 		$ssl_statuses = [];
@@ -4624,8 +4636,44 @@ class STUH_Plugin {
 		}
 		natcasesort( $client_tags );
 		$screen = get_current_screen();
-		$columns = $screen ? get_column_headers( $screen ) : $this->client_columns();
-		$hidden_columns = $screen ? get_hidden_columns( $screen ) : [];
+		$columns = ! $is_detail && $screen ? get_column_headers( $screen ) : $this->client_columns();
+		$detail_groups = [];
+		if ( $is_detail ) {
+			$detail_groups = [
+				'overview' => [
+					'label' => __( 'Website & access', 'stuh' ),
+					'columns' => [ 'site', 'site_url', 'tags', 'created_at', 'last_seen' ],
+				],
+				'health' => [
+					'label' => __( 'Health & updates', 'stuh' ),
+					'columns' => [ 'homepage_status', 'ssl', 'telemetry_wp', 'telemetry_php', 'telemetry_updater', 'telemetry_pending_updates', 'telemetry_smtp', 'telemetry_debug' ],
+				],
+				'infrastructure' => [
+					'label' => __( 'Hosting & contacts', 'stuh' ),
+					'columns' => [ 'last_seen_ip', 'server_owner', 'domain_owner', 'telemetry_admin_email', 'email_owner', 'telemetry_site', 'telemetry_home', 'telemetry_database', 'telemetry_analytics' ],
+				],
+				'configuration' => [
+					'label' => __( 'WordPress settings', 'stuh' ),
+					'columns' => [ 'telemetry_search_engine_visibility', 'telemetry_post_revisions', 'telemetry_core_upgrade_skip_new_bundled', 'telemetry_multisite', 'telemetry_multilanguage', 'telemetry_locale' ],
+				],
+				'packages' => [
+					'label' => __( 'Themes & plugins', 'stuh' ),
+					'columns' => [ 'telemetry_active_theme', 'telemetry_packages' ],
+				],
+				'diagnostics' => [
+					'label' => __( 'Diagnostics', 'stuh' ),
+					'columns' => [ 'diagnostics' ],
+				],
+			];
+			$ordered_columns = [];
+			foreach ( $detail_groups as $group ) {
+				foreach ( $group['columns'] as $column_id ) {
+					$ordered_columns[ $column_id ] = $columns[ $column_id ];
+				}
+			}
+			$columns = $ordered_columns;
+		}
+		$hidden_columns = ! $is_detail && $screen ? get_hidden_columns( $screen ) : [];
 		$visible_column_count = count( array_diff_key( $columns, array_flip( $hidden_columns ) ) ) + 1;
 		$uid     = get_current_user_id();
 		$new_key = get_transient( 'stuh_new_key_' . $uid );
@@ -4669,8 +4717,23 @@ class STUH_Plugin {
 			delete_transient( 'stuh_bulk_homepage_check_' . $uid );
 		}
 		?>
-		<div class="wrap stuh-client-sites">
-			<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
+		<div class="wrap stuh-client-sites<?php echo $is_detail ? ' stuh-client-details' : ''; ?>">
+			<?php if ( $is_detail ) : ?>
+				<?php
+				$detail_client = $clients[0];
+				$detail_site   = is_array( $telemetry[ $client_id ]['data']['site'] ?? null ) ? $telemetry[ $client_id ]['data']['site'] : [];
+				$detail_title  = is_string( $detail_site['title'] ?? null ) && '' !== $detail_site['title'] ? $detail_site['title'] : self::client_url_label( (string) ( $detail_client['site_url'] ?? '' ) );
+				?>
+				<p><a href="<?php echo esc_url( remove_query_arg( 'client_id', self::client_list_url() ) ); ?>">&larr; <?php esc_html_e( 'Back to Client Sites', 'stuh' ); ?></a></p>
+				<h1><?php echo esc_html( $detail_title ); ?></h1>
+				<p class="stuh-client-details-meta">
+					<strong><?php echo ( $detail_client['enabled'] ?? true ) ? esc_html__( 'Enabled', 'stuh' ) : esc_html__( 'Disabled', 'stuh' ); ?></strong>
+					&middot; <?php echo esc_html( $detail_client['site_url'] ?? '' ); ?>
+					&middot; <code><?php echo esc_html( $client_id ); ?></code>
+				</p>
+			<?php else : ?>
+				<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
+			<?php endif; ?>
 
 			<?php if ( $new_key ) : ?>
 			<div class="notice notice-success" style="padding: 16px 16px 8px;">
@@ -4734,12 +4797,14 @@ class STUH_Plugin {
 			</div>
 			<?php endif; ?>
 
+			<?php if ( ! $is_detail ) : ?>
 			<ul class="subsubsub stuh-client-status-filters" aria-label="<?php esc_attr_e( 'Filter client sites by status', 'stuh' ); ?>">
 				<li class="all"><a href="#" class="<?php echo 'all' === $selected_status ? 'current' : ''; ?>" data-status="all"<?php echo 'all' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'All', 'stuh' ); ?> <span class="count">(<?php echo esc_html( count( $clients ) ); ?>)</span></a> |</li>
 				<li class="enabled"><a href="#" class="<?php echo 'enabled' === $selected_status ? 'current' : ''; ?>" data-status="enabled"<?php echo 'enabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Enabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $enabled_client_count ); ?>)</span></a> |</li>
 				<li class="disabled"><a href="#" class="<?php echo 'disabled' === $selected_status ? 'current' : ''; ?>" data-status="disabled"<?php echo 'disabled' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Disabled', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $disabled_client_count ); ?>)</span></a> |</li>
 				<li class="stale"><a href="#" class="<?php echo 'stale' === $selected_status ? 'current' : ''; ?>" data-status="stale"<?php echo 'stale' === $selected_status ? ' aria-current="page"' : ''; ?>><?php esc_html_e( 'Stale', 'stuh' ); ?> <span class="count">(<?php echo esc_html( $stale_client_count ); ?>)</span></a></li>
 			</ul>
+			<?php endif; ?>
 
 			<?php
 			// Sorting.
@@ -4842,6 +4907,7 @@ class STUH_Plugin {
 				return ' <span class="dashicons dashicons-arrow-' . ( $order === 'asc' ? 'up' : 'down' ) . '" style="vertical-align:middle;font-size:14px;"></span>';
 			};
 			?>
+			<?php if ( ! $is_detail ) : ?>
 			<p class="search-box" style="float:right;margin:8px 0 0;">
 				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
 				<span id="stuh-client-search-count" aria-live="polite"></span>
@@ -4890,6 +4956,9 @@ class STUH_Plugin {
 					</tr>
 				</thead>
 				<tbody>
+			<?php else : ?>
+				<div class="stuh-client-details-grid">
+			<?php endif; ?>
 					<?php if ( empty( $clients ) ) : ?>
 					<tr>
 						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding: 16px;">
@@ -4910,17 +4979,31 @@ class STUH_Plugin {
 						$search_telemetry = is_array( $telemetry[ $c['id'] ] ?? null ) ? $telemetry[ $c['id'] ] : [];
 						$row_index++;
 					?>
+					<?php if ( ! $is_detail ) : ?>
 					<tr class="stuh-client-row<?php echo $is_stale ? ' stuh-client-row--stale' : ''; ?><?php echo $homepage_unhealthy ? ' stuh-client-row--unhealthy' : ''; ?>" data-client-id="<?php echo esc_attr( $c['id'] ); ?>" data-status="<?php echo $enabled ? 'enabled' : 'disabled'; ?>" data-stale="<?php echo $is_stale ? 'true' : 'false'; ?>" data-search="<?php echo esc_attr( self::client_search_text( $c, $search_telemetry, $external_party_search_values ) ); ?>" style="<?php echo esc_attr( $row_bg ); ?>">
 						<th scope="row" class="check-column">
 							<label class="screen-reader-text" for="cb-select-<?php echo esc_attr( $c['id'] ); ?>"><?php echo esc_html( sprintf( __( 'Select %s', 'stuh' ), $c['site_url'] ?? '' ) ); ?></label>
 							<input id="cb-select-<?php echo esc_attr( $c['id'] ); ?>" type="checkbox" name="client_ids[]" value="<?php echo esc_attr( $c['id'] ); ?>" form="stuh-client-bulk-actions">
 						</th>
+					<?php endif; ?>
 						<?php
 						$report = $telemetry[ $c['id'] ] ?? null;
 						$data   = is_array( $report['data'] ?? null ) ? $report['data'] : [];
 						foreach ( $columns as $column_id => $column_label ) :
 						?>
+						<?php if ( $is_detail ) : ?>
+							<?php foreach ( $detail_groups as $group_id => $group ) : ?>
+								<?php if ( $column_id === $group['columns'][0] ) : ?>
+								<section class="stuh-client-detail-group stuh-client-detail-group--<?php echo esc_attr( $group_id ); ?>">
+									<h2><?php echo esc_html( $group['label'] ); ?></h2>
+								<?php endif; ?>
+							<?php endforeach; ?>
+						<div class="stuh-client-detail-field stuh-client-detail-field--<?php echo esc_attr( $column_id ); ?>">
+							<h3><?php echo esc_html( 'diagnostics' === $column_id ? __( 'Latest report', 'stuh' ) : $column_label ); ?></h3>
+							<div class="stuh-client-detail-value">
+						<?php else : ?>
 						<td class="column-<?php echo esc_attr( $column_id ); ?><?php echo in_array( $column_id, $hidden_columns, true ) ? ' hidden' : ''; ?>">
+						<?php endif; ?>
 						<?php if ( 'site' === $column_id ) : ?>
 							<?php
 							$site             = is_array( $data['site'] ?? null ) ? $data['site'] : [];
@@ -4934,14 +5017,14 @@ class STUH_Plugin {
 										<?php if ( '' !== $favicon_url ) : ?>
 											<img class="stuh-client-favicon" src="<?php echo esc_url( $favicon_url ); ?>" alt="" width="16" height="16">
 										<?php endif; ?>
-										<strong class="stuh-client-site-title"><?php echo esc_html( $site_title ); ?></strong>
+										<strong class="stuh-client-site-title"><a href="<?php echo esc_url( self::client_details_url( (string) $c['id'] ) ); ?>"><?php echo esc_html( $site_title ); ?></a></strong>
 									</span>
 								<?php endif; ?>
 								<?php if ( '' !== $site_description ) : ?>
 									<span class="stuh-client-site-description"><?php echo esc_html( $site_description ); ?></span>
 								<?php endif; ?>
 							<?php else : ?>
-								<em>&mdash;</em>
+								<a href="<?php echo esc_url( self::client_details_url( (string) $c['id'] ) ); ?>"><?php echo esc_html( self::client_url_label( (string) ( $c['site_url'] ?? '' ) ) ); ?></a>
 							<?php endif; ?>
 						<?php elseif ( 'site_url' === $column_id ) : ?>
 							<?php
@@ -4950,7 +5033,7 @@ class STUH_Plugin {
 							$login_url  = is_string( $site['login_url'] ?? null ) ? $site['login_url'] : '';
 							foreach ( $all_urls as $url_index => $u ) :
 							?>
-							<a href="<?php echo esc_url( $u ); ?>" target="_blank" rel="noopener">
+							<a href="<?php echo esc_url( $is_detail ? $u : self::client_details_url( (string) $c['id'] ) ); ?>"<?php echo $is_detail ? ' target="_blank" rel="noopener noreferrer"' : ''; ?>>
 								<?php echo esc_html( self::client_url_label( $u ) ); ?>
 							</a><?php if ( ! $enabled && 0 === $url_index ) : ?> <span class="post-state"><strong>&mdash; <?php esc_html_e( 'Disabled', 'stuh' ); ?></strong></span><?php endif; ?><br>
 							<?php endforeach; ?>
@@ -4975,6 +5058,17 @@ class STUH_Plugin {
 								<small><?php echo esc_html( wp_date( 'Y-m-d H:i', (int) ( $homepage_health['checked_at'] ?? 0 ) ) ); ?></small>
 							<?php else : ?>
 								<em><?php esc_html_e( 'Not checked', 'stuh' ); ?></em>
+							<?php endif; ?>
+							<?php if ( $is_detail ) : ?>
+							<div class="row-actions stuh-client-row-actions">
+								<form method="post">
+									<?php wp_nonce_field( 'stuh_admin' ); ?>
+									<input type="hidden" name="stuh_action" value="bulk_update_clients">
+									<input type="hidden" name="bulk_action" value="check_homepage_status">
+									<input type="hidden" name="client_ids[]" value="<?php echo esc_attr( $c['id'] ); ?>">
+									<button type="submit"><?php esc_html_e( 'Check homepage status', 'stuh' ); ?></button>
+								</form>
+							</div>
 							<?php endif; ?>
 						<?php elseif ( 'ssl' === $column_id ) : ?>
 							<?php
@@ -5013,13 +5107,17 @@ class STUH_Plugin {
 							<?php $tags = (array) ( $c['tags'] ?? [] ); ?>
 							<?php if ( $tags ) : ?>
 								<?php foreach ( $tags as $tag ) : ?>
+									<?php if ( $is_detail ) : ?>
+									<span class="stuh-client-tag stuh-client-tag--<?php echo esc_attr( sanitize_html_class( strtolower( $tag ) ) ); ?>"><?php echo esc_html( $tag ); ?></span>
+									<?php else : ?>
 									<button type="button" class="stuh-client-tag stuh-client-tag--<?php echo esc_attr( sanitize_html_class( strtolower( $tag ) ) ); ?>" data-tag="<?php echo esc_attr( $tag ); ?>"><?php echo esc_html( $tag ); ?></button>
+									<?php endif; ?>
 								<?php endforeach; ?>
 							<?php else : ?>
 								<em>&mdash;</em>
 							<?php endif; ?>
 							<p class="row-actions stuh-client-row-actions" style="margin:4px 0 0;">
-								<span class="edit-tags">
+								<span class="edit-tags" data-stuh-editor="stuh-edit-tags-<?php echo esc_attr( $c['id'] ); ?>">
 									<button type="button" onclick="(function(btn){ var row = document.getElementById('stuh-edit-tags-<?php echo esc_js( $c['id'] ); ?>'); var hidden = row.style.display === 'none' || row.style.display === ''; row.style.display = hidden ? 'table-row' : 'none'; btn.textContent = hidden ? 'Cancel' : 'Edit Tags'; })(this)"><?php esc_html_e( 'Edit Tags', 'stuh' ); ?></button>
 								</span>
 							</p>
@@ -5223,24 +5321,41 @@ class STUH_Plugin {
 						<?php else : ?>
 							<?php
 							$packages = is_array( $data['packages'] ?? null ) ? $data['packages'] : [];
-							if ( 'telemetry_packages' === $column_id && ! empty( $packages ) ) {
+							if ( 'telemetry_packages' === $column_id && ( $is_detail || ! empty( $packages ) ) ) {
 								$dialog_id = 'stuh-packages-' . md5( (string) $c['id'] );
 								$value     = self::telemetry_column_value( $column_id, $data );
 								?>
+								<?php if ( ! $is_detail ) : ?>
 								<a href="#TB_inline?width=700&amp;height=500&amp;inlineId=<?php echo esc_attr( $dialog_id ); ?>" class="thickbox">
 									<?php echo esc_html( $value ); ?>
 								</a>
-								<?php self::render_packages_dialog( $dialog_id, $packages ); ?>
+								<?php endif; ?>
+								<?php self::render_packages_dialog( $dialog_id, $packages, $is_detail ); ?>
 								<?php
 							} else {
 								$value = self::telemetry_column_value( $column_id, $data );
-								echo esc_html( $value );
+								echo esc_html( $is_detail && '' === $value ? '—' : $value );
 							}
 							?>
 						<?php endif; ?>
+						<?php if ( $is_detail ) : ?>
+							</div>
+						</div>
+							<?php foreach ( $detail_groups as $group ) : ?>
+								<?php if ( $column_id === $group['columns'][ count( $group['columns'] ) - 1 ] ) : ?>
+								</section>
+								<?php endif; ?>
+							<?php endforeach; ?>
+						<?php else : ?>
 						</td>
+						<?php endif; ?>
 						<?php endforeach; ?>
+					<?php if ( $is_detail ) : ?>
+					</div>
+					<table class="widefat stuh-client-detail-editors"><tbody>
+					<?php else : ?>
 					</tr>
+					<?php endif; ?>
 					<?php self::render_external_party_owner_editor( $c, $external_parties, 'domain', $visible_column_count ); ?>
 					<?php self::render_external_party_owner_editor( $c, $external_parties, 'server', $visible_column_count ); ?>
 					<?php self::render_external_party_owner_editor( $c, $external_parties, 'email', $visible_column_count ); ?>
@@ -5288,13 +5403,34 @@ class STUH_Plugin {
 					</tr>
 					<?php endforeach; ?>
 					<?php endif; ?>
+					<?php if ( ! $is_detail ) : ?>
 					<tr id="stuh-client-no-matches" style="display:none;">
 						<td colspan="<?php echo esc_attr( $visible_column_count ); ?>" class="colspanchange" style="padding:16px;">
 							<em><?php esc_html_e( 'No client sites match this search.', 'stuh' ); ?></em>
 						</td>
 					</tr>
+					<?php endif; ?>
 				</tbody>
 			</table>
+			<?php if ( $is_detail ) : ?>
+			<script>
+			document.querySelector('.stuh-client-details').addEventListener('click', function(event) {
+				var action = event.target.closest('[data-stuh-editor]');
+				if (!action) {
+					return;
+				}
+				var editor = document.getElementById(action.dataset.stuhEditor);
+				if (editor && editor.style.display !== 'none') {
+					editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+					var field = editor.querySelector('textarea, input:not([type="hidden"]), select');
+					if (field) {
+						field.focus({ preventScroll: true });
+					}
+				}
+			});
+			</script>
+			<?php endif; ?>
+			<?php if ( ! $is_detail ) : ?>
 			<script>
 			(function() {
 				var search = document.getElementById('stuh-client-search');
@@ -5534,6 +5670,7 @@ class STUH_Plugin {
 			</table>
 			<?php submit_button( __( 'Add Site &amp; Generate Key', 'stuh' ) ); ?>
 		</form>
+		<?php endif; ?>
 	</div>
 	<?php
 	}
