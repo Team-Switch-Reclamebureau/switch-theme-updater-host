@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.7.0
+ * Version: 0.8.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1443,6 +1443,31 @@ class STUH_Plugin {
 			],
 		] );
 
+		register_rest_route( STUH_REST_NS, '/versions', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'rest_versions' ],
+			'permission_callback' => $auth,
+			'args'                => [
+				'packages' => [
+					'required' => true,
+					'type'     => 'array',
+					'minItems' => 1,
+					'maxItems' => 100,
+					'items'    => [
+						'type'       => 'object',
+						'required'   => [ 'repo' ],
+						'properties' => [
+							'repo'   => [ 'type' => 'string' ],
+							'mode'   => [ 'type' => 'string', 'enum' => [ 'releases', 'commits', 'tag' ] ],
+							'branch' => [ 'type' => 'string' ],
+							'ref'    => [ 'type' => 'string' ],
+							'path'   => [ 'type' => 'string' ],
+						],
+					],
+				],
+			],
+		] );
+
 		register_rest_route( STUH_REST_NS, '/releases', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'rest_releases' ],
@@ -2259,6 +2284,34 @@ class STUH_Plugin {
 	// --------------------------------------------------------
 	// REST endpoint: latest version
 	// --------------------------------------------------------
+
+	public function rest_versions( WP_REST_Request $req ) {
+		$results = [];
+		$resolved = [];
+		foreach ( $req->get_param( 'packages' ) as $package ) {
+			$params = [];
+			foreach ( [ 'repo' => '', 'mode' => 'releases', 'branch' => 'main', 'ref' => '', 'path' => '/' ] as $name => $default ) {
+				$params[ $name ] = sanitize_text_field( $package[ $name ] ?? $default );
+			}
+			$key = wp_json_encode( $params );
+			if ( ! array_key_exists( $key, $resolved ) ) {
+				$item = new WP_REST_Request( 'GET' );
+				foreach ( $params as $name => $value ) {
+					$item->set_param( $name, $value );
+				}
+				$result = $this->rest_version( $item );
+				$resolved[ $key ] = is_wp_error( $result )
+					? [ 'error' => [
+						'code'    => $result->get_error_code(),
+						'message' => $result->get_error_message(),
+						'status'  => $result->get_error_data()['status'] ?? 500,
+					] ]
+					: $result->get_data();
+			}
+			$results[] = $resolved[ $key ];
+		}
+		return rest_ensure_response( [ 'results' => $results ] );
+	}
 
 	public function rest_version( WP_REST_Request $req ) {
 		$repo   = $req->get_param( 'repo' );

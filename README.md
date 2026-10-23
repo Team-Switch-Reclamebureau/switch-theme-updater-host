@@ -4,6 +4,41 @@ The host authenticates Switch Updater clients, brokers GitHub package updates,
 and securely retains short-lived sanitized clone artifacts for authorized host
 administrators.
 
+## Batched version checks
+
+New clients use authenticated `POST /wp-json/stu-host/v1/versions`. Authentication
+and telemetry processing use the same permission callback as `GET /version`,
+once per batch. The existing `GET /version` endpoint and response are unchanged
+for older clients; clients can be upgraded before or after the host.
+
+Send JSON containing `packages`, an array of 1 to 100 objects:
+
+```json
+{
+  "packages": [
+    {"repo": "owner/plugin", "mode": "releases"},
+    {"repo": "owner/theme", "mode": "commits", "branch": "main", "path": "/"},
+    {"repo": "owner/theme", "mode": "tag", "ref": "v1.0"}
+  ]
+}
+```
+
+Only `repo` is required. Defaults are `mode: releases`, `branch: main`,
+`path: /`, and an empty `ref`. Modes are `releases`, `commits`, and `tag`.
+The response has a `results` array in input order. Each item is either the
+existing `{"version": "...", "ref": "..."}` result or
+`{"error": {"code": "...", "message": "...", "status": 404}}`.
+Package-level errors do not abort other lookups. Identical lookups within a
+batch are resolved once. Invalid payloads are rejected by WordPress REST schema
+validation before the endpoint runs.
+
+GitHub lookups still run sequentially on the host. This endpoint reduces
+client-to-host requests, repeated WordPress bootstrapping, authentication, and
+telemetry work; it does not add persistent version caching.
+
+Run the standalone regression checks with `php tests/batch-versions.php`.
+They mock GitHub responses without contacting external services.
+
 ## Package download failures
 
 GitHub package downloads return a local ZIP path on success or a `WP_Error` on
