@@ -28,14 +28,24 @@ Run the standalone view regression checks with `php tests/client-details.php`.
 
 **Updater Host → Google Analytics** connects one agency Google account using
 read-only OAuth. Client sites do not receive Google credentials and do not need
-a client-plugin update for this initial integration. Tag detection and Google
-Tag Manager configuration are not included.
+a client-plugin update for manual property mapping. Clients that report
+`gtm_container_ids` can also be mapped automatically through read-only access
+to published Google Tag Manager configuration. Tracking installation and tag
+editing/publishing are not included.
 
 ### Server configuration
 
 Enable the **Google Analytics Data API** and **Google Analytics Admin API** in a
-Google Cloud project. Configure the Google Auth Platform audience and the
-`https://www.googleapis.com/auth/analytics.readonly` scope. An Internal audience
+Google Cloud project. For automatic GTM mapping, also enable the **Tag Manager
+API**. Configure the Google Auth Platform audience and these read-only scopes:
+
+- `https://www.googleapis.com/auth/analytics.readonly`
+- `https://www.googleapis.com/auth/tagmanager.readonly`
+
+Existing Analytics-only connections continue reporting, but must reconnect
+and grant the additional scope before GTM discovery can run. The connecting
+Google account needs read access to the relevant GTM containers as well as
+Viewer access to the GA4 properties. An Internal audience
 only permits accounts in the project's Workspace organization, although those
 accounts may have access to externally owned client properties.
 
@@ -92,6 +102,58 @@ pages and traffic channels for the latest period. Fractional key-event counts
 are retained. Google processing delays, consent settings, sampling and
 thresholding can affect the figures; reported limitations are displayed.
 Re-save the mapping if the property's timezone changes.
+
+### Automatic mapping from GTM diagnostics
+
+The client diagnostics contract is:
+
+```json
+{
+  "analytics": "disabled",
+  "gtm_container_ids": ["GTM-ABC1234"]
+}
+```
+
+`gtm_container_ids` is an array of container ID strings, or `null` when no
+container was detected. Missing, null, and empty values do not produce a
+mapping. Malformed arrays are reported rather than partially accepted. The
+legacy `analytics` text field is independent: `disabled` does not suppress GTM
+discovery.
+
+Authenticated telemetry, connecting Google, or opening an unmapped client
+details page can queue a discovery job. These paths make no discovery API
+requests themselves. Administrators can also use **Discover unmapped client
+sites from GTM** on the Google Analytics page or **Retry automatic mapping**
+on a client details page. WP-Cron performs the actual lookups:
+
+1. Look up each reported GTM container and read its **published version**, not
+   an unpublished workspace.
+2. Read `G-...` destinations from Google tags and legacy GA4 configuration
+   tags, including literal constant-variable references and explicit GA4 event
+   destinations. Paused tags are excluded.
+3. Match those measurement IDs against accessible GA4 web streams, following
+   all property and stream-list pages.
+4. Require each discovered destination to have one accessible stream whose
+   default URL hostname exactly matches the client's primary registered URL.
+   All destinations must resolve to the same property.
+5. Save that property's numeric ID and timezone, mark the mapping as
+   GTM-discovered, and queue its first Analytics report.
+
+Container destinations and the shared stream index are cached for one hour.
+Unmapped discovery attempts are also retried no more than hourly unless
+diagnostics change or an administrator explicitly retries. No hostname
+normalization merges `www` and bare domains. Shared containers with ambiguous
+destinations, inaccessible streams, dynamic/lookup/JavaScript variables,
+`GT-...` Google tag aliases, custom HTML/templates, and server-side routing
+can require manual mapping. The panel displays discovery failures rather than
+guessing a property. A match does not prove that the tags fire, consent is
+configured correctly, or traffic is being received.
+
+Existing mappings, including manual choices and previously discovered
+mappings, are never automatically replaced. Changed reported containers are
+flagged on previously discovered mappings for review. Removing a mapping
+pauses automatic mapping for that client so it is not immediately recreated;
+**Retry automatic mapping** explicitly enables it again.
 
 Opening a mapped client page queues a background refresh if its successful
 report is older than four hours, with a 15-minute retry delay after failures.

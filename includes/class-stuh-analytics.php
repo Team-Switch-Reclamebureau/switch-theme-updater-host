@@ -8,6 +8,7 @@ final class STUH_Analytics {
 	private const CONNECTION = 'stuh_google_connection';
 	private const MAPPINGS = 'stuh_google_mappings';
 	private const SCOPE = 'https://www.googleapis.com/auth/analytics.readonly';
+	private const GTM_SCOPE = 'https://www.googleapis.com/auth/tagmanager.readonly';
 	private const METRICS = [ 'activeUsers', 'sessions', 'screenPageViews', 'engagementRate', 'keyEvents' ];
 
 	public static function init(): void {
@@ -15,6 +16,7 @@ final class STUH_Analytics {
 		add_action( 'admin_post_stuh_google_action', [ self::class, 'handle_action' ] );
 		add_action( 'admin_post_stuh_google_oauth_callback', [ self::class, 'callback' ] );
 		add_action( 'stuh_google_refresh_report', [ self::class, 'refresh_report' ] );
+		add_action( 'stuh_google_discover', [ self::class, 'discover_client' ] );
 	}
 
 	public static function register_menu(): void {
@@ -166,7 +168,7 @@ final class STUH_Analytics {
 		return is_wp_error( $saved ) ? $saved : $connection['access_token'];
 	}
 
-	private static function api( string $path, ?array $body = null, bool $reporting = false ) {
+	private static function api( string $path, ?array $body = null, string $service = 'admin' ) {
 		$token = self::access_token();
 		if ( is_wp_error( $token ) ) {
 			return $token;
@@ -177,7 +179,12 @@ final class STUH_Analytics {
 			$args['headers']['Content-Type'] = 'application/json';
 			$args['body'] = wp_json_encode( $body );
 		}
-		return self::request( ( $reporting ? 'https://analyticsdata.googleapis.com/v1beta/' : 'https://analyticsadmin.googleapis.com/v1beta/' ) . $path, $args );
+		$base = match ( $service ) {
+			'admin' => 'https://analyticsadmin.googleapis.com/v1beta/',
+			'data' => 'https://analyticsdata.googleapis.com/v1beta/',
+			'gtm' => 'https://tagmanager.googleapis.com/tagmanager/v2/',
+		};
+		return self::request( $base . $path, $args );
 	}
 
 	private static function start(): void {
@@ -194,7 +201,7 @@ final class STUH_Analytics {
 			'client_id' => self::config( 'ANALYTICS_CLIENT_ID' ),
 			'redirect_uri' => self::callback_url(),
 			'response_type' => 'code',
-			'scope' => self::SCOPE,
+			'scope' => self::SCOPE . ' ' . self::GTM_SCOPE,
 			'access_type' => 'offline',
 			'prompt' => 'consent',
 			'state' => $state,
@@ -245,7 +252,13 @@ final class STUH_Analytics {
 			'access_token' => $data['access_token'],
 			'refresh_token' => $data['refresh_token'],
 			'expires_at' => time() + (int) $data['expires_in'],
+			'scopes' => $scopes,
 		] );
+		if ( ! is_wp_error( $saved ) ) {
+			foreach ( STUH_Plugin::get_clients() as $client ) {
+				self::queue_discovery( $client );
+			}
+		}
 		self::finish( is_wp_error( $saved ) ? $saved->get_error_message() : __( 'Google connected. Load properties next. Existing site mappings must be confirmed again after reconnecting.', 'stuh' ), is_wp_error( $saved ) );
 	}
 
@@ -299,6 +312,309 @@ final class STUH_Analytics {
 		return is_array( $mappings ) ? $mappings : [];
 	}
 
+	private static function property_mapping( array $connection, string $property, string $hostname ) {
+		$details = self::api( 'properties/' . $property );
+		if ( is_wp_error( $details ) ) {
+			return $details;
+		}
+		if ( ( $details['name'] ?? '' ) !== 'properties/' . $property || ! is_string( $details['timeZone'] ?? null ) || ! in_array( $details['timeZone'], timezone_identifiers_list( DateTimeZone::ALL_WITH_BC ), true ) || ! is_string( $details['displayName'] ?? null ) ) {
+			return new WP_Error( 'google_property', __( 'Google returned invalid property details or timezone.', 'stuh' ) );
+		}
+		return [ 'connection_id' => $connection['id'], 'property_id' => $property, 'name' => $details['displayName'], 'hostname' => $hostname, 'timezone' => $details['timeZone'] ];
+	}
+
+	private static function container_ids( array $data ) {
+		$ids = $data['gtm_container_ids'] ?? [];
+		if ( ! is_array( $ids ) || ! array_is_list( $ids ) ) {
+			return new WP_Error( 'google_gtm_diagnostics', __( 'Invalid GTM diagnostics: gtm_container_ids must be an array of container ID strings, or null.', 'stuh' ) );
+		}
+		foreach ( $ids as $id ) {
+			if ( ! is_string( $id ) || ! preg_match( '/^GTM-[A-Z0-9]+$/D', $id ) ) {
+				return new WP_Error( 'google_gtm_diagnostics', __( 'Invalid GTM container ID in client diagnostics.', 'stuh' ) );
+			}
+		}
+		$ids = array_values( array_unique( $ids ) );
+		sort( $ids );
+		return $ids;
+	}
+
+	private static function parameter( array $entity, string $key ): ?string {
+		foreach ( is_array( $entity['parameter'] ?? null ) ? $entity['parameter'] : [] as $parameter ) {
+			if ( is_array( $parameter ) && ( $parameter['key'] ?? '' ) === $key && is_string( $parameter['value'] ?? null ) ) {
+				return $parameter['value'];
+			}
+		}
+		return null;
+	}
+
+	private static function published_measurements( array $version ) {
+		if ( ! is_array( $version['tag'] ?? [] ) || ! is_array( $version['variable'] ?? [] ) ) {
+			return new WP_Error( 'google_gtm_response', __( 'Google returned invalid published GTM configuration.', 'stuh' ) );
+		}
+		$constants = [];
+		foreach ( $version['variable'] ?? [] as $variable ) {
+			if ( is_array( $variable ) && ( $variable['type'] ?? '' ) === 'c' && is_string( $variable['name'] ?? null ) ) {
+				$constants[ $variable['name'] ] = self::parameter( $variable, 'value' );
+			}
+		}
+		$ids = [];
+		foreach ( $version['tag'] ?? [] as $tag ) {
+			if ( ! is_array( $tag ) ) {
+				return new WP_Error( 'google_gtm_response', __( 'Google returned an invalid GTM tag.', 'stuh' ) );
+			}
+			if ( ! empty( $tag['paused'] ) ) {
+				continue;
+			}
+			$type = $tag['type'] ?? '';
+			if ( ! in_array( $type, [ 'googtag', 'gaawc', 'gaawe' ], true ) ) {
+				continue;
+			}
+			$value = self::parameter( $tag, 'googtag' === $type ? 'tagId' : 'measurementId' );
+			$override = 'gaawe' === $type ? self::parameter( $tag, 'measurementIdOverride' ) : null;
+			if ( null !== $override && '' !== $override ) {
+				$value = $override;
+			}
+			if ( 'gaawe' === $type && ( null === $value || '' === $value ) ) {
+				continue;
+			}
+			if ( is_string( $value ) && preg_match( '/^\{\{([^{}]+)\}\}$/D', $value, $match ) ) {
+				$value = $constants[ $match[1] ] ?? null;
+			}
+			if ( ! is_string( $value ) || ! preg_match( '/^G-[A-Z0-9]+$/D', $value ) ) {
+				return new WP_Error( 'google_gtm_dynamic', __( 'Published GTM Analytics tags use an unresolved variable, Google tag alias, or unsupported destination. Select the property manually; discovery will not guess.', 'stuh' ) );
+			}
+			$ids[] = $value;
+		}
+		if ( ! $ids ) {
+			return new WP_Error( 'google_gtm_empty', __( 'No supported GA4 destination was found in the published GTM container. Custom HTML, custom templates, and server-side routing require manual mapping.', 'stuh' ) );
+		}
+		return array_values( array_unique( $ids ) );
+	}
+
+	private static function container_measurements( string $container_id, string $connection_id ) {
+		$key = 'stuh_google_gtm_' . hash( 'sha256', $connection_id . $container_id );
+		$cached = get_transient( $key );
+		if ( is_array( $cached ) ) {
+			return $cached;
+		}
+		$container = self::api( 'accounts/containers:lookup?' . http_build_query( [ 'tagId' => $container_id ] ), null, 'gtm' );
+		if ( is_wp_error( $container ) ) {
+			return $container;
+		}
+		if ( ( $container['publicId'] ?? '' ) !== $container_id || ! is_string( $container['path'] ?? null ) || ! preg_match( '#^accounts/[0-9]+/containers/[0-9]+$#D', $container['path'] ) ) {
+			return new WP_Error( 'google_gtm_response', __( 'Google returned an invalid GTM container.', 'stuh' ) );
+		}
+		$version = self::api( $container['path'] . '/versions:live', null, 'gtm' );
+		$ids = is_wp_error( $version ) ? $version : self::published_measurements( $version );
+		if ( ! is_wp_error( $ids ) ) {
+			if ( ! set_transient( $key, $ids, HOUR_IN_SECONDS ) && get_transient( $key ) !== $ids ) {
+				return new WP_Error( 'google_storage', __( 'Could not cache the GTM destination lookup. Retry.', 'stuh' ) );
+			}
+		}
+		return $ids;
+	}
+
+	private static function stream_index( array $connection ) {
+		$key = 'stuh_google_streams_' . $connection['id'];
+		$cached = get_transient( $key );
+		if ( is_array( $cached ) ) {
+			return $cached;
+		}
+		$properties = get_transient( self::properties_key( $connection['id'] ) );
+		if ( ! is_array( $properties ) ) {
+			$properties = self::load_properties();
+		}
+		if ( is_wp_error( $properties ) ) {
+			return $properties;
+		}
+		$index = [];
+		foreach ( $properties as $property => $name ) {
+			$page = '';
+			$seen = [];
+			do {
+				$data = self::api( 'properties/' . $property . '/dataStreams?' . http_build_query( [ 'pageSize' => 200, 'pageToken' => $page ] ) );
+				if ( is_wp_error( $data ) ) {
+					return $data;
+				}
+				if ( ! is_array( $data['dataStreams'] ?? [] ) ) {
+					return new WP_Error( 'google_streams', __( 'Google returned an invalid data stream list.', 'stuh' ) );
+				}
+				foreach ( $data['dataStreams'] ?? [] as $stream ) {
+					if ( ! is_array( $stream ) || ! is_string( $stream['type'] ?? null ) ) {
+						return new WP_Error( 'google_streams', __( 'Google returned an invalid data stream.', 'stuh' ) );
+					}
+					if ( 'WEB_DATA_STREAM' !== $stream['type'] ) {
+						continue;
+					}
+					$web = $stream['webStreamData'] ?? null;
+					if ( ! is_array( $web ) || ! is_string( $web['measurementId'] ?? null ) || ! preg_match( '/^G-[A-Z0-9]+$/D', $web['measurementId'] ) || ! is_string( $web['defaultUri'] ?? null ) ) {
+						return new WP_Error( 'google_streams', __( 'Google returned invalid web stream details.', 'stuh' ) );
+					}
+					$hostname = wp_parse_url( $web['defaultUri'], PHP_URL_HOST );
+					$index[ $web['measurementId'] ][] = [ 'property_id' => (string) $property, 'hostname' => is_string( $hostname ) ? strtolower( $hostname ) : '' ];
+				}
+				$page = $data['nextPageToken'] ?? '';
+				if ( ! is_string( $page ) || ( '' !== $page && isset( $seen[ $page ] ) ) ) {
+					return new WP_Error( 'google_streams', __( 'Google returned invalid data stream pagination.', 'stuh' ) );
+				}
+				$seen[ $page ] = true;
+			} while ( '' !== $page );
+		}
+		if ( ! set_transient( $key, $index, HOUR_IN_SECONDS ) && get_transient( $key ) !== $index ) {
+			return new WP_Error( 'google_storage', __( 'Could not cache the GA4 stream index. Retry.', 'stuh' ) );
+		}
+		return $index;
+	}
+
+	private static function resolve_mapping( array $connection, array $ids, string $hostname ) {
+		$measurements = [];
+		foreach ( $ids as $id ) {
+			$result = self::container_measurements( $id, $connection['id'] );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+			$measurements = array_merge( $measurements, $result );
+		}
+		$index = self::stream_index( $connection );
+		if ( is_wp_error( $index ) ) {
+			return $index;
+		}
+		$properties = [];
+		foreach ( array_unique( $measurements ) as $measurement ) {
+			$matches = array_filter( $index[ $measurement ] ?? [], static fn( array $stream ): bool => $stream['hostname'] === $hostname );
+			if ( 1 !== count( $matches ) ) {
+				return new WP_Error( 'google_gtm_match', __( 'A GTM destination has no unique accessible GA4 web stream matching this site hostname. Check Google access and stream URLs, or select the property manually.', 'stuh' ) );
+			}
+			$properties[] = reset( $matches )['property_id'];
+		}
+		$properties = array_values( array_unique( $properties ) );
+		if ( 1 !== count( $properties ) ) {
+			return new WP_Error( 'google_gtm_ambiguous', __( 'Published GTM tags resolve to multiple GA4 properties. Select the intended property manually.', 'stuh' ) );
+		}
+		$mapping = self::property_mapping( $connection, $properties[0], $hostname );
+		if ( ! is_wp_error( $mapping ) ) {
+			$mapping['source'] = 'gtm';
+			$mapping['gtm_container_ids'] = $ids;
+		}
+		return $mapping;
+	}
+
+	private static function discovery_key( string $client_id ): string {
+		return 'stuh_google_discovery_' . hash( 'sha256', $client_id );
+	}
+
+	private static function discovery_context( array $client, array $connection ) {
+		$report = STUH_Plugin::get_telemetry()[ $client['id'] ] ?? [];
+		$data = is_array( $report['data'] ?? null ) ? $report['data'] : [];
+		$ids = self::container_ids( $data );
+		if ( is_wp_error( $ids ) ) {
+			return $ids;
+		}
+		$hostname = wp_parse_url( $client['site_url'] ?? '', PHP_URL_HOST );
+		if ( ! is_string( $hostname ) || ! filter_var( $hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME ) ) {
+			return new WP_Error( 'google_gtm_hostname', __( 'The registered client URL has no valid hostname for automatic mapping.', 'stuh' ) );
+		}
+		return [ 'ids' => $ids, 'hostname' => strtolower( $hostname ), 'connection_id' => $connection['id'] ];
+	}
+
+	private static function discovery_status( string $client_id, array $status ): void {
+		$key = self::discovery_key( $client_id );
+		if ( ! update_option( $key, $status, false ) && get_option( $key ) !== $status ) {
+			error_log( '[STUH Analytics] Could not store GTM discovery status for client ' . $client_id );
+		}
+	}
+
+	public static function queue_discovery( array $client, bool $force = false ) {
+		$client_id = (string) $client['id'];
+		if ( isset( self::mappings()[ $client_id ] ) || '' === get_option( self::CONNECTION, '' ) ) {
+			return false;
+		}
+		$connection = self::connection();
+		if ( is_wp_error( $connection ) ) {
+			return $connection;
+		}
+		$context = self::discovery_context( $client, $connection );
+		if ( is_wp_error( $context ) ) {
+			self::discovery_status( $client_id, [ 'message' => $context->get_error_message(), 'error' => true ] );
+			return $context;
+		}
+		$status = get_option( self::discovery_key( $client_id ), [] );
+		$fingerprint = self::fingerprint( $context );
+		if ( ! empty( $status['disabled'] ) || ( ! $force && ( $status['fingerprint'] ?? '' ) === $fingerprint && ( $status['checked_at'] ?? 0 ) > time() - HOUR_IN_SECONDS ) ) {
+			return false;
+		}
+		$status = [ 'fingerprint' => $fingerprint, 'checked_at' => time(), 'error' => false ];
+		if ( ! $context['ids'] ) {
+			$status['message'] = __( 'No GTM container IDs were reported by this client. Automatic mapping needs a detected container; manual mapping is still available.', 'stuh' );
+			self::discovery_status( $client_id, $status );
+			return false;
+		}
+		if ( ! in_array( self::GTM_SCOPE, $connection['scopes'] ?? [], true ) ) {
+			$error = new WP_Error( 'google_gtm_scope', __( 'Enable the Google Tag Manager API, add tagmanager.readonly in Google Auth Platform, and reconnect Google to allow automatic mapping.', 'stuh' ) );
+			self::discovery_status( $client_id, array_merge( $status, [ 'message' => $error->get_error_message(), 'error' => true ] ) );
+			return $error;
+		}
+		if ( wp_next_scheduled( 'stuh_google_discover', [ $client_id ] ) ) {
+			return true;
+		}
+		$result = wp_schedule_single_event( time(), 'stuh_google_discover', [ $client_id ], true );
+		$error = is_wp_error( $result ) ? $result : ( $result ? null : new WP_Error( 'google_gtm_schedule', __( 'Could not schedule GTM discovery. Check WP-Cron.', 'stuh' ) ) );
+		self::discovery_status( $client_id, array_merge( $status, [
+			'message' => $error ? $error->get_error_message() : __( 'Automatic GTM mapping queued. Reload after WP-Cron runs.', 'stuh' ),
+			'error' => null !== $error,
+		] ) );
+		return $error ?? true;
+	}
+
+	public static function discover_client( string $client_id ): void {
+		$clients = array_values( array_filter( STUH_Plugin::get_clients(), static fn( array $client ): bool => $client['id'] === $client_id ) );
+		if ( ! $clients || isset( self::mappings()[ $client_id ] ) ) {
+			return;
+		}
+		$connection = self::connection();
+		if ( is_wp_error( $connection ) ) {
+			self::discovery_status( $client_id, [ 'message' => $connection->get_error_message(), 'error' => true ] );
+			return;
+		}
+		$context = self::discovery_context( $clients[0], $connection );
+		$status = get_option( self::discovery_key( $client_id ), [] );
+		if ( ! empty( $status['disabled'] ) ) {
+			return;
+		}
+		if ( is_wp_error( $context ) || ! $context['ids'] || ! in_array( self::GTM_SCOPE, $connection['scopes'] ?? [], true ) ) {
+			self::queue_discovery( $clients[0], true );
+			return;
+		}
+		$result = self::resolve_mapping( $connection, $context['ids'], $context['hostname'] );
+		$current = self::connection();
+		$current_clients = array_values( array_filter( STUH_Plugin::get_clients(), static fn( array $client ): bool => $client['id'] === $client_id ) );
+		// Network calls must not overwrite manual choices or map an obsolete diagnostics snapshot.
+		if ( is_wp_error( $current ) || $current['id'] !== $connection['id'] || ! $current_clients || self::discovery_context( $current_clients[0], $current ) !== $context || ! empty( get_option( self::discovery_key( $client_id ), [] )['disabled'] ) ) {
+			return;
+		}
+		$mappings = self::mappings();
+		if ( isset( $mappings[ $client_id ] ) ) {
+			return;
+		}
+		if ( ! is_wp_error( $result ) ) {
+			$mappings[ $client_id ] = $result;
+			if ( ! update_option( self::MAPPINGS, $mappings, false ) ) {
+				$result = new WP_Error( 'google_storage', __( 'Could not save the automatically discovered mapping.', 'stuh' ) );
+			} else {
+				$scheduled = self::schedule( $client_id );
+				if ( is_wp_error( $scheduled ) ) {
+					$result = $scheduled;
+				}
+			}
+		}
+		self::discovery_status( $client_id, [
+			'fingerprint' => self::fingerprint( $context ),
+			'checked_at' => time(),
+			'error' => is_wp_error( $result ),
+			'message' => is_wp_error( $result ) ? $result->get_error_message() : __( 'Automatically mapped from published GTM tags and a matching GA4 web stream. Analytics refresh queued.', 'stuh' ),
+		] );
+	}
+
 	private static function report_key( string $client_id ): string {
 		return 'stuh_google_report_' . hash( 'sha256', $client_id );
 	}
@@ -318,7 +634,8 @@ final class STUH_Analytics {
 	public static function forget_client( string $client_id ) {
 		$mappings = self::mappings();
 		$key = self::report_key( $client_id );
-		if ( ! isset( $mappings[ $client_id ] ) && false === get_option( $key, false ) ) {
+		$discovery_key = self::discovery_key( $client_id );
+		if ( ! isset( $mappings[ $client_id ] ) && false === get_option( $key, false ) && false === get_option( $discovery_key, false ) ) {
 			return true;
 		}
 		unset( $mappings[ $client_id ] );
@@ -327,6 +644,13 @@ final class STUH_Analytics {
 		}
 		if ( false !== get_option( $key, false ) && ! delete_option( $key ) ) {
 			return new WP_Error( 'google_storage', __( 'Could not remove the cached Analytics report. Retry.', 'stuh' ) );
+		}
+		if ( false !== get_option( $discovery_key, false ) && ! delete_option( $discovery_key ) ) {
+			return new WP_Error( 'google_storage', __( 'Could not remove the GTM discovery status. Retry.', 'stuh' ) );
+		}
+		$result = wp_clear_scheduled_hook( 'stuh_google_discover', [ $client_id ], true );
+		if ( is_wp_error( $result ) ) {
+			return $result;
 		}
 		$result = wp_clear_scheduled_hook( 'stuh_google_refresh_report', [ $client_id ], true );
 		return is_wp_error( $result ) ? $result : true;
@@ -345,13 +669,15 @@ final class STUH_Analytics {
 			if ( ! is_wp_error( $connection ) ) {
 				$revoked = wp_remote_post( 'https://oauth2.googleapis.com/revoke', [ 'timeout' => 15, 'redirection' => 0, 'body' => [ 'token' => $connection['refresh_token'] ] ] );
 				delete_transient( self::properties_key( $connection['id'] ) );
+				delete_transient( 'stuh_google_streams_' . $connection['id'] );
 			}
 			if ( ! delete_option( self::CONNECTION ) && '' !== get_option( self::CONNECTION, '' ) ) {
 				self::finish( __( 'Could not remove local Google credentials. Check database access and retry disconnecting.', 'stuh' ), true );
 			}
 			delete_transient( 'stuh_google_state_' . get_current_user_id() );
 			$cleanup_failed = false;
-			foreach ( self::mappings() as $client_id => $mapping ) {
+			$client_ids = array_unique( array_merge( array_keys( self::mappings() ), array_column( STUH_Plugin::get_clients(), 'id' ) ) );
+			foreach ( $client_ids as $client_id ) {
 				$cleanup_failed = is_wp_error( self::forget_client( (string) $client_id ) ) || $cleanup_failed;
 			}
 			if ( $cleanup_failed ) {
@@ -362,8 +688,22 @@ final class STUH_Analytics {
 			self::finish( $failed ? __( 'Local Google credentials, mappings, and reports removed. Google revocation could not be confirmed; remove the app from your Google account permissions too.', 'stuh' ) : __( 'Google disconnected and cached reports removed.', 'stuh' ), $failed );
 		}
 		if ( 'properties' === $action ) {
+			$connection = self::connection();
+			if ( ! is_wp_error( $connection ) ) {
+				delete_transient( 'stuh_google_streams_' . $connection['id'] );
+			}
 			$result = self::load_properties();
 			self::finish( is_wp_error( $result ) ? $result->get_error_message() : sprintf( __( 'Loaded %d accessible GA4 properties.', 'stuh' ), count( $result ) ), is_wp_error( $result ) );
+		}
+		if ( 'discover_all' === $action ) {
+			$queued = 0;
+			$failed = 0;
+			foreach ( STUH_Plugin::get_clients() as $client ) {
+				$result = self::queue_discovery( $client, true );
+				$queued += true === $result ? 1 : 0;
+				$failed += is_wp_error( $result ) ? 1 : 0;
+			}
+			self::finish( sprintf( __( 'Queued %1$d GTM discovery checks; %2$d could not be queued. Existing and paused mappings are preserved. See client details for status.', 'stuh' ), $queued, $failed ), $failed > 0 );
 		}
 		$client_id = self::input( $_POST, 'client_id' );
 		$clients = array_filter( STUH_Plugin::get_clients(), static fn( array $client ): bool => $client['id'] === $client_id );
@@ -373,7 +713,17 @@ final class STUH_Analytics {
 		$mappings = self::mappings();
 		if ( 'unmap' === $action ) {
 			$result = self::forget_client( $client_id );
+			if ( ! is_wp_error( $result ) ) {
+				self::discovery_status( $client_id, [ 'disabled' => true, 'message' => __( 'Automatic mapping paused after removing the mapping. Use Retry automatic mapping to enable it again.', 'stuh' ), 'error' => false ] );
+			}
 			self::finish( is_wp_error( $result ) ? $result->get_error_message() : __( 'Analytics mapping and report removed.', 'stuh' ), is_wp_error( $result ), $client_id );
+		}
+		if ( 'discover' === $action ) {
+			if ( false !== get_option( self::discovery_key( $client_id ), false ) && ! delete_option( self::discovery_key( $client_id ) ) ) {
+				self::finish( __( 'Could not reset GTM discovery. Retry.', 'stuh' ), true, $client_id );
+			}
+			$result = self::queue_discovery( reset( $clients ), true );
+			self::finish( is_wp_error( $result ) ? $result->get_error_message() : __( 'GTM discovery requested. See the automatic mapping status below.', 'stuh' ), is_wp_error( $result ), $client_id );
 		}
 		$connection = self::connection();
 		if ( is_wp_error( $connection ) ) {
@@ -385,14 +735,11 @@ final class STUH_Analytics {
 			if ( ! preg_match( '/^[0-9]+$/D', $property ) || ! filter_var( $hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME ) ) {
 				self::finish( __( 'Select a GA4 property and enter a valid hostname without a scheme, port, or path.', 'stuh' ), true, $client_id );
 			}
-			$details = self::api( 'properties/' . $property );
-			if ( is_wp_error( $details ) ) {
-				self::finish( $details->get_error_message(), true, $client_id );
+			$mapping = self::property_mapping( $connection, $property, $hostname );
+			if ( is_wp_error( $mapping ) ) {
+				self::finish( $mapping->get_error_message(), true, $client_id );
 			}
-			if ( ( $details['name'] ?? '' ) !== 'properties/' . $property || ! is_string( $details['timeZone'] ?? null ) || ! in_array( $details['timeZone'], timezone_identifiers_list( DateTimeZone::ALL_WITH_BC ), true ) || ! is_string( $details['displayName'] ?? null ) ) {
-				self::finish( __( 'Google returned invalid property details or timezone.', 'stuh' ), true, $client_id );
-			}
-			$mappings[ $client_id ] = [ 'connection_id' => $connection['id'], 'property_id' => $property, 'name' => $details['displayName'], 'hostname' => $hostname, 'timezone' => $details['timeZone'] ];
+			$mappings[ $client_id ] = $mapping;
 			if ( $mappings !== self::mappings() && ! update_option( self::MAPPINGS, $mappings, false ) ) {
 				self::finish( __( 'Could not save the Analytics mapping.', 'stuh' ), true, $client_id );
 			}
@@ -441,7 +788,7 @@ final class STUH_Analytics {
 		$totals = array_merge( $base, [ 'metrics' => array_map( static fn( string $name ): array => [ 'name' => $name ], self::METRICS ) ] );
 		$pages = array_merge( $base, [ 'dimensions' => [ [ 'name' => 'pagePath' ] ], 'metrics' => [ [ 'name' => 'screenPageViews' ] ], 'orderBys' => [ [ 'metric' => [ 'metricName' => 'screenPageViews' ], 'desc' => true ] ], 'limit' => 10 ] );
 		$channels = array_merge( $base, [ 'dimensions' => [ [ 'name' => 'sessionDefaultChannelGroup' ] ], 'metrics' => [ [ 'name' => 'sessions' ] ], 'orderBys' => [ [ 'metric' => [ 'metricName' => 'sessions' ], 'desc' => true ] ], 'limit' => 10 ] );
-		$data = self::api( 'properties/' . $mapping['property_id'] . ':batchRunReports', [ 'requests' => [ $totals, array_merge( $totals, [ 'dateRanges' => [ $previous ] ] ), $pages, $channels ] ], true );
+		$data = self::api( 'properties/' . $mapping['property_id'] . ':batchRunReports', [ 'requests' => [ $totals, array_merge( $totals, [ 'dateRanges' => [ $previous ] ] ), $pages, $channels ] ], 'data' );
 		if ( is_wp_error( $data ) ) {
 			return $data;
 		}
@@ -526,6 +873,9 @@ final class STUH_Analytics {
 		}
 		if ( ! is_wp_error( $connection ) ) {
 			echo '<p>' . esc_html__( 'Google is connected. Reconnecting requires confirming existing site mappings again. Disconnecting removes all local Analytics mappings and reports.', 'stuh' ) . '</p>';
+			if ( ! in_array( self::GTM_SCOPE, $connection['scopes'] ?? [], true ) ) {
+				echo '<p role="alert">' . esc_html__( 'Automatic GTM mapping needs the Google Tag Manager API and tagmanager.readonly access. Add that scope in Google Auth Platform, then reconnect Google. Existing Analytics reporting still works.', 'stuh' ) . '</p>';
+			}
 			self::form_start( 'properties' );
 			submit_button( __( 'Load / refresh accessible properties', 'stuh' ), 'secondary' );
 			echo '</form>';
@@ -533,8 +883,42 @@ final class STUH_Analytics {
 			if ( is_array( $properties ) ) {
 				echo '<p>' . esc_html( sprintf( __( '%d accessible properties cached for one hour. Open the client site details to select a property.', 'stuh' ), count( $properties ) ) ) . '</p>';
 			}
+			self::form_start( 'discover_all' );
+			submit_button( __( 'Discover unmapped client sites from GTM', 'stuh' ), 'secondary' );
+			echo '</form>';
 		}
 		echo '</div>';
+	}
+
+	private static function render_discovery( array $client, array $connection ): void {
+		$client_id = (string) $client['id'];
+		$context = self::discovery_context( $client, $connection );
+		if ( is_wp_error( $context ) ) {
+			echo '<p role="alert">' . esc_html( $context->get_error_message() ) . '</p>';
+			return;
+		}
+		echo '<p><strong>' . esc_html__( 'Reported GTM containers:', 'stuh' ) . '</strong> ' . esc_html( $context['ids'] ? implode( ', ', $context['ids'] ) : __( 'None reported', 'stuh' ) ) . '</p>';
+		$mapping = self::mappings()[ $client_id ] ?? [];
+		if ( $mapping ) {
+			echo '<p>' . esc_html( 'gtm' === ( $mapping['source'] ?? '' ) ? __( 'This property was mapped automatically from published GTM tags. Existing mappings are never replaced automatically.', 'stuh' ) : __( 'Existing property mapping preserved. Automatic GTM discovery does not overwrite manual selections.', 'stuh' ) ) . '</p>';
+			if ( 'gtm' === ( $mapping['source'] ?? '' ) && ( $mapping['gtm_container_ids'] ?? [] ) !== $context['ids'] ) {
+				echo '<p role="alert">' . esc_html__( 'Reported GTM containers changed after automatic mapping. Review this property selection; the existing mapping has been kept.', 'stuh' ) . '</p>';
+			}
+			return;
+		}
+		$result = self::queue_discovery( $client );
+		$status = get_option( self::discovery_key( $client_id ), [] );
+		if ( ! empty( $status['message'] ) ) {
+			echo '<p' . ( ! empty( $status['error'] ) ? ' role="alert"' : '' ) . '>' . esc_html( $status['message'] ) . '</p>';
+		} elseif ( is_wp_error( $result ) ) {
+			echo '<p role="alert">' . esc_html( $result->get_error_message() ) . '</p>';
+		}
+		if ( wp_next_scheduled( 'stuh_google_discover', [ $client_id ] ) ) {
+			echo '<p>' . esc_html__( 'GTM discovery is pending in WP-Cron.', 'stuh' ) . '</p>';
+		}
+		self::form_start( 'discover', $client_id );
+		submit_button( __( 'Retry automatic mapping', 'stuh' ), 'secondary' );
+		echo '</form>';
 	}
 
 	public static function render_client_panel( array $client ): void {
@@ -551,6 +935,7 @@ final class STUH_Analytics {
 			echo '<p>' . esc_html( $connection->get_error_message() ) . ' <a href="' . esc_url( self::page_url() ) . '">' . esc_html__( 'Google settings', 'stuh' ) . '</a></p></section>';
 			return;
 		}
+		self::render_discovery( $client, $connection );
 		$mapping = self::mappings()[ $client_id ] ?? [];
 		$properties = get_transient( self::properties_key( $connection['id'] ) );
 		if ( ! is_array( $properties ) ) {

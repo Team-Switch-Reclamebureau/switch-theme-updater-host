@@ -14,6 +14,7 @@ class WP_Error {
 class AnalyticsRedirect extends RuntimeException {}
 class STUH_Plugin {
 	public static function get_clients(): array { return [ [ 'id' => 'site-1', 'site_url' => 'https://client.example' ] ]; }
+	public static function get_telemetry(): array { return $GLOBALS['telemetry'] ?? []; }
 }
 function __( $text, $domain = '' ) { return $text; }
 function esc_html__( $text, $domain = '' ) { return esc_html( $text ); }
@@ -49,13 +50,20 @@ function wp_nonce_field( $action ) { echo '<input name="_wpnonce" value="valid">
 function submit_button( $label, ...$args ) { echo '<button>' . esc_html( $label ) . '</button>'; }
 function wp_date( $format, $time ) { return gmdate( $format, $time ); }
 function number_format_i18n( $value, $decimals = 0 ) { return number_format( $value, $decimals ); }
-function wp_next_scheduled( $hook, $args ) { return $GLOBALS['scheduled'][ $args[0] ] ?? false; }
+function wp_next_scheduled( $hook, $args ) {
+	$key = 'stuh_google_discover' === $hook ? 'discovery_scheduled' : 'scheduled';
+	return $GLOBALS[ $key ][ $args[0] ] ?? false;
+}
 function wp_schedule_single_event( $time, $hook, $args, $wp_error ) {
 	if ( $GLOBALS['schedule_fail'] ?? false ) { return new WP_Error( 'cron_failed', 'Cron failed' ); }
-	$GLOBALS['scheduled'][ $args[0] ] = $time;
+	$key = 'stuh_google_discover' === $hook ? 'discovery_scheduled' : 'scheduled';
+	$GLOBALS[ $key ][ $args[0] ] = $time;
 	return true;
 }
-function wp_clear_scheduled_hook( $hook, $args ) { unset( $GLOBALS['scheduled'][ $args[0] ] ); }
+function wp_clear_scheduled_hook( $hook, $args ) {
+	$key = 'stuh_google_discover' === $hook ? 'discovery_scheduled' : 'scheduled';
+	unset( $GLOBALS[ $key ][ $args[0] ] );
+}
 function wp_remote_retrieve_response_code( $response ) { return $response['status']; }
 function wp_remote_retrieve_body( $response ) { return $response['body']; }
 function wp_remote_post( $url, $args ) { return wp_remote_request( $url, $args ); }
@@ -135,7 +143,7 @@ try {
 [ $url ] = analytics_action( 'connect' );
 parse_str( parse_url( $url, PHP_URL_QUERY ), $query );
 expect_analytics( 'accounts.google.com' === parse_url( $url, PHP_URL_HOST ), 'Authorization must use Google' );
-expect_analytics( 'https://www.googleapis.com/auth/analytics.readonly' === $query['scope'] && 'offline' === $query['access_type'], 'Request read-only offline access' );
+expect_analytics( 'https://www.googleapis.com/auth/analytics.readonly https://www.googleapis.com/auth/tagmanager.readonly' === $query['scope'] && 'offline' === $query['access_type'], 'Request read-only Analytics and GTM offline access' );
 expect_analytics( 'https://host.example/wp-admin/admin-post.php?action=stuh_google_oauth_callback' === $query['redirect_uri'], 'Use the registered callback' );
 $pending = get_transient( 'stuh_google_state_1' );
 expect_analytics( $query['code_challenge'] === rtrim( strtr( base64_encode( hash( 'sha256', $pending['verifier'], true ) ), '+/', '-_' ), '=' ), 'PKCE challenge must match verifier' );
@@ -290,5 +298,114 @@ update_option( $key, $good );
 $GLOBALS['scheduled']['site-1'] = time();
 expect_analytics( true === STUH_Analytics::forget_client( 'site-1' ), 'Client deletion cleanup must succeed' );
 expect_analytics( [] === get_option( 'stuh_google_mappings' ) && false === get_option( $key ) && ! isset( $GLOBALS['scheduled']['site-1'] ), 'Client deletion must remove its mapping, cached report and queued refresh' );
+
+// GTM diagnostics are optional, but malformed or dynamic destinations must not be guessed.
+expect_analytics( [] === invoke_analytics( 'container_ids', [ 'gtm_container_ids' => null ] ), 'Null GTM diagnostics must mean no detected containers' );
+expect_analytics( is_wp_error( invoke_analytics( 'container_ids', [ 'gtm_container_ids' => 'GTM-ABC1234' ] ) ), 'Reject a string instead of the agreed array format' );
+expect_analytics( is_wp_error( invoke_analytics( 'container_ids', [ 'gtm_container_ids' => [ 'GTM-ABC1234', null ] ] ) ), 'Reject partial invalid ID lists instead of discarding ambiguous input' );
+$version = [
+	'tag' => [ [ 'type' => 'googtag', 'parameter' => [ [ 'key' => 'tagId', 'value' => '{{Analytics ID}}' ] ] ] ],
+	'variable' => [ [ 'name' => 'Analytics ID', 'type' => 'c', 'parameter' => [ [ 'key' => 'value', 'value' => 'G-ONE123' ] ] ] ],
+];
+expect_analytics( [ 'G-ONE123' ] === invoke_analytics( 'published_measurements', $version ), 'Resolve a constant variable in a published Google tag' );
+$dynamic = $version;
+$dynamic['variable'][0]['type'] = 'jsm';
+expect_analytics( is_wp_error( invoke_analytics( 'published_measurements', $dynamic ) ), 'Never execute or guess dynamic GTM variables' );
+$legacy = [ 'tag' => [
+	[ 'type' => 'gaawc', 'parameter' => [ [ 'key' => 'measurementId', 'value' => 'G-ONE123' ] ] ],
+	[ 'type' => 'gaawe', 'parameter' => [ [ 'key' => 'measurementIdOverride', 'value' => 'G-TWO456' ] ] ],
+	[ 'type' => 'googtag', 'paused' => true, 'parameter' => [ [ 'key' => 'tagId', 'value' => 'G-PAUSED' ] ] ],
+] ];
+expect_analytics( [ 'G-ONE123', 'G-TWO456' ] === invoke_analytics( 'published_measurements', $legacy ), 'Include explicit GA4 event destinations but ignore paused tags' );
+$alias = [ 'tag' => [ [ 'type' => 'googtag', 'parameter' => [ [ 'key' => 'tagId', 'value' => 'GT-ALIAS' ] ] ] ] ];
+expect_analytics( is_wp_error( invoke_analytics( 'published_measurements', $alias ) ), 'Unsupported Google tag aliases must remain manual rather than be mistaken for property IDs' );
+
+// Discover the real numeric property through GTM and paginated GA4 stream metadata.
+$connection['id'] = 'discovery-connection';
+$connection['scopes'] = [ 'https://www.googleapis.com/auth/analytics.readonly', 'https://www.googleapis.com/auth/tagmanager.readonly' ];
+invoke_analytics( 'save_connection', $connection );
+$client = STUH_Plugin::get_clients()[0];
+$GLOBALS['telemetry'] = [ 'site-1' => [ 'data' => [ 'analytics' => 'disabled', 'gtm_container_ids' => null ] ] ];
+$before = count( $GLOBALS['requests'] );
+expect_analytics( false === STUH_Analytics::queue_discovery( $client ), 'Null detection must not schedule an API lookup' );
+$GLOBALS['telemetry']['site-1']['data']['gtm_container_ids'] = [ 'GTM-ABC1234', 'GTM-ABC1234' ];
+expect_analytics( true === STUH_Analytics::queue_discovery( $client ), 'New GTM IDs must immediately queue discovery even when Analytics diagnostics say disabled' );
+expect_analytics( count( $GLOBALS['requests'] ) === $before && isset( $GLOBALS['discovery_scheduled']['site-1'] ), 'Telemetry processing must only queue discovery, never call Google' );
+$GLOBALS['responses'][] = google_response( [ 'publicId' => 'GTM-ABC1234', 'path' => 'accounts/10/containers/20' ] );
+$GLOBALS['responses'][] = google_response( $version );
+$GLOBALS['responses'][] = google_response( [ 'accountSummaries' => [ [ 'propertySummaries' => [ [ 'property' => 'properties/123', 'displayName' => 'Client property' ], [ 'property' => 'properties/456', 'displayName' => 'Other property' ] ] ] ] ] );
+$GLOBALS['responses'][] = google_response( [ 'dataStreams' => [], 'nextPageToken' => 'streams-page-two' ] );
+$GLOBALS['responses'][] = google_response( [ 'dataStreams' => [ [ 'type' => 'WEB_DATA_STREAM', 'webStreamData' => [ 'measurementId' => 'G-ONE123', 'defaultUri' => 'https://client.example/' ] ] ] ] );
+$GLOBALS['responses'][] = google_response( [ 'dataStreams' => [] ] );
+$GLOBALS['responses'][] = google_response( [ 'name' => 'properties/123', 'displayName' => 'Automatically found', 'timeZone' => 'Europe/Amsterdam' ] );
+unset( $GLOBALS['discovery_scheduled']['site-1'] );
+STUH_Analytics::discover_client( 'site-1' );
+$automatic = get_option( 'stuh_google_mappings' )['site-1'];
+expect_analytics( '123' === $automatic['property_id'] && 'gtm' === $automatic['source'] && [ 'GTM-ABC1234' ] === $automatic['gtm_container_ids'], 'Persist only the unique GTM-to-stream property match with provenance' );
+expect_analytics( 'client.example' === $automatic['hostname'] && isset( $GLOBALS['scheduled']['site-1'] ), 'Automatic mapping must preserve hostname isolation and queue the report' );
+$discovery_requests = array_slice( $GLOBALS['requests'], $before );
+expect_analytics( str_contains( $discovery_requests[0][0], 'containers:lookup?tagId=GTM-ABC1234' ) && str_ends_with( $discovery_requests[1][0], '/versions:live' ), 'Resolve the detected container and published version, not workspace drafts' );
+expect_analytics( str_contains( $discovery_requests[4][0], 'pageToken=streams-page-two' ), 'Search all stream pages before deciding a destination is missing' );
+$before = count( $GLOBALS['requests'] );
+STUH_Analytics::discover_client( 'site-1' );
+expect_analytics( count( $GLOBALS['requests'] ) === $before && get_option( 'stuh_google_mappings' )['site-1'] === $automatic, 'Existing mappings must never be automatically overwritten' );
+
+// An explicit removal pauses discovery; resuming remains an administrator action.
+analytics_action( 'unmap' );
+expect_analytics( false === STUH_Analytics::queue_discovery( $client, true ) && ! isset( $GLOBALS['discovery_scheduled']['site-1'] ), 'Removing a mapping must not immediately recreate it' );
+analytics_action( 'discover' );
+expect_analytics( isset( $GLOBALS['discovery_scheduled']['site-1'] ), 'An administrator can explicitly resume discovery' );
+$discovery_key = invoke_analytics( 'discovery_key', 'site-1' );
+$status = get_option( $discovery_key );
+unset( $GLOBALS['discovery_scheduled']['site-1'] );
+expect_analytics( false === STUH_Analytics::queue_discovery( $client ), 'Automatic retries must respect the discovery cache interval' );
+$status['checked_at'] = time() - HOUR_IN_SECONDS;
+update_option( $discovery_key, $status );
+expect_analytics( true === STUH_Analytics::queue_discovery( $client ), 'Retry discovery once the one-hour interval expires' );
+
+// Ambiguous properties and hostname mismatches must not result in partial mappings.
+$gtm_key = 'stuh_google_gtm_' . hash( 'sha256', $connection['id'] . 'GTM-ABC1234' );
+set_transient( $gtm_key, [ 'G-ONE123', 'G-TWO456' ], HOUR_IN_SECONDS );
+$stream_key = 'stuh_google_streams_' . $connection['id'];
+set_transient( $stream_key, [
+	'G-ONE123' => [ [ 'property_id' => '123', 'hostname' => 'client.example' ] ],
+	'G-TWO456' => [ [ 'property_id' => '456', 'hostname' => 'client.example' ] ],
+], HOUR_IN_SECONDS );
+STUH_Analytics::discover_client( 'site-1' );
+expect_analytics( ! isset( get_option( 'stuh_google_mappings' )['site-1'] ) && str_contains( get_option( $discovery_key )['message'], 'multiple GA4 properties' ), 'Multiple destinations in different properties must require manual review' );
+set_transient( $gtm_key, [ 'G-ONE123' ], HOUR_IN_SECONDS );
+set_transient( $stream_key, [ 'G-ONE123' => [ [ 'property_id' => '123', 'hostname' => 'www.client.example' ] ] ], HOUR_IN_SECONDS );
+STUH_Analytics::discover_client( 'site-1' );
+expect_analytics( ! isset( get_option( 'stuh_google_mappings' )['site-1'] ) && get_option( $discovery_key )['error'], 'Do not silently conflate www and bare hostnames' );
+delete_transient( $gtm_key );
+$GLOBALS['responses'][] = google_response( [ 'error' => [ 'status' => 'PERMISSION_DENIED' ] ], 403 );
+STUH_Analytics::discover_client( 'site-1' );
+expect_analytics( str_contains( get_option( $discovery_key )['message'], '403' ) && ! isset( get_option( 'stuh_google_mappings' )['site-1'] ), 'GTM API failures must be visible and must not fall back to guessed properties' );
+
+// In-flight discovery must preserve new manual choices and changed diagnostics.
+set_transient( $gtm_key, [ 'G-ONE123' ], HOUR_IN_SECONDS );
+set_transient( $stream_key, [ 'G-ONE123' => [ [ 'property_id' => '123', 'hostname' => 'client.example' ] ] ], HOUR_IN_SECONDS );
+$GLOBALS['responses'][] = static function() use ( $mapping ) {
+	update_option( 'stuh_google_mappings', [ 'site-1' => $mapping ] );
+	return google_response( [ 'name' => 'properties/123', 'displayName' => 'Automatic', 'timeZone' => 'Europe/Amsterdam' ] );
+};
+STUH_Analytics::discover_client( 'site-1' );
+expect_analytics( $mapping === get_option( 'stuh_google_mappings' )['site-1'], 'Do not overwrite a manual mapping saved during discovery' );
+update_option( 'stuh_google_mappings', [] );
+$GLOBALS['responses'][] = static function() {
+	$GLOBALS['telemetry']['site-1']['data']['gtm_container_ids'] = [ 'GTM-CHANGED' ];
+	return google_response( [ 'name' => 'properties/123', 'displayName' => 'Automatic', 'timeZone' => 'Europe/Amsterdam' ] );
+};
+STUH_Analytics::discover_client( 'site-1' );
+expect_analytics( ! isset( get_option( 'stuh_google_mappings' )['site-1'] ), 'Do not map an obsolete diagnostics snapshot' );
+$connection['scopes'] = [ 'https://www.googleapis.com/auth/analytics.readonly' ];
+invoke_analytics( 'save_connection', $connection );
+$result = STUH_Analytics::queue_discovery( $client, true );
+expect_analytics( is_wp_error( $result ) && str_contains( $result->get_error_message(), 'reconnect' ), 'Old Analytics-only connections need explicit GTM reauthorization' );
+$before = count( $GLOBALS['requests'] );
+$html = render_analytics();
+expect_analytics( count( $GLOBALS['requests'] ) === $before && str_contains( $html, 'GTM-CHANGED' ), 'Discovery UI must show reported IDs without making synchronous Google calls' );
+STUH_Analytics::forget_client( 'site-1' );
+expect_analytics( false === get_option( $discovery_key ) && ! isset( $GLOBALS['discovery_scheduled']['site-1'] ), 'Client cleanup must remove discovery-only status and pending jobs' );
 expect_analytics( ! $GLOBALS['responses'], 'All expected requests must be consumed' );
 echo "Analytics regression checks passed.\n";
