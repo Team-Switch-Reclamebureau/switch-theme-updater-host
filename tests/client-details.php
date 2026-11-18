@@ -155,6 +155,7 @@ expect_view( strpos( $list, 'class="open-site"' ) < strpos( $list, 'class="login
 expect_view( 1 === $xpath->query( '//span[@class="open-site"]/a[@href="https://first.example" and @target="_blank"]' )->length, 'Open the first URL in a new tab' );
 expect_view( 2 === $xpath->query( '//td[@class="column-ssl hidden"]' )->length, 'List honors hidden columns' );
 expect_view( str_contains( $list, 'value="add_client"' ), 'List retains registration form' );
+expect_view( 2 === $xpath->query( '//td[contains(@class,"column-telemetry_analytics")]/a[contains(@href,"#stuh-analytics") and text()="Not connected"]' )->length, 'Analytics column shows property connection state and links to the report panel' );
 
 $_GET['client_id'] = 'site-1';
 $GLOBALS['transients']['stuh_pending_updates_1'] = [ 'type' => 'success', 'message' => 'Updates installed' ];

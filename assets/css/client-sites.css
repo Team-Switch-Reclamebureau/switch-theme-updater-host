@@ -1,3 +1,20 @@
+.stuh-client-sites .stuh-analytics-change {
+	white-space: nowrap;
+}
+
+.stuh-client-sites .stuh-analytics-change--up {
+	color: #008a20;
+}
+
+.stuh-client-sites .stuh-analytics-change--down {
+	color: #b32d2e;
+}
+
+.stuh-client-sites .stuh-analytics-caption {
+	display: block;
+	color: #646970;
+}
+
 .stuh-client-sites .stuh-client-tag {
 	display: inline-block;
 	margin: 0 4px 4px 0;

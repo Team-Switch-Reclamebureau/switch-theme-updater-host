@@ -103,6 +103,17 @@ are retained. Google processing delays, consent settings, sampling and
 thresholding can affect the figures; reported limitations are displayed.
 Re-save the mapping if the property's timezone changes.
 
+The existing **Analytics** column now shows the property connection status,
+or the cached active users for the last 28 complete days followed by the change
+against the preceding 28 days. Increases are green, decreases red, and unchanged
+counts neutral. A zero previous-period count shows `N/A` when the current count
+is positive (a percentage increase is undefined), or `0.0%` when both are zero.
+Pending and failed reports are distinguished from zero traffic; stale counts
+are labeled. Hover for the property, periods, last update and applicable error
+or Google reporting limitation. Click through to the client's Analytics panel.
+The list reads cached reports only; it does not call Google or queue report
+refreshes. Open the client details or use its refresh action to update data.
+
 ### Automatic mapping from GTM diagnostics
 
 The client diagnostics contract is:

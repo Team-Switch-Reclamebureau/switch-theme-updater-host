@@ -18,6 +18,7 @@ class STUH_Plugin {
 }
 function __( $text, $domain = '' ) { return $text; }
 function esc_html__( $text, $domain = '' ) { return esc_html( $text ); }
+function esc_attr__( $text, $domain = '' ) { return esc_attr( $text ); }
 function esc_html( $value ) { return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $value ) { return esc_html( $value ); }
 function esc_url( $value ) { return esc_html( $value ); }
@@ -119,6 +120,16 @@ function render_analytics(): string {
 	ob_start();
 	try {
 		STUH_Analytics::render_client_panel( STUH_Plugin::get_clients()[0] );
+		return ob_get_contents();
+	} finally {
+		ob_end_clean();
+	}
+}
+
+function render_analytics_column(): string {
+	ob_start();
+	try {
+		STUH_Analytics::render_client_column( 'site-1' );
 		return ob_get_contents();
 	} finally {
 		ob_end_clean();
@@ -244,6 +255,52 @@ $before = count( $GLOBALS['requests'] );
 $html = render_analytics();
 expect_analytics( str_contains( $html, '75.0%' ) && str_contains( $html, '2.50' ) && str_contains( $html, '&lt;script&gt;' ) && ! str_contains( $html, '/<script>' ), 'Render rates, fractional key events and escaped dimensions' );
 expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Page rendering must not contact Google' );
+
+// The reused Analytics column reports the connected property, users and signed change.
+$html = render_analytics_column();
+expect_analytics( str_contains( $html, '>10</a>' ) && str_contains( $html, 'stuh-analytics-change--up">+100.0%' ), 'Column shows 28-day active users and a positive change class' );
+expect_analytics( str_contains( $html, '#stuh-analytics' ) && str_contains( $html, 'Active users (28 days)' ), 'Column links to the report and labels the reporting window' );
+$column_record = $good;
+$column_record['data']['current']['activeUsers'] = 2.0;
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-change--down">-60.0%' ), 'Column shows a negative change with the decline class' );
+$column_record['data']['current']['activeUsers'] = 5.0;
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-change--neutral">0.0%' ), 'Unchanged traffic is neutral' );
+$column_record['data']['current']['activeUsers'] = 0.0;
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-change--down">-100.0%' ), 'A drop to zero is a full decline, not unavailable data' );
+$column_record['data']['previous']['activeUsers'] = 0.0;
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-change--neutral">0.0%' ), 'Two valid empty periods show zero change' );
+$column_record['data']['current']['activeUsers'] = 5.0;
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), '>N/A</span>' ) && ! str_contains( render_analytics_column(), 'stuh-analytics-change--up' ), 'A zero baseline must not fabricate a percentage increase' );
+$column_record['error'] = 'Google failed <script>';
+update_option( $key, $column_record );
+$html = render_analytics_column();
+expect_analytics( str_contains( $html, 'Stale data' ) && str_contains( $html, '&lt;script&gt;' ) && ! str_contains( $html, '<script>' ), 'Stale reports remain labeled and errors are escaped in tooltips' );
+$column_record['error'] = '';
+$column_record['fetched_at'] = time() - 5 * HOUR_IN_SECONDS;
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), 'Stale data' ), 'Old cached reports are explicitly stale even without a failed refresh' );
+update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ) ] );
+expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'A connected property without data is pending, not zero' );
+update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ), 'error' => 'Quota exceeded' ] );
+expect_analytics( str_contains( render_analytics_column(), 'Connected - report failed' ), 'A failed first report must not appear merely pending' );
+$column_record['fingerprint'] = 'obsolete-mapping';
+update_option( $key, $column_record );
+expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'Do not show user counts from a different mapping' );
+$original_mappings = get_option( 'stuh_google_mappings' );
+$changed_mappings = $original_mappings;
+$changed_mappings['site-1']['connection_id'] = 'old-connection';
+update_option( 'stuh_google_mappings', $changed_mappings );
+expect_analytics( str_contains( render_analytics_column(), 'Reconnect required' ), 'Reconnected accounts must not display counts from the previous connection' );
+update_option( 'stuh_google_mappings', [] );
+expect_analytics( str_contains( render_analytics_column(), 'Not connected' ), 'Unmapped sites explicitly show not connected' );
+update_option( 'stuh_google_mappings', $original_mappings );
+update_option( $key, $good );
+expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Column rendering must never call Google' );
 
 // Failures retain the last successful data instead of reporting fake zero traffic.
 $GLOBALS['responses'][] = google_response( [ 'error' => [ 'status' => 'PERMISSION_DENIED' ] ], 403 );

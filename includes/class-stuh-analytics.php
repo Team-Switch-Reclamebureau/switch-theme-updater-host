@@ -921,10 +921,60 @@ final class STUH_Analytics {
 		echo '</form>';
 	}
 
+	public static function render_client_column( string $client_id ): void {
+		self::require_admin();
+		$mapping = self::mappings()[ $client_id ] ?? null;
+		$url = self::page_url( $client_id ) . '#stuh-analytics';
+		if ( ! $mapping ) {
+			echo '<a href="' . esc_url( $url ) . '">' . esc_html__( 'Not connected', 'stuh' ) . '</a>';
+			return;
+		}
+		$connection = self::connection();
+		if ( is_wp_error( $connection ) || $connection['id'] !== $mapping['connection_id'] ) {
+			$message = is_wp_error( $connection ) ? $connection->get_error_message() : __( 'Google was reconnected. Confirm this site mapping again.', 'stuh' );
+			echo '<a href="' . esc_url( $url ) . '" title="' . esc_attr( $message ) . '">' . esc_html__( 'Reconnect required', 'stuh' ) . '</a>';
+			return;
+		}
+		$record = get_option( self::report_key( $client_id ), [] );
+		if ( ! is_array( $record ) || ( $record['fingerprint'] ?? '' ) !== self::fingerprint( $mapping ) ) {
+			$record = [];
+		}
+		$data = $record['data'] ?? null;
+		$tooltip = $mapping['name'] . ' (' . $mapping['property_id'] . ') / ' . $mapping['hostname'];
+		if ( ! is_array( $data ) ) {
+			$error = $record['error'] ?? '';
+			echo '<a href="' . esc_url( $url ) . '" title="' . esc_attr( $tooltip . ( $error ? ' / ' . $error : '' ) ) . '">' . esc_html( $error ? __( 'Connected - report failed', 'stuh' ) : __( 'Connected - report pending', 'stuh' ) ) . '</a>';
+			return;
+		}
+		$current = $data['current']['activeUsers'];
+		$previous = $data['previous']['activeUsers'];
+		$tooltip .= ' / ' . sprintf( __( 'Active users: %1$s to %2$s; previous: %3$s to %4$s. Last updated: %5$s.', 'stuh' ), $data['period']['startDate'], $data['period']['endDate'], $data['previous_period']['startDate'], $data['previous_period']['endDate'], wp_date( 'Y-m-d H:i T', $record['fetched_at'] ) );
+		if ( ! empty( $record['error'] ) ) {
+			$tooltip .= ' / ' . $record['error'];
+		}
+		if ( ! empty( $data['limited'] ) ) {
+			$tooltip .= ' / ' . __( 'Google flagged reporting limitations.', 'stuh' );
+		}
+		echo '<span title="' . esc_attr( $tooltip ) . '"><a href="' . esc_url( $url ) . '" aria-label="' . esc_attr( sprintf( __( 'Connected: %s active users in the last 28 complete days', 'stuh' ), number_format_i18n( $current ) ) ) . '">' . esc_html( number_format_i18n( $current ) ) . '</a> ';
+		if ( $previous > 0 || 0.0 === (float) $current ) {
+			$change = $previous > 0 ? round( ( $current - $previous ) / $previous * 100, 1 ) : 0.0;
+			$direction = $change > 0 ? 'up' : ( $change < 0 ? 'down' : 'neutral' );
+			$label = ( $change > 0 ? '+' : ( $change < 0 ? '-' : '' ) ) . number_format_i18n( abs( $change ), 1 ) . '%';
+			echo '<span class="stuh-analytics-change stuh-analytics-change--' . esc_attr( $direction ) . '">' . esc_html( $label ) . '</span>';
+		} else {
+			echo '<span title="' . esc_attr__( 'Percentage change is unavailable because the previous period had zero active users.', 'stuh' ) . '">' . esc_html__( 'N/A', 'stuh' ) . '</span>';
+		}
+		echo '<small class="stuh-analytics-caption">' . esc_html__( 'Active users (28 days)', 'stuh' ) . '</small>';
+		if ( ! empty( $record['error'] ) || $record['fetched_at'] < time() - 4 * HOUR_IN_SECONDS ) {
+			echo '<small class="stuh-analytics-caption">' . esc_html__( 'Stale data', 'stuh' ) . '</small>';
+		}
+		echo '</span>';
+	}
+
 	public static function render_client_panel( array $client ): void {
 		self::require_admin();
 		$client_id = (string) $client['id'];
-		echo '<section class="stuh-analytics"><h2>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h2>';
+		echo '<section id="stuh-analytics" class="stuh-analytics"><h2>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h2>';
 		self::notice();
 		if ( '' === get_option( self::CONNECTION, '' ) ) {
 			echo '<p><a href="' . esc_url( self::page_url() ) . '">' . esc_html__( 'Connect Google to show GA4 reports for this site.', 'stuh' ) . '</a></p></section>';
