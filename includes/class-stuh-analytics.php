@@ -921,12 +921,34 @@ final class STUH_Analytics {
 		echo '</form>';
 	}
 
+	private static function column_record( string $client_id, array $mapping ): array {
+		$record = get_option( self::report_key( $client_id ), [] );
+		return is_array( $record ) && ( $record['fingerprint'] ?? '' ) === self::fingerprint( $mapping ) ? $record : [];
+	}
+
+	public static function column_sort_values( array $clients ): array {
+		$mappings = self::mappings();
+		$connection = $mappings ? self::connection() : null;
+		$values = [];
+		foreach ( $clients as $client ) {
+			$id = (string) $client['id'];
+			$mapping = $mappings[ $id ] ?? null;
+			$values[ $id ] = null;
+			if ( ! $mapping || null === $connection || is_wp_error( $connection ) || $mapping['connection_id'] !== $connection['id'] ) {
+				continue;
+			}
+			$record = self::column_record( $id, $mapping );
+			$values[ $id ] = $record['data']['current']['activeUsers'] ?? null;
+		}
+		return $values;
+	}
+
 	public static function render_client_column( string $client_id ): void {
 		self::require_admin();
 		$mapping = self::mappings()[ $client_id ] ?? null;
 		$url = self::page_url( $client_id ) . '#stuh-analytics';
 		if ( ! $mapping ) {
-			echo '<a href="' . esc_url( $url ) . '">' . esc_html__( 'Not connected', 'stuh' ) . '</a>';
+			echo '<a class="stuh-analytics-disconnected" href="' . esc_url( $url ) . '">' . esc_html__( 'Not connected', 'stuh' ) . '</a>';
 			return;
 		}
 		$connection = self::connection();
@@ -935,10 +957,7 @@ final class STUH_Analytics {
 			echo '<a href="' . esc_url( $url ) . '" title="' . esc_attr( $message ) . '">' . esc_html__( 'Reconnect required', 'stuh' ) . '</a>';
 			return;
 		}
-		$record = get_option( self::report_key( $client_id ), [] );
-		if ( ! is_array( $record ) || ( $record['fingerprint'] ?? '' ) !== self::fingerprint( $mapping ) ) {
-			$record = [];
-		}
+		$record = self::column_record( $client_id, $mapping );
 		$data = $record['data'] ?? null;
 		$tooltip = $mapping['name'] . ' (' . $mapping['property_id'] . ') / ' . $mapping['hostname'];
 		if ( ! is_array( $data ) ) {
@@ -955,7 +974,7 @@ final class STUH_Analytics {
 		if ( ! empty( $data['limited'] ) ) {
 			$tooltip .= ' / ' . __( 'Google flagged reporting limitations.', 'stuh' );
 		}
-		echo '<span title="' . esc_attr( $tooltip ) . '"><a href="' . esc_url( $url ) . '" aria-label="' . esc_attr( sprintf( __( 'Connected: %s active users in the last 28 complete days', 'stuh' ), number_format_i18n( $current ) ) ) . '">' . esc_html( number_format_i18n( $current ) ) . '</a> ';
+		echo '<span title="' . esc_attr( $tooltip ) . '"><a class="stuh-analytics-users" href="' . esc_url( $url ) . '" aria-label="' . esc_attr( sprintf( __( 'Connected: %s active users in the last 28 complete days', 'stuh' ), number_format_i18n( $current ) ) ) . '">' . esc_html( number_format_i18n( $current ) ) . '</a> ';
 		if ( $previous > 0 || 0.0 === (float) $current ) {
 			$change = $previous > 0 ? round( ( $current - $previous ) / $previous * 100, 1 ) : 0.0;
 			$direction = $change > 0 ? 'up' : ( $change < 0 ? 'down' : 'neutral' );

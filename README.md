@@ -113,6 +113,9 @@ are labeled. Hover for the property, periods, last update and applicable error
 or Google reporting limitation. Click through to the client's Analytics panel.
 The list reads cached reports only; it does not call Google or queue report
 refreshes. Open the client details or use its refresh action to update data.
+Disconnected labels are light grey and user counts are black. Click the
+Analytics heading to sort numerically by active users in either direction;
+sites without a report for the current connection and mapping stay last.
 
 ### Automatic mapping from GTM diagnostics
 

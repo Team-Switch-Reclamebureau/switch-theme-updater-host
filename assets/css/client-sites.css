@@ -1,3 +1,11 @@
+.stuh-client-sites a.stuh-analytics-disconnected {
+	color: #a7aaad;
+}
+
+.stuh-client-sites a.stuh-analytics-users {
+	color: #000;
+}
+
 .stuh-client-sites .stuh-analytics-change {
 	white-space: nowrap;
 }

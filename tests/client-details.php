@@ -13,6 +13,7 @@ function __( $text, $domain = '' ) { return $text; }
 function _n( $single, $plural, $count, $domain = '' ) { return 1 === $count ? $single : $plural; }
 function esc_html( $value ) { return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $value ) { return esc_html( $value ); }
+function number_format_i18n( $value, $decimals = 0 ) { return number_format( $value, $decimals ); }
 function esc_textarea( $value ) { return esc_html( $value ); }
 function esc_js( $value ) { return addslashes( $value ); }
 function esc_url( $value ) { return esc_html( $value ); }
@@ -34,7 +35,11 @@ function sanitize_key( $value ) { return preg_replace( '/[^a-z0-9_-]/', '', strt
 function sanitize_html_class( $value ) { return preg_replace( '/[^A-Za-z0-9_-]/', '', $value ); }
 function is_email( $value ) { return false !== filter_var( $value, FILTER_VALIDATE_EMAIL ); }
 function get_option( $key, $default = false ) { return $GLOBALS['options'][ $key ] ?? $default; }
-function update_option( $key, $value ) { $GLOBALS['options'][ $key ] = $value; }
+function update_option( $key, $value ) {
+	if ( get_option( $key ) === $value ) { return false; }
+	$GLOBALS['options'][ $key ] = $value;
+	return true;
+}
 function get_transient( $key ) { return $GLOBALS['transients'][ $key ] ?? false; }
 function delete_transient( $key ) { unset( $GLOBALS['transients'][ $key ] ); }
 function get_current_user_id() { return 1; }
@@ -57,7 +62,7 @@ function remove_query_arg( $key, $url ) {
 	unset( $query[ $key ] );
 	return $parts[0] . '?' . http_build_query( $query );
 }
-function wp_parse_url( $url ) { return parse_url( $url ); }
+function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
 function wp_parse_args( $args, $defaults ) { return array_merge( $defaults, $args ); }
 function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
 function wp_nonce_field( $action ) { echo '<input type="hidden" name="_wpnonce" value="test-nonce">'; }
@@ -156,6 +161,55 @@ expect_view( 1 === $xpath->query( '//span[@class="open-site"]/a[@href="https://f
 expect_view( 2 === $xpath->query( '//td[@class="column-ssl hidden"]' )->length, 'List honors hidden columns' );
 expect_view( str_contains( $list, 'value="add_client"' ), 'List retains registration form' );
 expect_view( 2 === $xpath->query( '//td[contains(@class,"column-telemetry_analytics")]/a[contains(@href,"#stuh-analytics") and text()="Not connected"]' )->length, 'Analytics column shows property connection state and links to the report panel' );
+
+// Exercise the real heading sort with numeric counts, zero users and missing reports.
+$original_clients = $GLOBALS['options'][ STUH_OPTION_CLIENTS ];
+putenv( 'ANALYTICS_CLIENT_ID=view-client' );
+putenv( 'ANALYTICS_CLIENT_SECRET=view-secret' );
+putenv( 'STUH_GOOGLE_TOKEN_KEY=0123456789abcdef0123456789abcdef' );
+$connection = [ 'id' => 'view-connection', 'client_id' => 'view-client', 'access_token' => 'view-access', 'refresh_token' => 'view-refresh', 'expires_at' => time() + 3600 ];
+( new ReflectionMethod( STUH_Analytics::class, 'save_connection' ) )->invoke( null, $connection );
+$mappings = [];
+foreach ( [ 'site-1' => 20.0, 'site-2' => 100.0, 'site-zero' => 0.0, 'site-pending' => null ] as $id => $count ) {
+	if ( ! in_array( $id, [ 'site-1', 'site-2' ], true ) ) {
+		$GLOBALS['options'][ STUH_OPTION_CLIENTS ][] = array_merge( $client, [ 'id' => $id ] );
+	}
+	$mapping = [ 'connection_id' => 'view-connection', 'property_id' => '123', 'name' => 'View property', 'hostname' => 'first.example', 'timezone' => 'UTC' ];
+	$mappings[ $id ] = $mapping;
+	$record = [ 'fingerprint' => hash( 'sha256', json_encode( $mapping ) ) ];
+	if ( null !== $count ) {
+		$record += [
+			'fetched_at' => time(),
+			'data' => [
+				'current' => [ 'activeUsers' => $count ], 'previous' => [ 'activeUsers' => 10.0 ],
+				'period' => [ 'startDate' => '2026-10-01', 'endDate' => '2026-10-28' ],
+				'previous_period' => [ 'startDate' => '2026-09-03', 'endDate' => '2026-09-30' ],
+			],
+		];
+	}
+	$GLOBALS['options'][ 'stuh_google_report_' . hash( 'sha256', $id ) ] = $record;
+}
+$GLOBALS['options'][ STUH_OPTION_CLIENTS ][] = array_merge( $client, [ 'id' => 'site-unmapped' ] );
+$GLOBALS['options']['stuh_google_mappings'] = $mappings;
+$_GET['orderby'] = 'telemetry_analytics';
+foreach ( [
+	'asc' => [ 'site-zero', 'site-1', 'site-2', 'site-pending', 'site-unmapped' ],
+	'desc' => [ 'site-2', 'site-1', 'site-zero', 'site-pending', 'site-unmapped' ],
+] as $order => $expected_ids ) {
+	$_GET['order'] = $order;
+	$sorted = view_xpath( render_view() );
+	$actual_ids = [];
+	foreach ( $sorted->query( '//tr[contains(@class,"stuh-client-row") and @data-client-id]' ) as $row ) {
+		$actual_ids[] = $row->getAttribute( 'data-client-id' );
+	}
+	expect_view( $expected_ids === $actual_ids, 'Analytics heading sorts numerically with missing counts last: ' . $order );
+	expect_view( 1 === $sorted->query( '//th[contains(@class,"column-telemetry_analytics")]/a[contains(@href,"orderby=telemetry_analytics") and contains(@href,"order=' . ( 'asc' === $order ? 'desc' : 'asc' ) . '")]' )->length, 'Analytics heading toggles sort direction' );
+}
+foreach ( array_keys( $mappings ) as $id ) {
+	unset( $GLOBALS['options'][ 'stuh_google_report_' . hash( 'sha256', $id ) ] );
+}
+unset( $GLOBALS['options']['stuh_google_connection'], $GLOBALS['options']['stuh_google_mappings'], $_GET['orderby'], $_GET['order'] );
+$GLOBALS['options'][ STUH_OPTION_CLIENTS ] = $original_clients;
 
 $_GET['client_id'] = 'site-1';
 $GLOBALS['transients']['stuh_pending_updates_1'] = [ 'type' => 'success', 'message' => 'Updates installed' ];

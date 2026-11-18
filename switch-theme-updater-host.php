@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.9.2
+ * Version: 0.9.3
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -4818,8 +4818,17 @@ class STUH_Plugin {
 			$order        = strtolower( $_GET['order'] ?? 'asc' ) === 'desc' ? 'desc' : 'asc';
 			$opposite     = $order === 'asc' ? 'desc' : 'asc';
 			$search_query = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
+			$analytics_counts = 'telemetry_analytics' === $orderby ? STUH_Analytics::column_sort_values( $clients ) : [];
 
-			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry, $external_party_names, $ssl_statuses ) {
+			usort( $clients, function( $a, $b ) use ( $orderby, $order, $telemetry, $external_party_names, $ssl_statuses, $analytics_counts ) {
+				if ( 'telemetry_analytics' === $orderby ) {
+					$va = $analytics_counts[ $a['id'] ];
+					$vb = $analytics_counts[ $b['id'] ];
+					if ( null === $va || null === $vb ) {
+						return null === $va ? ( null === $vb ? 0 : 1 ) : -1;
+					}
+					return 'desc' === $order ? $vb <=> $va : $va <=> $vb;
+				}
 				if ( 'ssl' === $orderby ) {
 					return self::compare_ssl_status( $ssl_statuses[ $a['id'] ], $ssl_statuses[ $b['id'] ], $order );
 				}

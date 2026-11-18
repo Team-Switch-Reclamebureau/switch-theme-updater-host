@@ -260,6 +260,8 @@ expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Page rendering mus
 $html = render_analytics_column();
 expect_analytics( str_contains( $html, '>10</a>' ) && str_contains( $html, 'stuh-analytics-change--up">+100.0%' ), 'Column shows 28-day active users and a positive change class' );
 expect_analytics( str_contains( $html, '#stuh-analytics' ) && str_contains( $html, 'Active users (28 days)' ), 'Column links to the report and labels the reporting window' );
+expect_analytics( str_contains( $html, 'class="stuh-analytics-users"' ), 'User count has its own black-link style' );
+expect_analytics( [ 'site-1' => 10.0, 'unmapped' => null ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ], [ 'id' => 'unmapped' ] ] ), 'Sort values use numeric active users and null for unmapped clients' );
 $column_record = $good;
 $column_record['data']['current']['activeUsers'] = 2.0;
 update_option( $key, $column_record );
@@ -273,6 +275,7 @@ expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-chang
 $column_record['data']['previous']['activeUsers'] = 0.0;
 update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-change--neutral">0.0%' ), 'Two valid empty periods show zero change' );
+expect_analytics( [ 'site-1' => 0.0 ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ] ] ), 'Zero active users remains a sortable count rather than missing data' );
 $column_record['data']['current']['activeUsers'] = 5.0;
 update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), '>N/A</span>' ) && ! str_contains( render_analytics_column(), 'stuh-analytics-change--up' ), 'A zero baseline must not fabricate a percentage increase' );
@@ -291,13 +294,16 @@ expect_analytics( str_contains( render_analytics_column(), 'Connected - report f
 $column_record['fingerprint'] = 'obsolete-mapping';
 update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'Do not show user counts from a different mapping' );
+expect_analytics( [ 'site-1' => null ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ] ] ), 'Obsolete report mappings cannot contribute sort values' );
 $original_mappings = get_option( 'stuh_google_mappings' );
 $changed_mappings = $original_mappings;
 $changed_mappings['site-1']['connection_id'] = 'old-connection';
 update_option( 'stuh_google_mappings', $changed_mappings );
 expect_analytics( str_contains( render_analytics_column(), 'Reconnect required' ), 'Reconnected accounts must not display counts from the previous connection' );
+expect_analytics( [ 'site-1' => null ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ] ] ), 'Reports from another connection cannot contribute sort values' );
 update_option( 'stuh_google_mappings', [] );
 expect_analytics( str_contains( render_analytics_column(), 'Not connected' ), 'Unmapped sites explicitly show not connected' );
+expect_analytics( str_contains( render_analytics_column(), 'class="stuh-analytics-disconnected"' ), 'Disconnected link has its own light-grey style' );
 update_option( 'stuh_google_mappings', $original_mappings );
 update_option( $key, $good );
 expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Column rendering must never call Google' );
