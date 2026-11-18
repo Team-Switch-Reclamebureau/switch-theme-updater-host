@@ -104,8 +104,17 @@ thresholding can affect the figures; reported limitations are displayed.
 Re-save the mapping if the property's timezone changes.
 
 **Updater Host → Google Analytics** is the reporting page. A client site
-dropdown selects a site's cached report, defaulting to the first mapped site
-(or the first registered site if none are mapped). Five bar charts compare
+dropdown lists only sites with a successful cached report for the current
+Google connection and property mapping, sorted alphabetically without URL
+schemes. It defaults to the first listed site. Valid zero-traffic and stale
+reports remain available; pending reports and obsolete mappings are excluded.
+When no client has a usable report, the reporting page shows an explicitly
+labeled **demo.example** dummy site with sample charts, including the ongoing
+month and hover values. Demo data is generated only for display: it is never
+saved as a client, property mapping, or cached report and never calls Google or
+schedules refreshes. Real zero-traffic reports still count as available data
+and are not replaced by samples.
+Five bar charts compare
 active users, sessions, page views, engagement rate, and key events across the
 two 28-day periods. Each metric has its own scale; engagement uses a fixed
 0-100% scale. Horizontal ranking charts show top pages and traffic channels.
@@ -113,15 +122,23 @@ All bars have visible text labels and exact values, including fractional key
 events.
 
 Above those charts, a **monthly active users** line graph compares the last
-12 complete calendar months against the preceding 12, aligned by month. For
-example, during November 2026 it compares November 2025-October 2026 with
-November 2024-October 2025. All boundaries use the mapped property's timezone;
-the partial current month is excluded. The query retrieves `activeUsers` by
-`yearMonth` over 24 months as the fifth report in the existing Google batch.
+12 complete calendar months against the preceding 12, with the ongoing month
+appended as a **13th point**. For example, during November 2026 the full-month
+comparison covers November 2025-October 2026 versus November 2024-October 2025,
+then adds November 2026 month-to-date against November 2025 month-to-date.
+The partial point uses data through yesterday and the same elapsed calendar
+days in the prior year (clamped to that month's length). On the first day of a
+month, both partial points remain unavailable until a complete day exists.
+All boundaries use the mapped property's timezone. The fifth report in the
+existing Google batch requests `activeUsers` by `yearMonth`, with a named
+24-month complete range and two separate named month-to-date ranges.
 These are monthly unique-user counts, not sums of daily users or yearly totals.
 
 Both lines share a zero-based vertical scale. The latest period is solid blue
-and the prior period dashed grey. Reported zeroes are plotted; omitted months
+and the prior period dashed grey. The ongoing month's points and their
+connecting segments are lighter, with an asterisk on the month label.
+Hover over any month, or focus it with the keyboard, to see both years'
+values and the partial-month cutoffs. Reported zeroes are plotted; omitted months
 are gaps, not assumed zero traffic. New properties, tracking changes and Google
 reporting restrictions can limit older data. A **View monthly values**
 disclosure exposes the exact months and counts (or **No data reported**) for
@@ -130,8 +147,8 @@ scrolled horizontally inside its card.
 
 The monthly history shares the existing report cache, refresh action and stale
 data handling. After deploying this feature, use **Refresh Analytics** once to
-populate history for an already-cached report; until then the page explicitly
-states that annual data has not been fetched. These are aggregate monthly and
+populate history for an already-cached report; older 12-point reports remain
+visible with a refresh prompt to load the ongoing month. These are aggregate monthly and
 28-day comparison charts, not daily time-series charts.
 The client details page retains its 28-day data in tables. Refresh actions return to the
 selected report and queue work through WP-Cron, never a synchronous Google
@@ -146,7 +163,8 @@ counts neutral. A zero previous-period count shows `N/A` when the current count
 is positive (a percentage increase is undefined), or `0.0%` when both are zero.
 Pending and failed reports are distinguished from zero traffic; stale counts
 are labeled. Hover for the property, periods, last update and applicable error
-or Google reporting limitation. Click through to the client's Analytics panel.
+or Google reporting limitation. Available counts link to the Google Analytics
+page with that client selected; sites without data keep their client details link.
 The list reads cached reports only; it does not call Google or queue report
 refreshes. Open the client details or use its refresh action to update data.
 Disconnected labels are light grey and user counts are black. Click the

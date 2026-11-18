@@ -778,7 +778,21 @@ final class STUH_Analytics {
 		return $result;
 	}
 
-	private static function monthly_history( DateTimeImmutable $month_start, array $rows ) {
+	private static function history_ranges( DateTimeImmutable $today ): array {
+		$start = $today->modify( 'first day of this month' );
+		$ranges = [ [ 'startDate' => $start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $start->modify( '-1 day' )->format( 'Y-m-d' ), 'name' => 'complete' ] ];
+		$days = (int) $today->format( 'j' ) - 1;
+		if ( $days > 0 ) {
+			$prior = $start->modify( '-12 months' );
+			$ranges[] = [ 'startDate' => $start->format( 'Y-m-d' ), 'endDate' => $today->modify( '-1 day' )->format( 'Y-m-d' ), 'name' => 'current_mtd' ];
+			$ranges[] = [ 'startDate' => $prior->format( 'Y-m-d' ), 'endDate' => $prior->modify( '+' . ( min( $days, (int) $prior->format( 't' ) ) - 1 ) . ' days' )->format( 'Y-m-d' ), 'name' => 'previous_mtd' ];
+		}
+		return $ranges;
+	}
+
+	private static function monthly_history( DateTimeImmutable $today, array $rows ) {
+		$month_start = $today->modify( 'first day of this month' );
+		$ranges = self::history_ranges( $today );
 		$months = [];
 		$allowed = [];
 		for ( $offset = 12; $offset >= 1; $offset-- ) {
@@ -789,10 +803,23 @@ final class STUH_Analytics {
 			$allowed[ $previous->format( 'Ym' ) ] = true;
 		}
 		$values = [];
+		$partial = [ 'current_mtd' => null, 'previous_mtd' => null ];
 		foreach ( $rows as $row ) {
 			$month = $row['dimensions'][0];
 			$value = $row['metrics']['activeUsers'];
-			if ( ! isset( $allowed[ $month ] ) || array_key_exists( $month, $values ) || ! is_finite( $value ) || $value < 0 ) {
+			$range = $row['dimensions'][1] ?? 'complete';
+			if ( ! is_finite( $value ) || $value < 0 ) {
+				return new WP_Error( 'google_history', __( 'Google returned invalid or duplicate monthly active-user data.', 'stuh' ) );
+			}
+			if ( 'complete' !== $range ) {
+				$expected = 'current_mtd' === $range ? $month_start : $month_start->modify( '-12 months' );
+				if ( 3 !== count( $ranges ) || ! array_key_exists( $range, $partial ) || null !== $partial[ $range ] || $month !== $expected->format( 'Ym' ) ) {
+					return new WP_Error( 'google_history', __( 'Google returned invalid month-to-date data.', 'stuh' ) );
+				}
+				$partial[ $range ] = $value;
+				continue;
+			}
+			if ( ! isset( $allowed[ $month ] ) || array_key_exists( $month, $values ) ) {
 				return new WP_Error( 'google_history', __( 'Google returned invalid or duplicate monthly active-user data.', 'stuh' ) );
 			}
 			$values[ $month ] = $value;
@@ -802,10 +829,20 @@ final class STUH_Analytics {
 			$month['previous'] = $values[ str_replace( '-', '', $month['previous_month'] ) ] ?? null;
 		}
 		unset( $month );
+		$months[] = [
+			'month' => $month_start->format( 'Y-m' ),
+			'previous_month' => $month_start->modify( '-12 months' )->format( 'Y-m' ),
+			'current' => $partial['current_mtd'],
+			'previous' => $partial['previous_mtd'],
+			'in_progress' => true,
+			'current_end' => $ranges[1]['endDate'] ?? null,
+			'previous_end' => $ranges[2]['endDate'] ?? null,
+		];
 		return [
 			'period' => [ 'startDate' => $month_start->modify( '-12 months' )->format( 'Y-m-d' ), 'endDate' => $month_start->modify( '-1 day' )->format( 'Y-m-d' ) ],
 			'previous_period' => [ 'startDate' => $month_start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $month_start->modify( '-12 months -1 day' )->format( 'Y-m-d' ) ],
 			'months' => $months,
+			'includes_current' => true,
 		];
 	}
 
@@ -820,13 +857,12 @@ final class STUH_Analytics {
 		$totals = array_merge( $base, [ 'metrics' => array_map( static fn( string $name ): array => [ 'name' => $name ], self::METRICS ) ] );
 		$pages = array_merge( $base, [ 'dimensions' => [ [ 'name' => 'pagePath' ] ], 'metrics' => [ [ 'name' => 'screenPageViews' ] ], 'orderBys' => [ [ 'metric' => [ 'metricName' => 'screenPageViews' ], 'desc' => true ] ], 'limit' => 10 ] );
 		$channels = array_merge( $base, [ 'dimensions' => [ [ 'name' => 'sessionDefaultChannelGroup' ] ], 'metrics' => [ [ 'name' => 'sessions' ] ], 'orderBys' => [ [ 'metric' => [ 'metricName' => 'sessions' ], 'desc' => true ] ], 'limit' => 10 ] );
-		$month_start = $today->modify( 'first day of this month' );
 		$monthly = array_merge( $base, [
-			'dateRanges' => [ [ 'startDate' => $month_start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $month_start->modify( '-1 day' )->format( 'Y-m-d' ) ] ],
+			'dateRanges' => self::history_ranges( $today ),
 			'dimensions' => [ [ 'name' => 'yearMonth' ] ],
 			'metrics' => [ [ 'name' => 'activeUsers' ] ],
 			'orderBys' => [ [ 'dimension' => [ 'dimensionName' => 'yearMonth' ] ] ],
-			'limit' => 24,
+			'limit' => 26,
 			'keepEmptyRows' => true,
 		] );
 		$data = self::api( 'properties/' . $mapping['property_id'] . ':batchRunReports', [ 'requests' => [ $totals, array_merge( $totals, [ 'dateRanges' => [ $previous ] ] ), $pages, $channels, $monthly ] ], 'data' );
@@ -843,7 +879,7 @@ final class STUH_Analytics {
 				return new WP_Error( 'google_report_shape', __( 'Google returned an invalid report.', 'stuh' ) );
 			}
 			$metrics = match ( $index ) { 0, 1 => self::METRICS, 2 => [ 'screenPageViews' ], 3 => [ 'sessions' ], 4 => [ 'activeUsers' ] };
-			$dimensions = match ( $index ) { 0, 1 => [], 2 => [ 'pagePath' ], 3 => [ 'sessionDefaultChannelGroup' ], 4 => [ 'yearMonth' ] };
+			$dimensions = match ( $index ) { 0, 1 => [], 2 => [ 'pagePath' ], 3 => [ 'sessionDefaultChannelGroup' ], 4 => count( $monthly['dateRanges'] ) > 1 ? [ 'yearMonth', 'dateRange' ] : [ 'yearMonth' ] };
 			$rows = self::report_rows( $report, $metrics, $dimensions );
 			if ( is_wp_error( $rows ) ) {
 				return $rows;
@@ -858,7 +894,7 @@ final class STUH_Analytics {
 			$metadata = $report['metadata'] ?? [];
 			$limited = $limited || ! empty( $metadata['subjectToThresholding'] ) || ! empty( $metadata['dataLossFromOtherRow'] ) || ! empty( $metadata['samplingMetadatas'] );
 		}
-		$history = self::monthly_history( $month_start, $parsed[4] );
+		$history = self::monthly_history( $today, $parsed[4] );
 		if ( is_wp_error( $history ) ) {
 			return $history;
 		}
@@ -955,10 +991,21 @@ final class STUH_Analytics {
 		self::require_admin();
 		$clients = STUH_Plugin::get_clients();
 		$mappings = self::mappings();
+		$connection = self::connection();
+		$report_clients = array_values( array_filter( $clients, static function( array $client ) use ( $mappings, $connection ): bool {
+			$id = (string) $client['id'];
+			$mapping = $mappings[ $id ] ?? null;
+			if ( ! $mapping || is_wp_error( $connection ) || $mapping['connection_id'] !== $connection['id'] ) {
+				return false;
+			}
+			$record = self::column_record( $id, $mapping );
+			return isset( $record['data']['current']['activeUsers'] );
+		} ) );
+		$site_label = static fn( array $client ): string => preg_replace( '#^https?://#i', '', (string) ( $client['site_url'] ?? $client['id'] ) );
+		usort( $report_clients, static fn( array $a, array $b ): int => strcasecmp( $site_label( $a ), $site_label( $b ) ) );
 		$client_id = self::input( $_GET, 'client_id' );
-		if ( '' === $client_id && $clients ) {
-			$preferred = array_values( array_filter( $clients, static fn( array $client ): bool => isset( $mappings[ $client['id'] ] ) ) );
-			$client_id = (string) ( $preferred[0]['id'] ?? $clients[0]['id'] );
+		if ( '' === $client_id && $report_clients ) {
+			$client_id = (string) $report_clients[0]['id'];
 		}
 		$selected = null;
 		foreach ( $clients as $client ) {
@@ -973,19 +1020,21 @@ final class STUH_Analytics {
 		echo '<div class="wrap stuh-client-sites"><h1>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h1>';
 		self::notice();
 		echo '<p><a href="' . esc_url( self::page_url() ) . '">' . esc_html__( 'Google Analytics settings', 'stuh' ) . '</a></p>';
-		$connection = self::connection();
 		if ( is_wp_error( $connection ) ) {
 			echo '<p role="alert">' . esc_html( $connection->get_error_message() ) . '</p>';
 		}
-		if ( $clients ) {
+		if ( ! $report_clients ) {
+			self::render_demo();
+			echo '</div>';
+			return;
+		}
+		if ( $report_clients ) {
 			echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '" class="stuh-analytics-selector"><input type="hidden" name="page" value="stuh-analytics"><label for="stuh-analytics-client">' . esc_html__( 'Client site', 'stuh' ) . '</label> <select id="stuh-analytics-client" name="client_id">';
-			foreach ( $clients as $client ) {
+			foreach ( $report_clients as $client ) {
 				$id = (string) $client['id'];
-				echo '<option value="' . esc_attr( $id ) . '"' . ( $id === $client_id ? ' selected' : '' ) . '>' . esc_html( $client['site_url'] ?? $id ) . '</option>';
+				echo '<option value="' . esc_attr( $id ) . '"' . ( $id === $client_id ? ' selected' : '' ) . '>' . esc_html( $site_label( $client ) ) . '</option>';
 			}
 			echo '</select> <button type="submit" class="button">' . esc_html__( 'View report', 'stuh' ) . '</button></form>';
-		} else {
-			echo '<p>' . esc_html__( 'No client sites registered.', 'stuh' ) . '</p>';
 		}
 		if ( null !== $selected ) {
 			echo '<section id="stuh-analytics"><h2>' . esc_html( $selected['site_url'] ?? $client_id ) . '</h2>';
@@ -1001,6 +1050,55 @@ final class STUH_Analytics {
 			echo '<p><a href="' . esc_url( self::page_url( $client_id ) . '#stuh-analytics' ) . '">' . esc_html__( 'Manage this site mapping', 'stuh' ) . '</a></p></section>';
 		}
 		echo '</div>';
+	}
+
+	private static function render_demo(): void {
+		$today = new DateTimeImmutable( 'today', new DateTimeZone( 'UTC' ) );
+		$month_start = $today->modify( 'first day of this month' );
+		$ranges = self::history_ranges( $today );
+		$seasonal = [ 950, 1040, 1180, 1090, 1260, 1420, 1360, 1510, 1450, 1620, 1540, 1710 ];
+		$rows = [];
+		for ( $offset = 24; $offset >= 1; $offset-- ) {
+			$index = 24 - $offset;
+			$rows[] = [
+				'dimensions' => count( $ranges ) > 1 ? [ $month_start->modify( '-' . $offset . ' months' )->format( 'Ym' ), 'complete' ] : [ $month_start->modify( '-' . $offset . ' months' )->format( 'Ym' ) ],
+				'metrics' => [ 'activeUsers' => (float) round( $seasonal[ $index % 12 ] * ( $index >= 12 ? 1.24 : 1 ) ) ],
+			];
+		}
+		if ( count( $ranges ) > 1 ) {
+			foreach ( [ 'current_mtd' => 1380, 'previous_mtd' => 1120 ] as $range => $total ) {
+				$date = 'current_mtd' === $range ? $month_start : $month_start->modify( '-12 months' );
+				$days = min( (int) $today->format( 'j' ) - 1, (int) $date->format( 't' ) );
+				$rows[] = [ 'dimensions' => [ $date->format( 'Ym' ), $range ], 'metrics' => [ 'activeUsers' => (float) round( $total * $days / (int) $date->format( 't' ) ) ] ];
+			}
+		}
+		$history = self::monthly_history( $today, $rows );
+		if ( is_wp_error( $history ) ) {
+			wp_die( esc_html( $history->get_error_message() ) );
+		}
+		$data = [
+			'current' => [ 'activeUsers' => 1840.0, 'sessions' => 2680.0, 'screenPageViews' => 7240.0, 'engagementRate' => 0.684, 'keyEvents' => 86.0 ],
+			'previous' => [ 'activeUsers' => 1520.0, 'sessions' => 2310.0, 'screenPageViews' => 6180.0, 'engagementRate' => 0.621, 'keyEvents' => 67.0 ],
+			'previous_period' => [ 'startDate' => $today->modify( '-56 days' )->format( 'Y-m-d' ), 'endDate' => $today->modify( '-29 days' )->format( 'Y-m-d' ) ],
+			'pages' => [
+				[ 'dimensions' => [ '/' ], 'metrics' => [ 'screenPageViews' => 2840.0 ] ],
+				[ 'dimensions' => [ '/services/' ], 'metrics' => [ 'screenPageViews' => 1860.0 ] ],
+				[ 'dimensions' => [ '/about/' ], 'metrics' => [ 'screenPageViews' => 1420.0 ] ],
+				[ 'dimensions' => [ '/contact/' ], 'metrics' => [ 'screenPageViews' => 1120.0 ] ],
+			],
+			'channels' => [
+				[ 'dimensions' => [ 'Organic Search' ], 'metrics' => [ 'sessions' => 1240.0 ] ],
+				[ 'dimensions' => [ 'Direct' ], 'metrics' => [ 'sessions' => 820.0 ] ],
+				[ 'dimensions' => [ 'Referral' ], 'metrics' => [ 'sessions' => 380.0 ] ],
+				[ 'dimensions' => [ 'Organic Social' ], 'metrics' => [ 'sessions' => 240.0 ] ],
+			],
+			'history' => $history,
+		];
+		echo '<div class="notice notice-info inline"><p>' . esc_html__( 'Demo data - no client Analytics reports available.', 'stuh' ) . '</p></div>';
+		echo '<div class="stuh-analytics-selector"><label for="stuh-analytics-client">' . esc_html__( 'Client site', 'stuh' ) . '</label> <select id="stuh-analytics-client" disabled><option selected>' . esc_html__( 'demo.example (Demo)', 'stuh' ) . '</option></select></div>';
+		echo '<section id="stuh-analytics" class="stuh-analytics-demo"><h2>' . esc_html__( 'demo.example - Demo', 'stuh' ) . '</h2><p>' . esc_html( $today->modify( '-28 days' )->format( 'Y-m-d' ) . ' to ' . $today->modify( '-1 day' )->format( 'Y-m-d' ) . ' / UTC' ) . '</p>';
+		self::render_charts( $data );
+		echo '</section>';
 	}
 
 	private static function render_discovery( array $client, array $connection ): void {
@@ -1078,6 +1176,7 @@ final class STUH_Analytics {
 			echo '<a href="' . esc_url( $url ) . '" title="' . esc_attr( $tooltip . ( $error ? ' / ' . $error : '' ) ) . '">' . esc_html( $error ? __( 'Connected - report failed', 'stuh' ) : __( 'Connected - report pending', 'stuh' ) ) . '</a>';
 			return;
 		}
+		$url = $report_url ?? self::reports_url( $client_id );
 		$current = $data['current']['activeUsers'];
 		$previous = $data['previous']['activeUsers'];
 		$tooltip .= ' / ' . sprintf( __( 'Active users: %1$s to %2$s; previous: %3$s to %4$s. Last updated: %5$s.', 'stuh' ), $data['period']['startDate'], $data['period']['endDate'], $data['previous_period']['startDate'], $data['previous_period']['endDate'], wp_date( 'Y-m-d H:i T', $record['fetched_at'] ) );
@@ -1176,6 +1275,9 @@ final class STUH_Analytics {
 	private static function render_charts( array $data ): void {
 		if ( isset( $data['history'] ) ) {
 			self::render_history_chart( $data['history'] );
+			if ( empty( $data['history']['includes_current'] ) ) {
+				echo '<p>' . esc_html__( 'Refresh Analytics to include the ongoing month.', 'stuh' ) . '</p>';
+			}
 		} else {
 			echo '<p>' . esc_html__( 'Refresh Analytics to load yearly data.', 'stuh' ) . '</p>';
 		}
@@ -1220,23 +1322,25 @@ final class STUH_Analytics {
 			$period = 'current' === $key ? $history['period'] : $history['previous_period'];
 			echo '<li class="stuh-analytics-legend--' . esc_attr( $key ) . '">' . esc_html( $label . ': ' . $period['startDate'] . ' to ' . $period['endDate'] ) . '</li>';
 		}
-		echo '</ul><p>' . esc_html__( 'Gaps indicate missing data.', 'stuh' ) . '</p>';
+		echo '</ul><p>' . esc_html__( 'Lighter points are month to date, through yesterday. Gaps indicate missing data.', 'stuh' ) . '</p>';
 		if ( $has_data ) {
+			$intervals = max( 1, count( $history['months'] ) - 1 );
 			$maximum = max( 4, ceil( $maximum / 4 ) * 4 );
-			echo '<div class="stuh-analytics-line-scroll" tabindex="0" role="region" aria-label="' . esc_attr( $title ) . '"><svg class="stuh-analytics-line-chart" viewBox="0 0 920 300" role="img" aria-label="' . esc_attr( $title ) . '"><desc>' . esc_html__( 'Solid blue: last 12 complete months. Dashed grey: preceding 12 months. Exact values are available in the monthly data table below.', 'stuh' ) . '</desc>';
+			echo '<div class="stuh-analytics-line-scroll" tabindex="0" role="region" aria-label="' . esc_attr( $title ) . '"><svg class="stuh-analytics-line-chart" viewBox="0 0 920 240" role="img" aria-label="' . esc_attr( $title ) . '"><desc>' . esc_html__( 'Solid blue: last 12 complete months. Dashed grey: preceding 12 months. Exact values are available in the monthly data table below.', 'stuh' ) . '</desc>';
 			for ( $tick = 0; $tick <= 4; $tick++ ) {
-				$y = 250 - $tick * 50;
+				$y = 200 - $tick * 40;
 				echo '<line class="stuh-analytics-gridline" x1="70" y1="' . esc_attr( $y ) . '" x2="870" y2="' . esc_attr( $y ) . '"/><text x="60" y="' . esc_attr( $y + 5 ) . '" text-anchor="end">' . esc_html( number_format_i18n( $maximum * $tick / 4 ) ) . '</text>';
 			}
 			foreach ( $history['months'] as $index => $month ) {
-				$x = 70 + $index * 800 / 11;
+				$x = 70 + $index * 800 / $intervals;
 				$date = new DateTimeImmutable( $month['month'] . '-01', new DateTimeZone( 'UTC' ) );
-				echo '<text x="' . esc_attr( number_format( $x, 2, '.', '' ) ) . '" y="280" text-anchor="middle">' . esc_html( wp_date( 'M', $date->getTimestamp(), new DateTimeZone( 'UTC' ) ) ) . '</text>';
+				echo '<text class="' . ( ! empty( $month['in_progress'] ) ? 'stuh-analytics-in-progress' : '' ) . '" x="' . esc_attr( number_format( $x, 2, '.', '' ) ) . '" y="225" text-anchor="middle">' . esc_html( wp_date( 'M', $date->getTimestamp(), new DateTimeZone( 'UTC' ) ) . ( ! empty( $month['in_progress'] ) ? '*' : '' ) ) . '</text>';
 			}
 			foreach ( $series as $key => $label ) {
 				$segments = [];
 				$points = [];
 				$dots = '';
+				$partial_line = '';
 				foreach ( $history['months'] as $index => $month ) {
 					$value = $month[ $key ];
 					if ( null === $value ) {
@@ -1246,11 +1350,17 @@ final class STUH_Analytics {
 						}
 						continue;
 					}
-					$x = number_format( 70 + $index * 800 / 11, 2, '.', '' );
-					$y = number_format( 250 - $value / $maximum * 200, 2, '.', '' );
-					$points[] = $x . ',' . $y;
+					$x = number_format( 70 + $index * 800 / $intervals, 2, '.', '' );
+					$y = number_format( 200 - $value / $maximum * 160, 2, '.', '' );
+					if ( ! empty( $month['in_progress'] ) ) {
+						if ( $points ) {
+							$partial_line = '<polyline class="stuh-analytics-in-progress" points="' . esc_attr( end( $points ) . ' ' . $x . ',' . $y ) . '"/>';
+						}
+					} else {
+						$points[] = $x . ',' . $y;
+					}
 					$month_label = 'current' === $key ? $month['month'] : $month['previous_month'];
-					$dots .= '<circle cx="' . esc_attr( $x ) . '" cy="' . esc_attr( $y ) . '" r="4"><title>' . esc_html( $month_label . ': ' . number_format_i18n( $value ) ) . '</title></circle>';
+					$dots .= '<circle class="' . ( ! empty( $month['in_progress'] ) ? 'stuh-analytics-in-progress' : '' ) . '" cx="' . esc_attr( $x ) . '" cy="' . esc_attr( $y ) . '" r="2.5"><title>' . esc_html( $month_label . ': ' . number_format_i18n( $value ) ) . '</title></circle>';
 				}
 				if ( $points ) {
 					$segments[] = $points;
@@ -1261,7 +1371,27 @@ final class STUH_Analytics {
 						echo '<polyline points="' . esc_attr( implode( ' ', $segment ) ) . '"/>';
 					}
 				}
-				echo $dots . '</g>';
+				echo $partial_line . $dots . '</g>';
+			}
+			foreach ( $history['months'] as $index => $month ) {
+				$x = 70 + $index * 800 / $intervals;
+				$tooltip_x = min( 638, max( 70, $x - 116 ) );
+				$labels = [];
+				foreach ( $series as $key => $label ) {
+					$month_label = 'current' === $key ? $month['month'] : $month['previous_month'];
+					$end = $month[ $key . '_end' ] ?? null;
+					$labels[] = $month_label . ( $end ? ' (1-' . substr( $end, 8 ) . ')' : '' ) . ': ' . ( null === $month[ $key ] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month[ $key ] ) );
+				}
+				$heading = ! empty( $month['in_progress'] ) ? __( 'Month to date - in progress', 'stuh' ) : __( 'Monthly active users', 'stuh' );
+				$description = $heading . '. ' . implode( '; ', $labels );
+				$hit_start = max( 50, $x - 400 / $intervals );
+				$hit_end = min( 890, $x + 400 / $intervals );
+				echo '<g class="stuh-analytics-month-hover" tabindex="0" role="img" aria-label="' . esc_attr( $description ) . '"><rect class="stuh-analytics-month-hit" x="' . esc_attr( number_format( $hit_start, 2, '.', '' ) ) . '" y="32" width="' . esc_attr( number_format( $hit_end - $hit_start, 2, '.', '' ) ) . '" height="200"/>';
+				echo '<g class="stuh-analytics-month-tooltip" aria-hidden="true"><rect x="' . esc_attr( number_format( $tooltip_x, 2, '.', '' ) ) . '" y="0" width="232" height="76" rx="5"/>';
+				foreach ( array_merge( [ $heading ], $labels ) as $line => $text ) {
+					echo '<text x="' . esc_attr( number_format( $tooltip_x + 10, 2, '.', '' ) ) . '" y="' . esc_attr( 20 + $line * 22 ) . '">' . esc_html( $text ) . '</text>';
+				}
+				echo '</g></g>';
 			}
 			echo '</svg></div>';
 		} else {
@@ -1269,7 +1399,8 @@ final class STUH_Analytics {
 		}
 		echo '<details class="stuh-analytics-monthly-data"><summary>' . esc_html__( 'View monthly values', 'stuh' ) . '</summary><div class="stuh-analytics-line-scroll"><table class="widefat striped"><caption class="screen-reader-text">' . esc_html( $title ) . '</caption><thead><tr><th scope="col">' . esc_html__( 'Month', 'stuh' ) . '</th><th scope="col">' . esc_html( $series['current'] ) . '</th><th scope="col">' . esc_html__( 'Prior-year month', 'stuh' ) . '</th><th scope="col">' . esc_html( $series['previous'] ) . '</th></tr></thead><tbody>';
 		foreach ( $history['months'] as $month ) {
-			echo '<tr><th scope="row">' . esc_html( $month['month'] ) . '</th><td>' . esc_html( null === $month['current'] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month['current'] ) ) . '</td><td>' . esc_html( $month['previous_month'] ) . '</td><td>' . esc_html( null === $month['previous'] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month['previous'] ) ) . '</td></tr>';
+			$suffix = ! empty( $month['in_progress'] ) ? ' (' . __( 'month to date', 'stuh' ) . ')' : '';
+			echo '<tr><th scope="row">' . esc_html( $month['month'] . $suffix ) . '</th><td>' . esc_html( null === $month['current'] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month['current'] ) ) . '</td><td>' . esc_html( $month['previous_month'] . $suffix ) . '</td><td>' . esc_html( null === $month['previous'] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month['previous'] ) ) . '</td></tr>';
 		}
 		echo '</tbody></table></div></details></figure>';
 	}

@@ -244,7 +244,9 @@ $reports = [
 	report_fixture( [ 'sessions' ], [ 14 ], [ 'sessionDefaultChannelGroup' ], [ 'Organic Search' ] ),
 ];
 $history_start = new DateTimeImmutable( 'first day of this month 00:00:00', new DateTimeZone( 'Europe/Amsterdam' ) );
-$monthly_report = report_fixture( [ 'activeUsers' ], [ 0 ], [ 'yearMonth' ], [ $history_start->modify( '-1 month' )->format( 'Ym' ) ] );
+$today = new DateTimeImmutable( 'today', new DateTimeZone( 'Europe/Amsterdam' ) );
+$has_mtd = (int) $today->format( 'j' ) > 1;
+$monthly_report = report_fixture( [ 'activeUsers' ], [ 0 ], $has_mtd ? [ 'yearMonth', 'dateRange' ] : [ 'yearMonth' ], [] );
 $monthly_report['rows'] = [];
 for ( $offset = 24; $offset >= 1; $offset-- ) {
 	if ( 6 === $offset ) {
@@ -252,8 +254,13 @@ for ( $offset = 24; $offset >= 1; $offset-- ) {
 	}
 	$monthly_report['rows'][] = [
 		'metricValues' => [ [ 'value' => (string) ( 5 === $offset ? 0 : ( 25 - $offset ) * 10 ) ] ],
-		'dimensionValues' => [ [ 'value' => $history_start->modify( '-' . $offset . ' months' )->format( 'Ym' ) ] ],
+		'dimensionValues' => array_merge( [ [ 'value' => $history_start->modify( '-' . $offset . ' months' )->format( 'Ym' ) ] ], $has_mtd ? [ [ 'value' => 'complete' ] ] : [] ),
 	];
+}
+if ( $has_mtd ) {
+	foreach ( [ 'current_mtd' => [ $history_start, '125' ], 'previous_mtd' => [ $history_start->modify( '-12 months' ), '75' ] ] as $range => [ $date, $value ] ) {
+		$monthly_report['rows'][] = [ 'metricValues' => [ [ 'value' => $value ] ], 'dimensionValues' => [ [ 'value' => $date->format( 'Ym' ) ], [ 'value' => $range ] ] ];
+	}
 }
 $monthly_report['rowCount'] = count( $monthly_report['rows'] );
 $reports[] = $monthly_report;
@@ -273,12 +280,18 @@ foreach ( $body['requests'] as $request ) {
 expect_analytics( $today->modify( '-28 days' )->format( 'Y-m-d' ) === $body['requests'][0]['dateRanges'][0]['startDate'] && $today->modify( '-1 day' )->format( 'Y-m-d' ) === $body['requests'][0]['dateRanges'][0]['endDate'], 'Use the last 28 complete property-local days' );
 expect_analytics( $today->modify( '-56 days' )->format( 'Y-m-d' ) === $body['requests'][1]['dateRanges'][0]['startDate'] && $today->modify( '-29 days' )->format( 'Y-m-d' ) === $body['requests'][1]['dateRanges'][0]['endDate'], 'Comparison must be the adjacent previous 28 days' );
 expect_analytics( [ [ 'name' => 'yearMonth' ] ] === $body['requests'][4]['dimensions'] && [ [ 'name' => 'activeUsers' ] ] === $body['requests'][4]['metrics'], 'Request true monthly active users, not sums of daily or 28-day users' );
-expect_analytics( [ [ 'startDate' => $history_start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $history_start->modify( '-1 day' )->format( 'Y-m-d' ) ] ] === $body['requests'][4]['dateRanges'], 'Monthly request covers exactly 24 complete property-local months and excludes the partial current month' );
-expect_analytics( 24 === $body['requests'][4]['limit'] && true === $body['requests'][4]['keepEmptyRows'], 'Allow all 24 monthly rows and preserve reported zero counts' );
+expect_analytics( [ 'startDate' => $history_start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $history_start->modify( '-1 day' )->format( 'Y-m-d' ), 'name' => 'complete' ] === $body['requests'][4]['dateRanges'][0], 'Complete-month range remains distinct from month-to-date queries' );
+if ( $has_mtd ) {
+	expect_analytics( 3 === count( $body['requests'][4]['dateRanges'] ) && [ 'startDate' => $history_start->format( 'Y-m-d' ), 'endDate' => $today->modify( '-1 day' )->format( 'Y-m-d' ), 'name' => 'current_mtd' ] === $body['requests'][4]['dateRanges'][1], 'Request the ongoing month through yesterday as a separate named range' );
+	$prior_start = $history_start->modify( '-12 months' );
+	expect_analytics( $prior_start->modify( '+' . ( min( (int) $today->format( 'j' ) - 1, (int) $prior_start->format( 't' ) ) - 1 ) . ' days' )->format( 'Y-m-d' ) === $body['requests'][4]['dateRanges'][2]['endDate'], 'Prior-year month-to-date uses matching elapsed calendar days' );
+}
+expect_analytics( 26 === $body['requests'][4]['limit'] && true === $body['requests'][4]['keepEmptyRows'], 'Allow 24 complete-month rows plus two month-to-date values and preserve reported zero counts' );
 $key = invoke_analytics( 'report_key', 'site-1' );
 $good = get_option( $key );
 expect_analytics( 0.75 === $good['data']['current']['engagementRate'] && $good['data']['limited'], 'Keep rates and Google reporting limitations' );
-expect_analytics( 12 === count( $good['data']['history']['months'] ) && 130.0 === $good['data']['history']['months'][0]['current'] && 10.0 === $good['data']['history']['months'][0]['previous'], 'Align monthly history into twelve chronological year-over-year pairs' );
+expect_analytics( 13 === count( $good['data']['history']['months'] ) && 130.0 === $good['data']['history']['months'][0]['current'] && 10.0 === $good['data']['history']['months'][0]['previous'], 'Preserve twelve complete year-over-year pairs and append the ongoing month' );
+expect_analytics( true === $good['data']['history']['months'][12]['in_progress'] && ( $has_mtd ? 125.0 : null ) === $good['data']['history']['months'][12]['current'] && ( $has_mtd ? 75.0 : null ) === $good['data']['history']['months'][12]['previous'], 'The thirteenth pair is explicitly partial and uses independent current/prior month-to-date values' );
 expect_analytics( null === $good['data']['history']['months'][6]['current'] && 0.0 === $good['data']['history']['months'][7]['current'], 'Unreported months remain null while explicit zero months remain zero' );
 $leap_history = invoke_analytics( 'monthly_history', new DateTimeImmutable( '2025-03-01', new DateTimeZone( 'Europe/Amsterdam' ) ), [
 	[ 'dimensions' => [ '202402' ], 'metrics' => [ 'activeUsers' => 42.0 ] ],
@@ -286,6 +299,23 @@ $leap_history = invoke_analytics( 'monthly_history', new DateTimeImmutable( '202
 ] );
 expect_analytics( '2024-03-01' === $leap_history['period']['startDate'] && '2025-02-28' === $leap_history['period']['endDate'] && '2024-02-29' === $leap_history['previous_period']['endDate'], 'Annual ranges handle leap-year February correctly without month overflow' );
 expect_analytics( 84.0 === $leap_history['months'][11]['current'] && 42.0 === $leap_history['months'][11]['previous'], 'Compare February against February across a leap year' );
+$first_day_ranges = invoke_analytics( 'history_ranges', new DateTimeImmutable( '2026-01-01', new DateTimeZone( 'Europe/Amsterdam' ) ) );
+expect_analytics( 1 === count( $first_day_ranges ) && '2025-12-31' === $first_day_ranges[0]['endDate'], 'First-of-month queries omit invalid empty month-to-date ranges' );
+expect_analytics( null === $leap_history['months'][12]['current'] && null === $leap_history['months'][12]['previous'], 'The first day of a month shows missing partial data rather than copying last year totals' );
+$leap_ranges = invoke_analytics( 'history_ranges', new DateTimeImmutable( '2024-02-29', new DateTimeZone( 'Europe/Amsterdam' ) ) );
+expect_analytics( '2024-02-28' === $leap_ranges[1]['endDate'] && '2023-02-28' === $leap_ranges[2]['endDate'], 'Leap-day elapsed ranges compare valid same-day cutoffs' );
+$march_ranges = invoke_analytics( 'history_ranges', new DateTimeImmutable( '2026-03-31', new DateTimeZone( 'Europe/Amsterdam' ) ) );
+expect_analytics( '2025-03-30' === $march_ranges[2]['endDate'], 'End-of-month prior-year ranges do not overflow into another month' );
+$partial_rows = [
+	[ 'dimensions' => [ '202411', 'complete' ], 'metrics' => [ 'activeUsers' => 130.0 ] ],
+	[ 'dimensions' => [ '202511', 'current_mtd' ], 'metrics' => [ 'activeUsers' => 0.0 ] ],
+	[ 'dimensions' => [ '202411', 'previous_mtd' ], 'metrics' => [ 'activeUsers' => 75.0 ] ],
+];
+$partial_history = invoke_analytics( 'monthly_history', new DateTimeImmutable( '2025-11-18', new DateTimeZone( 'Europe/Amsterdam' ) ), $partial_rows );
+expect_analytics( 130.0 === $partial_history['months'][0]['current'] && 0.0 === $partial_history['months'][12]['current'] && 75.0 === $partial_history['months'][12]['previous'], 'A full month and the same prior-year partial month remain distinct, including confirmed zero partial traffic' );
+expect_analytics( '2025-11-17' === $partial_history['months'][12]['current_end'] && '2024-11-17' === $partial_history['months'][12]['previous_end'], 'Store exact month-to-date cutoffs for hover labels' );
+$partial_rows[] = $partial_rows[1];
+expect_analytics( is_wp_error( invoke_analytics( 'monthly_history', new DateTimeImmutable( '2025-11-18' ), $partial_rows ) ), 'Reject duplicate partial-month rows, even when the first value was zero' );
 $before = count( $GLOBALS['requests'] );
 $html = render_analytics();
 expect_analytics( str_contains( $html, '75.0%' ) && str_contains( $html, '2.50' ) && str_contains( $html, '&lt;script&gt;' ) && ! str_contains( $html, '/<script>' ), 'Render rates, fractional key events and escaped dimensions' );
@@ -311,12 +341,20 @@ expect_analytics( 7 === $chart_xpath->query( '//figure[@class="stuh-analytics-ch
 expect_analytics( '100.000' === $chart_xpath->query( '(//figure[@class="stuh-analytics-chart"])[1]//li[1]//*[local-name()="rect"][2]' )->item( 0 )->getAttribute( 'width' ) && '50.000' === $chart_xpath->query( '(//figure[@class="stuh-analytics-chart"])[1]//li[2]//*[local-name()="rect"][2]' )->item( 0 )->getAttribute( 'width' ), 'Current and previous bars share the same scale within each comparison chart' );
 expect_analytics( '75.000' === $chart_xpath->query( '(//figure[@class="stuh-analytics-chart"])[4]//li[1]//*[local-name()="rect"][2]' )->item( 0 )->getAttribute( 'width' ) && '50.000' === $chart_xpath->query( '(//figure[@class="stuh-analytics-chart"])[4]//li[2]//*[local-name()="rect"][2]' )->item( 0 )->getAttribute( 'width' ), 'Engagement charts use a fixed zero-to-100-percent scale' );
 expect_analytics( 1 === $chart_xpath->query( '(//figure)[1][contains(@class,"stuh-analytics-history")]' )->length, 'Year-over-year line chart appears above all existing charts' );
-expect_analytics( 2 === $chart_xpath->query( '//*[local-name()="g" and contains(@class,"stuh-analytics-series--current")]/*[local-name()="polyline"]' )->length && 1 === $chart_xpath->query( '//*[local-name()="g" and contains(@class,"stuh-analytics-series--previous")]/*[local-name()="polyline"]' )->length, 'Split the current line at missing months while preserving the complete prior-year line' );
-expect_analytics( 23 === $chart_xpath->query( '//*[local-name()="circle"]' )->length && 1 === $chart_xpath->query( '//*[local-name()="svg" and @role="img" and @aria-label="Active users - year over year"]' )->length, 'Render only reported data points and label the line chart accessibly' );
-expect_analytics( 12 === $chart_xpath->query( '//details[@class="stuh-analytics-monthly-data"]//tbody/tr' )->length && str_contains( $reports_html, 'No data reported' ), 'Expose exact values and missing data in a twelve-row accessible disclosure' );
+expect_analytics( 2 === $chart_xpath->query( '//*[local-name()="g" and contains(@class,"stuh-analytics-series--current")]/*[local-name()="polyline" and not(@class)]' )->length && 1 === $chart_xpath->query( '//*[local-name()="g" and contains(@class,"stuh-analytics-series--previous")]/*[local-name()="polyline" and not(@class)]' )->length, 'Complete lines still break at missing months without including the partial point' );
+expect_analytics( ( $has_mtd ? 25 : 23 ) === $chart_xpath->query( '//*[local-name()="circle"]' )->length && 1 === $chart_xpath->query( '//*[local-name()="svg" and @role="img" and @aria-label="Active users - year over year"]' )->length, 'Render only reported data points and label the line chart accessibly' );
+expect_analytics( ( $has_mtd ? 2 : 0 ) === $chart_xpath->query( '//*[local-name()="circle" and @class="stuh-analytics-in-progress"]' )->length && ( $has_mtd ? 2 : 0 ) === $chart_xpath->query( '//*[local-name()="polyline" and @class="stuh-analytics-in-progress"]' )->length, 'Only the current month points and their connecting segments use the lighter in-progress style' );
+expect_analytics( 13 === $chart_xpath->query( '//*[local-name()="g" and @class="stuh-analytics-month-hover" and @tabindex="0"]' )->length && 13 === $chart_xpath->query( '//*[local-name()="g" and @class="stuh-analytics-month-tooltip"]' )->length, 'Each month provides a broad hover and keyboard-focus target with both year values' );
+expect_analytics( str_contains( $reports_html, 'Month to date - in progress' ) && ( ! $has_mtd || str_contains( $reports_html, ': 125; ' ) ), 'Partial-month hover label contains its status and both numeric series' );
+expect_analytics( 13 === $chart_xpath->query( '//details[@class="stuh-analytics-monthly-data"]//tbody/tr' )->length && str_contains( $reports_html, 'No data reported' ), 'Expose all thirteen monthly pairs in the accessible disclosure' );
 expect_analytics( str_contains( $reports_html, '2.50' ) && str_contains( $reports_html, '/&lt;script&gt;' ) && ! str_contains( $reports_html, '/<script>' ), 'Charts preserve fractional key events and escape page-path labels' );
 expect_analytics( 12 === $chart_xpath->query( '//*[local-name()="svg" and @aria-hidden="true" and @focusable="false"]' )->length && 12 === $chart_xpath->query( '//div[@class="stuh-analytics-bar-label"]/strong' )->length, 'Every decorative bar has a visible label and exact value without requiring color or SVG accessibility' );
-if ( '--render' === ( $argv[1] ?? '' ) ) {
+if ( in_array( $argv[1] ?? '', [ '--render', '--render-demo' ], true ) ) {
+	if ( '--render-demo' === $argv[1] ) {
+		$GLOBALS['clients'] = [];
+		unset( $_GET['client_id'] );
+		$reports_html = render_analytics_page( 'render_reports' );
+	}
 	echo '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Analytics charts preview</title><style>body{margin:24px;background:#f0f0f1;color:#1d2327;font:13px/1.5 sans-serif}a{color:#2271b1}button,select{font:inherit}';
 	echo file_get_contents( dirname( __DIR__ ) . '/assets/css/client-sites.css' );
 	echo '</style>' . $reports_html . '</html>';
@@ -335,10 +373,65 @@ $reports_html = render_analytics_page( 'render_reports' );
 expect_analytics( str_contains( $reports_html, '<option value="site-1" selected>' ) && ! str_contains( $reports_html, '<option value="unmapped" selected>' ), 'Default selection prefers a mapped site over an unmapped first client' );
 $_GET['client_id'] = 'unmapped';
 $reports_html = render_analytics_page( 'render_reports' );
-expect_analytics( str_contains( $reports_html, '<option value="unmapped" selected>' ) && str_contains( $reports_html, 'No Analytics property is connected' ) && ! str_contains( $reports_html, '<svg' ), 'Explicit unmapped selections do not display a different client report' );
+expect_analytics( ! str_contains( $reports_html, '<option value="unmapped"' ) && str_contains( $reports_html, 'No Analytics property is connected' ) && ! str_contains( $reports_html, '<svg' ), 'Unmapped sites are excluded from the dropdown and direct links do not display a different client report' );
 unset( $_GET['client_id'] );
+$original_mappings = get_option( 'stuh_google_mappings' );
+$dropdown_mappings = $original_mappings;
+$GLOBALS['clients'] = [
+	[ 'id' => 'zulu', 'site_url' => 'http://Zulu.example' ],
+	[ 'id' => 'pending', 'site_url' => 'https://pending.example' ],
+	[ 'id' => 'alpha', 'site_url' => 'https://alpha.example' ],
+	[ 'id' => 'obsolete', 'site_url' => 'https://obsolete.example' ],
+	[ 'id' => 'old-account', 'site_url' => 'https://old.example' ],
+	[ 'id' => 'unmapped', 'site_url' => 'https://unmapped.example' ],
+	STUH_Plugin::get_clients()[1],
+];
+foreach ( [ 'zulu', 'alpha', 'pending', 'obsolete', 'old-account' ] as $id ) {
+	$dropdown_mappings[ $id ] = $mapping;
+	$dropdown_record = $good;
+	if ( 'alpha' === $id ) {
+		$dropdown_record['data']['current']['activeUsers'] = 0.0;
+	}
+	if ( 'zulu' === $id ) {
+		$dropdown_record['error'] = 'Refresh failed';
+	}
+	if ( 'pending' === $id ) {
+		unset( $dropdown_record['data'] );
+	}
+	if ( 'obsolete' === $id ) {
+		$dropdown_record['fingerprint'] = 'obsolete';
+	}
+	if ( 'old-account' === $id ) {
+		$dropdown_mappings[ $id ]['connection_id'] = 'another-connection';
+	}
+	update_option( invoke_analytics( 'report_key', $id ), $dropdown_record );
+}
+update_option( 'stuh_google_mappings', $dropdown_mappings );
+$dropdown_html = render_analytics_page( 'render_reports' );
+preg_match_all( '#<option value="([^"]+)"[^>]*>([^<]+)</option>#', $dropdown_html, $dropdown_options, PREG_SET_ORDER );
+expect_analytics( [ 'alpha', 'site-1', 'zulu' ] === array_column( $dropdown_options, 1 ), 'Dropdown sorts available reports alphabetically regardless of URL scheme and excludes pending, obsolete, unmapped and old-connection sites' );
+expect_analytics( [ 'alpha.example', 'client.example', 'Zulu.example' ] === array_column( $dropdown_options, 2 ), 'Dropdown labels omit HTTP and HTTPS schemes' );
+expect_analytics( str_contains( $dropdown_html, '<option value="alpha" selected>' ), 'Default selection is the first alphabetical report and includes confirmed zero traffic' );
+foreach ( [ 'zulu', 'alpha', 'pending', 'obsolete', 'old-account' ] as $id ) {
+	delete_option( invoke_analytics( 'report_key', $id ) );
+}
+update_option( 'stuh_google_mappings', [] );
+$demo_options = $GLOBALS['options'];
+$demo_scheduled = $GLOBALS['scheduled'] ?? [];
+$demo_requests = count( $GLOBALS['requests'] );
+$demo_html = render_analytics_page( 'render_reports' );
+expect_analytics( str_contains( $demo_html, 'Demo data - no client Analytics reports available.' ) && str_contains( $demo_html, 'demo.example (Demo)' ) && str_contains( $demo_html, '<select id="stuh-analytics-client" disabled>' ), 'Sites without available reports show an explicitly labeled dummy site' );
+expect_analytics( str_contains( $demo_html, 'stuh-analytics-line-chart' ) && 7 === substr_count( $demo_html, '<figure class="stuh-analytics-chart">' ) && str_contains( $demo_html, 'Month to date - in progress' ), 'Demo includes the year-over-year chart, hover values, metric comparisons and rankings' );
+expect_analytics( ! str_contains( $demo_html, '<form' ) && ! str_contains( $demo_html, 'Refresh Analytics</button>' ) && ! str_contains( $demo_html, 'Manage this site mapping' ), 'Dummy reports have no actionable fake client or mapping controls' );
+expect_analytics( $demo_options === $GLOBALS['options'] && $demo_scheduled === ( $GLOBALS['scheduled'] ?? [] ) && $demo_requests === count( $GLOBALS['requests'] ), 'Rendering a demo never persists fake clients, reports or mappings, queues work, or calls Google' );
+update_option( 'stuh_google_mappings', $original_mappings );
 $GLOBALS['clients'] = [];
-expect_analytics( str_contains( render_analytics_page( 'render_reports' ), 'No client sites registered.' ), 'Report overview has an explicit empty state' );
+expect_analytics( str_contains( render_analytics_page( 'render_reports' ), 'demo.example (Demo)' ), 'An installation without registered clients still shows demo charts' );
+$saved_connection = get_option( 'stuh_google_connection' );
+delete_option( 'stuh_google_connection' );
+$offline_demo = render_analytics_page( 'render_reports' );
+expect_analytics( str_contains( $offline_demo, 'demo.example (Demo)' ) && str_contains( $offline_demo, 'Connect Google in Updater Host' ), 'Unconnected installations show demo data without concealing the connection status' );
+update_option( 'stuh_google_connection', $saved_connection );
 unset( $GLOBALS['clients'] );
 $_GET['client_id'] = 'missing-site';
 try {
@@ -369,13 +462,19 @@ update_option( $key, $chart_record );
 $_GET = [ 'page' => 'stuh-analytics', 'client_id' => 'site-1' ];
 $zero_html = render_analytics_page( 'render_reports' );
 expect_analytics( 10 === substr_count( $zero_html, 'width="0.000"' ) && 2 === substr_count( $zero_html, 'No data returned for this hostname and period.' ), 'Zero totals produce empty bars without division errors and rankings have explicit empty states' );
+expect_analytics( ! str_contains( $zero_html, 'demo.example' ), 'Real zero-traffic reports must not be replaced by demo data' );
 $legacy_record = $good;
+$legacy_record['data']['history']['months'] = array_slice( $legacy_record['data']['history']['months'], 0, 12 );
+unset( $legacy_record['data']['history']['includes_current'] );
+update_option( $key, $legacy_record );
+$legacy_html = render_analytics_page( 'render_reports' );
+expect_analytics( str_contains( $legacy_html, 'Refresh Analytics to include the ongoing month.' ) && 12 === substr_count( $legacy_html, 'class="stuh-analytics-month-hover"' ), 'Older twelve-point caches remain usable and prompt for the new partial-month data' );
 unset( $legacy_record['data']['history'] );
 update_option( $key, $legacy_record );
 expect_analytics( str_contains( render_analytics_page( 'render_reports' ), 'Refresh Analytics to load yearly data.' ), 'Pre-upgrade cached reports explain how to load history instead of fabricating annual data' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ) ] );
 $pending_html = render_analytics_page( 'render_reports' );
-expect_analytics( str_contains( $pending_html, 'No successful report yet.' ) && ! str_contains( $pending_html, '<svg' ), 'A pending report must not render success-shaped empty charts' );
+expect_analytics( str_contains( $pending_html, 'Demo data - no client Analytics reports available.' ) && str_contains( $pending_html, 'demo.example' ), 'If all real reports are pending, show explicitly marked demo data rather than fictitious client counts' );
 unset( $GLOBALS['scheduled']['site-1'] );
 update_option( $key, $good );
 $_GET = [];
@@ -383,7 +482,7 @@ $_GET = [];
 // The reused Analytics column reports the connected property, users and signed change.
 $html = render_analytics_column();
 expect_analytics( str_contains( $html, '>10</a>' ) && str_contains( $html, 'stuh-analytics-change--up">+100.0%' ), 'Column shows 28-day active users and a positive change class' );
-expect_analytics( str_contains( $html, '#stuh-analytics' ) && str_contains( $html, 'Active users (28 days)' ), 'Column links to the report and labels the reporting window' );
+expect_analytics( str_contains( $html, 'page=stuh-analytics' ) && str_contains( $html, 'client_id=site-1' ) && ! str_contains( $html, '#stuh-analytics' ) && str_contains( $html, 'Active users (28 days)' ), 'Available counts link to the Analytics page with this client selected and label the reporting window' );
 expect_analytics( str_contains( $html, 'class="stuh-analytics-users"' ), 'User count has its own black-link style' );
 expect_analytics( [ 'site-1' => 10.0, 'unmapped' => null ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ], [ 'id' => 'unmapped' ] ] ), 'Sort values use numeric active users and null for unmapped clients' );
 $column_record = $good;
@@ -399,6 +498,7 @@ expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-chang
 $column_record['data']['previous']['activeUsers'] = 0.0;
 update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'stuh-analytics-change--neutral">0.0%' ), 'Two valid empty periods show zero change' );
+expect_analytics( str_contains( render_analytics_column(), 'page=stuh-analytics' ), 'Zero-traffic reports still link to the Analytics dashboard' );
 expect_analytics( [ 'site-1' => 0.0 ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ] ] ), 'Zero active users remains a sortable count rather than missing data' );
 $column_record['data']['current']['activeUsers'] = 5.0;
 update_option( $key, $column_record );
@@ -413,6 +513,7 @@ update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'Stale data' ), 'Old cached reports are explicitly stale even without a failed refresh' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ) ] );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'A connected property without data is pending, not zero' );
+expect_analytics( str_contains( render_analytics_column(), '#stuh-analytics' ), 'Pending reports retain the client details link' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ), 'error' => 'Quota exceeded' ] );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report failed' ), 'A failed first report must not appear merely pending' );
 $column_record['fingerprint'] = 'obsolete-mapping';
@@ -428,6 +529,7 @@ expect_analytics( [ 'site-1' => null ] === STUH_Analytics::column_sort_values( [
 update_option( 'stuh_google_mappings', [] );
 expect_analytics( str_contains( render_analytics_column(), 'Not connected' ), 'Unmapped sites explicitly show not connected' );
 expect_analytics( str_contains( render_analytics_column(), 'class="stuh-analytics-disconnected"' ), 'Disconnected link has its own light-grey style' );
+expect_analytics( str_contains( render_analytics_column(), '#stuh-analytics' ) && ! str_contains( render_analytics_column(), 'page=stuh-analytics' ), 'Unconnected sites retain the existing client details link' );
 update_option( 'stuh_google_mappings', $original_mappings );
 update_option( $key, $good );
 expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Column rendering must never call Google' );
