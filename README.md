@@ -24,6 +24,86 @@ client reports a login URL.
 
 Run the standalone view regression checks with `php tests/client-details.php`.
 
+## Gripp / FMP
+
+Open **Updater Host → Settings → Gripp** and enter a Gripp API v3 token.
+Create the token in Gripp with an API role that has **read** access to umbrella
+projects (`umbrellaproject`, **Projecten / Retainers**) and linked orders
+(`project`, **Opdrachten**);
+write permissions are not needed. Connecting verifies project access before
+replacing an existing connection. No Gripp account URL is needed: the integration
+uses Gripp's fixed HTTPS API endpoint.
+
+**Updater Host → FMP** shows Gripp's **Projecten / Retainers** list, including
+archived umbrella projects, with their number, name, start date, deadline and
+archive status, plus budget, monthly allowance, used and remaining budget,
+allowance to date, and budget schedule.
+Project numbers open the corresponding umbrella project in
+**switch.gripp.com** in a new tab, using the application's encoded navigation
+fragment and the internal record ID (for example, number 1002 is record 2).
+The link retains the project-view routing state, not unrelated grid/calendar
+filters from a copied browser URL.
+On each page, **Current projects** and **Past deadline projects** are displayed
+in separate tables. A deadline before today in the WordPress timezone moves a
+project to the latter, even if it is over budget or lacks budget/start-date data.
+Projects due today or without a deadline remain current. Past-deadline projects
+are assumed finished for this view only; their Gripp status is not changed.
+Use WordPress **Screen Options** at the top of FMP to show or hide columns.
+Preferences are saved per administrator and apply to both tables together.
+The **Euros / Hours** selector in **Screen Options** converts all budget figures in both tables at
+**EUR 90 per hour** (EUR 6,480 = 72 hours; EUR 540/month = 6 hours/month).
+Hours are budget equivalents, not logged time, and are displayed to two decimal
+places. Calculations and cached data stay in cents; colors and schedule statuses
+are unchanged. Click **Apply** to save the unit per administrator. This saved
+preference applies to both tables, including after pagination, refresh and later
+visits, and takes precedence over unit parameters in older URLs.
+Dashboard rows use `umbrellaproject.get`; `project.get` is used only to total
+orders linked to the displayed umbrella projects.
+Old cached ordinary orders and reports without budget data are ignored automatically;
+an existing connection does not need to be replaced if its API role already
+has read access to both resources.
+Gripp date objects are displayed as calendar dates, preserving
+the date supplied by Gripp without timezone conversion. Gripp's zero-date
+placeholder is treated as an unset date.
+Use **Previous projects / Next projects** to browse every
+project, in stable ID order, with up to 250 projects per page. The current page
+is cached for five minutes; **Refresh projects** reloads it immediately.
+API/authentication/rate-limit failures are shown explicitly, not as empty lists.
+
+Budget used is the sum of **all linked order totals excluding VAT**, including
+archived orders and negative credit values. It represents committed order value,
+not logged hours, invoices or completed work. Every linked-order page is loaded;
+failed or invalid pages produce an error rather than a partial or zero total.
+No linked orders means zero used. Budget left is total budget minus used value;
+overruns remain visible as negative amounts. Monetary values are calculated in
+cents and displayed in EUR using the WordPress locale.
+
+The start date and deadline are inclusive. Full calendar months count as one;
+partial months count as covered days divided by days in that calendar month.
+For example, January 1 through December 31 is 12 months:
+**EUR 6,480 / 12 = EUR 540 per month**. Allowance to date uses the same proration,
+through today in the WordPress timezone, capped between zero and the total budget.
+**Budget left to date** is allowance to date minus used budget: positive amounts
+are green, negative amounts red, and zero or unavailable amounts stay neutral.
+Monthly amounts are rounded only for display; cumulative allowances use the
+unrounded rate to avoid rounding drift.
+
+Budget schedule compares used value with allowance to date: ahead, behind or on
+schedule. Over-budget, not-started and past-deadline projects are labeled
+separately. This indicates **budget pacing**, not delivery progress.
+Missing budgets, missing dates or deadlines before the start date explicitly
+disable schedule calculations; an explicitly zero budget remains valid.
+
+Only host administrators can manage the connection or view FMP. The API token
+is encrypted using AES-256-GCM in a non-autoloaded WordPress option, using the
+host's WordPress authentication salts. PHP OpenSSL is required. Keep those salts
+stable; after rotating them, reconnect Gripp. Tokens are never prefilled into
+forms or sent to client sites. Disconnecting removes the locally stored token
+and cached project page; it does not revoke the token in Gripp.
+
+API reference: <https://api.gripp.com/public/api3.php>.
+Run the standalone regression checks with `php tests/gripp.php`.
+
 ## Google Analytics (GA4)
 
 **Updater Host → Settings → Google Analytics** connects one agency Google account using

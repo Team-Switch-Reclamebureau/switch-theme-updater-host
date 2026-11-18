@@ -226,6 +226,8 @@ expect_view( 1 === $settings_xpath->query( '//h1' )->length && 1 === $settings_x
 expect_view( 1 === $settings_xpath->query( '//section[@id="stuh-google-settings"]//form/input[@name="operation" and @value="connect"]' )->length, 'Settings page includes the Google connection form' );
 expect_view( 0 === $settings_xpath->query( '//form//form' )->length, 'Embedded Google settings forms are not nested in the existing settings form' );
 expect_view( 1 === $settings_xpath->query( '//form/input[@name="stuh_action" and @value="save_settings"]' )->length, 'Existing host settings form remains available' );
+expect_view( 1 === $settings_xpath->query( '//section[@id="stuh-gripp-settings"]/h2[text()="Gripp"]' )->length, 'Gripp connection controls are embedded in Settings' );
+expect_view( 1 === $settings_xpath->query( '//section[@id="stuh-gripp-settings"]//form/input[@name="operation" and @value="connect"]' )->length, 'Settings includes the separate Gripp connection form' );
 
 $_GET['client_id'] = 'site-1';
 $GLOBALS['transients']['stuh_pending_updates_1'] = [ 'type' => 'success', 'message' => 'Updates installed' ];
