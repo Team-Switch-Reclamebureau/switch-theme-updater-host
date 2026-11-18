@@ -26,6 +26,7 @@ function register_activation_hook( ...$args ) {}
 function plugin_basename( $file ) { return basename( $file ); }
 function plugin_dir_path( $file ) { return dirname( $file ) . '/'; }
 function current_user_can( $capability ) { return $GLOBALS['authorized'] ?? true; }
+function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function wp_die( $message ) { throw new RuntimeException( $message ); }
 function wp_unslash( $value ) { return $value; }
 function sanitize_text_field( $value ) { return trim( strip_tags( $value ) ); }

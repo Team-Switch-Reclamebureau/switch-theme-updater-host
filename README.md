@@ -24,6 +24,96 @@ client reports a login URL.
 
 Run the standalone view regression checks with `php tests/client-details.php`.
 
+## Google Analytics (GA4)
+
+**Updater Host → Google Analytics** connects one agency Google account using
+read-only OAuth. Client sites do not receive Google credentials and do not need
+a client-plugin update for this initial integration. Tag detection and Google
+Tag Manager configuration are not included.
+
+### Server configuration
+
+Enable the **Google Analytics Data API** and **Google Analytics Admin API** in a
+Google Cloud project. Configure the Google Auth Platform audience and the
+`https://www.googleapis.com/auth/analytics.readonly` scope. An Internal audience
+only permits accounts in the project's Workspace organization, although those
+accounts may have access to externally owned client properties.
+
+Create a **Web application** OAuth client and register the exact redirect URI
+shown on the plugin's Google Analytics page. For the current host this is:
+
+```text
+https://teamswitch.dev/wp-admin/admin-post.php?action=stuh_google_oauth_callback
+```
+
+Configure these values in the host's `wp-config.php`, before WordPress loads, or
+as real environment variables available to PHP:
+
+```php
+define( 'ANALYTICS_CLIENT_ID', 'your-google-oauth-client-id' );
+define( 'ANALYTICS_CLIENT_SECRET', 'your-google-oauth-client-secret' );
+define( 'STUH_GOOGLE_TOKEN_KEY', 'your-stable-random-token-encryption-key' );
+```
+
+Generate a token key with `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'`.
+Keep that key stable, back it up securely, and keep it outside the database.
+PHP OpenSSL and an HTTPS admin URL are required. Tokens are authenticated and
+encrypted with AES-256-GCM in a non-autoloaded WordPress option. Changing the
+key without restoring the original requires disconnecting and reconnecting.
+Constants take precedence over environment variables.
+
+WordPress and this plugin do **not** load `.env` files. Git-ignoring such a file
+does not prevent HTTP access to it: do not deploy secrets in a publicly served
+plugin directory. Do not commit credentials. `ANALYTICS_VIEW_ID` is not used:
+GA4 reporting uses a numeric **property ID**, selected per client, not a legacy
+Universal Analytics view ID or a `G-...` measurement ID.
+
+### Connecting and mapping
+
+1. Deploy the updated plugin, including its `includes` directory.
+2. Open **Updater Host → Google Analytics → Connect Google** as a host
+   administrator, and authorize an account with at least Viewer access to the
+   required GA4 properties.
+3. Click **Load / refresh accessible properties**. This follows all account
+   summary pages and caches the accessible property list for one hour.
+4. Open a client's details, select its GA4 property, and confirm the exact
+   hostname recorded by GA4, without a scheme, port, or path.
+5. Click **Save mapping and refresh**, then reload after WP-Cron runs.
+
+Every report is filtered to the selected hostname, even when the property
+contains other sites. `example.com` and `www.example.com` are separate values.
+This first version reports one hostname per client; it does not automatically
+combine domains, select a stream, install tracking, or validate consent.
+
+The dashboard shows active users, sessions, page views, engagement rate and key
+events for the last 28 complete days and the preceding 28 days, using the
+property timezone captured when saving the mapping. It also shows the top ten
+pages and traffic channels for the latest period. Fractional key-event counts
+are retained. Google processing delays, consent settings, sampling and
+thresholding can affect the figures; reported limitations are displayed.
+Re-save the mapping if the property's timezone changes.
+
+Opening a mapped client page queues a background refresh if its successful
+report is older than four hours, with a 15-minute retry delay after failures.
+The page itself never calls Google. **Refresh Analytics** queues an immediate
+retry. WP-Cron must be functioning; low-traffic hosts should run it with a real
+server scheduler. Failed refreshes preserve the last successful report and
+clearly mark it stale, rather than displaying zero traffic. Until the first
+successful report, the panel explicitly says no report is available.
+
+Only administrators with `manage_options` can connect Google, map properties
+or view reports. OAuth uses a short-lived, user-bound, single-use state and
+PKCE. Reconnecting requires confirming existing mappings again before showing
+reports from the new connection. Disconnecting attempts Google token revocation
+and removes local credentials, mappings and reports; an unconfirmed revocation
+is surfaced with instructions to remove the app in Google account permissions.
+Removing a mapping or deleting its client removes its cached report and queued
+refresh too.
+
+Run `php tests/analytics.php` and `php tests/client-details.php` for standalone
+regression checks. Google HTTP responses are mocked; a live OAuth connection
+and a report from an authorized GA4 property still need deployment validation.
+
 ## Batched version checks
 
 New clients use authenticated `POST /wp-json/stu-host/v1/versions`. Authentication

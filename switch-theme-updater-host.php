@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.8.1
+ * Version: 0.9.0
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -3303,6 +3303,10 @@ class STUH_Plugin {
 
 			case 'delete_client':
 				$id      = sanitize_text_field( $_POST['client_id'] ?? '' );
+				$analytics_cleanup = STUH_Analytics::forget_client( $id );
+				if ( is_wp_error( $analytics_cleanup ) ) {
+					wp_die( esc_html( $analytics_cleanup->get_error_message() ) );
+				}
 				wp_clear_scheduled_hook( 'stuh_check_client_ssl', [ $id ] );
 				$clients = array_values( array_filter( $clients, fn( $c ) => $c['id'] !== $id ) );
 				self::save_clients( $clients );
@@ -5413,6 +5417,7 @@ class STUH_Plugin {
 				</tbody>
 			</table>
 			<?php if ( $is_detail ) : ?>
+			<?php STUH_Analytics::render_client_panel( $clients[0] ); ?>
 			<script>
 			document.querySelector('.stuh-client-details').addEventListener('click', function(event) {
 				var action = event.target.closest('[data-stuh-editor]');
@@ -6215,7 +6220,9 @@ class STUH_GitHubClient {
 }
 
 // Bootstrap.
+require_once __DIR__ . '/includes/class-stuh-analytics.php';
 new STUH_Plugin();
+STUH_Analytics::init();
 
 // Settings link in plugins list.
 add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), function ( $links ) {
