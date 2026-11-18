@@ -1,3 +1,152 @@
+.stuh-analytics-history {
+	margin: 20px 0;
+}
+
+.stuh-analytics-line-scroll {
+	max-width: 100%;
+	overflow-x: auto;
+}
+
+.stuh-analytics-line-chart {
+	display: block;
+	width: 100%;
+	min-width: 640px;
+}
+
+.stuh-analytics-line-chart text {
+	fill: #50575e;
+	font-size: 14px;
+}
+
+.stuh-analytics-gridline {
+	stroke: #dcdcde;
+}
+
+.stuh-analytics-series {
+	fill: #2271b1;
+	stroke: #2271b1;
+}
+
+.stuh-analytics-series--previous {
+	fill: #646970;
+	stroke: #646970;
+}
+
+.stuh-analytics-series polyline {
+	fill: none;
+	stroke-width: 3;
+	stroke-linejoin: round;
+}
+
+.stuh-analytics-series--previous polyline {
+	stroke-dasharray: 7 5;
+}
+
+.stuh-analytics-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 24px;
+}
+
+.stuh-analytics-legend li::before {
+	display: inline-block;
+	width: 24px;
+	margin-right: 6px;
+	border-top: 3px solid #2271b1;
+	content: '';
+	vertical-align: middle;
+}
+
+.stuh-analytics-legend .stuh-analytics-legend--previous::before {
+	border-color: #646970;
+	border-top-style: dashed;
+}
+
+.stuh-analytics-monthly-data {
+	margin-top: 12px;
+}
+
+.stuh-analytics-monthly-data summary {
+	cursor: pointer;
+}
+
+.stuh-analytics-selector {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 20px 0;
+}
+
+.stuh-analytics-selector select {
+	max-width: 100%;
+}
+
+.stuh-analytics-charts {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+	gap: 16px;
+	margin: 16px 0;
+}
+
+.stuh-analytics-charts--rankings {
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+}
+
+.stuh-analytics-chart {
+	min-width: 0;
+	margin: 0;
+	padding: 16px;
+	border: 1px solid #dcdcde;
+	border-radius: 6px;
+	background: #fff;
+}
+
+.stuh-analytics-chart h3 {
+	margin: 0 0 16px;
+}
+
+.stuh-analytics-bars {
+	list-style: none;
+	margin: 0;
+}
+
+.stuh-analytics-bars li + li {
+	margin-top: 16px;
+}
+
+.stuh-analytics-bar-label {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 12px;
+	margin-bottom: 6px;
+}
+
+.stuh-analytics-bar-label span {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.stuh-analytics-bar-label strong {
+	flex-shrink: 0;
+}
+
+.stuh-analytics-bar {
+	display: block;
+	width: 100%;
+	height: 12px;
+	fill: #2271b1;
+}
+
+.stuh-analytics-bar--previous {
+	fill: #8c8f94;
+}
+
+.stuh-analytics-bar .stuh-analytics-bar-track {
+	fill: #f0f0f1;
+}
+
 .stuh-client-sites a.stuh-analytics-disconnected {
 	color: #a7aaad;
 }

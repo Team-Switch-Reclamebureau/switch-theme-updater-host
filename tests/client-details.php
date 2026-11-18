@@ -9,6 +9,11 @@ define( 'MINUTE_IN_SECONDS', 60 );
 define( 'STUH_CLONE_ARTIFACT_DIR', sys_get_temp_dir() );
 
 class ViewRedirect extends RuntimeException {}
+class WP_Error {
+	public function __construct( private string $code, private string $message, private $data = null ) {}
+	public function get_error_code() { return $this->code; }
+	public function get_error_message() { return $this->message; }
+}
 function __( $text, $domain = '' ) { return $text; }
 function _n( $single, $plural, $count, $domain = '' ) { return 1 === $count ? $single : $plural; }
 function esc_html( $value ) { return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' ); }
@@ -77,6 +82,8 @@ function wp_date( $format, $time, $zone = null ) { return gmdate( $format, $time
 function wp_timezone() { return new DateTimeZone( 'UTC' ); }
 function human_time_diff( $from, $to ) { return '1 hour'; }
 function selected( $selected, $value ) { if ( $selected === $value ) { echo 'selected'; } }
+function checked( $value ) { if ( $value ) { echo 'checked'; } }
+function get_plugin_data( $file ) { return [ 'Version' => 'test' ]; }
 function submit_button( $label ) { echo '<button type="submit">' . esc_html( $label ) . '</button>'; }
 
 require dirname( __DIR__ ) . '/switch-theme-updater-host.php';
@@ -210,6 +217,15 @@ foreach ( array_keys( $mappings ) as $id ) {
 }
 unset( $GLOBALS['options']['stuh_google_connection'], $GLOBALS['options']['stuh_google_mappings'], $_GET['orderby'], $_GET['order'] );
 $GLOBALS['options'][ STUH_OPTION_CLIENTS ] = $original_clients;
+
+ob_start();
+( new STUH_Plugin() )->render_settings_page();
+$settings = ob_get_clean();
+$settings_xpath = view_xpath( $settings );
+expect_view( 1 === $settings_xpath->query( '//h1' )->length && 1 === $settings_xpath->query( '//section[@id="stuh-google-settings"]/h2[text()="Google Analytics"]' )->length, 'Google controls are embedded in the existing Settings page below its single page heading' );
+expect_view( 1 === $settings_xpath->query( '//section[@id="stuh-google-settings"]//form/input[@name="operation" and @value="connect"]' )->length, 'Settings page includes the Google connection form' );
+expect_view( 0 === $settings_xpath->query( '//form//form' )->length, 'Embedded Google settings forms are not nested in the existing settings form' );
+expect_view( 1 === $settings_xpath->query( '//form/input[@name="stuh_action" and @value="save_settings"]' )->length, 'Existing host settings form remains available' );
 
 $_GET['client_id'] = 'site-1';
 $GLOBALS['transients']['stuh_pending_updates_1'] = [ 'type' => 'success', 'message' => 'Updates installed' ];

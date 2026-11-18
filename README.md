@@ -26,7 +26,7 @@ Run the standalone view regression checks with `php tests/client-details.php`.
 
 ## Google Analytics (GA4)
 
-**Updater Host → Google Analytics** connects one agency Google account using
+**Updater Host → Settings → Google Analytics** connects one agency Google account using
 read-only OAuth. Client sites do not receive Google credentials and do not need
 a client-plugin update for manual property mapping. Clients that report
 `gtm_container_ids` can also be mapped automatically through read-only access
@@ -50,7 +50,7 @@ only permits accounts in the project's Workspace organization, although those
 accounts may have access to externally owned client properties.
 
 Create a **Web application** OAuth client and register the exact redirect URI
-shown on the plugin's Google Analytics page. For the current host this is:
+shown in the Settings page's Google Analytics section. For the current host this is:
 
 ```text
 https://teamswitch.dev/wp-admin/admin-post.php?action=stuh_google_oauth_callback
@@ -81,7 +81,7 @@ Universal Analytics view ID or a `G-...` measurement ID.
 ### Connecting and mapping
 
 1. Deploy the updated plugin, including its `includes` directory.
-2. Open **Updater Host → Google Analytics → Connect Google** as a host
+2. Open **Updater Host → Settings → Google Analytics → Connect Google** as a host
    administrator, and authorize an account with at least Viewer access to the
    required GA4 properties.
 3. Click **Load / refresh accessible properties**. This follows all account
@@ -102,6 +102,42 @@ pages and traffic channels for the latest period. Fractional key-event counts
 are retained. Google processing delays, consent settings, sampling and
 thresholding can affect the figures; reported limitations are displayed.
 Re-save the mapping if the property's timezone changes.
+
+**Updater Host → Google Analytics** is the reporting page. A client site
+dropdown selects a site's cached report, defaulting to the first mapped site
+(or the first registered site if none are mapped). Five bar charts compare
+active users, sessions, page views, engagement rate, and key events across the
+two 28-day periods. Each metric has its own scale; engagement uses a fixed
+0-100% scale. Horizontal ranking charts show top pages and traffic channels.
+All bars have visible text labels and exact values, including fractional key
+events.
+
+Above those charts, a **monthly active users** line graph compares the last
+12 complete calendar months against the preceding 12, aligned by month. For
+example, during November 2026 it compares November 2025-October 2026 with
+November 2024-October 2025. All boundaries use the mapped property's timezone;
+the partial current month is excluded. The query retrieves `activeUsers` by
+`yearMonth` over 24 months as the fifth report in the existing Google batch.
+These are monthly unique-user counts, not sums of daily users or yearly totals.
+
+Both lines share a zero-based vertical scale. The latest period is solid blue
+and the prior period dashed grey. Reported zeroes are plotted; omitted months
+are gaps, not assumed zero traffic. New properties, tracking changes and Google
+reporting restrictions can limit older data. A **View monthly values**
+disclosure exposes the exact months and counts (or **No data reported**) for
+screen readers and keyboard users. On narrow screens the line graph can be
+scrolled horizontally inside its card.
+
+The monthly history shares the existing report cache, refresh action and stale
+data handling. After deploying this feature, use **Refresh Analytics** once to
+populate history for an already-cached report; until then the page explicitly
+states that annual data has not been fetched. These are aggregate monthly and
+28-day comparison charts, not daily time-series charts.
+The client details page retains its 28-day data in tables. Refresh actions return to the
+selected report and queue work through WP-Cron, never a synchronous Google
+request. Connection, property-list refresh, and bulk discovery controls live
+in Settings; per-site mapping controls remain on client details. Existing
+connections and mappings do not need to be recreated for this navigation change.
 
 The existing **Analytics** column now shows the property connection status,
 or the cached active users for the last 28 complete days followed by the change
@@ -137,7 +173,7 @@ discovery.
 Authenticated telemetry, connecting Google, or opening an unmapped client
 details page can queue a discovery job. These paths make no discovery API
 requests themselves. Administrators can also use **Discover unmapped client
-sites from GTM** on the Google Analytics page or **Retry automatic mapping**
+sites from GTM** in Settings under Google Analytics or **Retry automatic mapping**
 on a client details page. WP-Cron performs the actual lookups:
 
 1. Look up each reported GTM container and read its **published version**, not

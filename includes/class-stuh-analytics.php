@@ -20,7 +20,7 @@ final class STUH_Analytics {
 	}
 
 	public static function register_menu(): void {
-		add_submenu_page( 'stuh', __( 'Google Analytics', 'stuh' ), __( 'Google Analytics', 'stuh' ), 'manage_options', 'stuh-analytics', [ self::class, 'render_settings' ] );
+		add_submenu_page( 'stuh', __( 'Google Analytics', 'stuh' ), __( 'Google Analytics', 'stuh' ), 'manage_options', 'stuh-analytics', [ self::class, 'render_reports' ] );
 	}
 
 	private static function config( string $name ): string {
@@ -47,7 +47,7 @@ final class STUH_Analytics {
 
 	private static function page_url( string $client_id = '' ): string {
 		return '' === $client_id
-			? admin_url( 'admin.php?page=stuh-analytics' )
+			? admin_url( 'admin.php?page=stuh-settings#stuh-google-settings' )
 			: add_query_arg( [ 'page' => 'stuh', 'client_id' => $client_id ], admin_url( 'admin.php' ) );
 	}
 
@@ -63,7 +63,8 @@ final class STUH_Analytics {
 
 	private static function finish( string $message, bool $error = false, string $client_id = '' ): void {
 		set_transient( 'stuh_google_notice_' . get_current_user_id(), [ 'message' => $message, 'error' => $error ], 5 * MINUTE_IN_SECONDS );
-		wp_safe_redirect( self::page_url( $client_id ) );
+		$url = '' !== $client_id && 'analytics' === self::input( $_POST, 'return_page' ) ? self::reports_url( $client_id ) : self::page_url( $client_id );
+		wp_safe_redirect( $url );
 		exit;
 	}
 
@@ -79,7 +80,7 @@ final class STUH_Analytics {
 	private static function connection() {
 		$stored = get_option( self::CONNECTION, '' );
 		if ( '' === $stored ) {
-			return new WP_Error( 'google_disconnected', __( 'Connect Google in Updater Host > Google Analytics.', 'stuh' ) );
+			return new WP_Error( 'google_disconnected', __( 'Connect Google in Updater Host > Settings > Google Analytics.', 'stuh' ) );
 		}
 		$error = self::configuration_error();
 		if ( $error ) {
@@ -777,6 +778,37 @@ final class STUH_Analytics {
 		return $result;
 	}
 
+	private static function monthly_history( DateTimeImmutable $month_start, array $rows ) {
+		$months = [];
+		$allowed = [];
+		for ( $offset = 12; $offset >= 1; $offset-- ) {
+			$current = $month_start->modify( '-' . $offset . ' months' );
+			$previous = $month_start->modify( '-' . ( $offset + 12 ) . ' months' );
+			$months[] = [ 'month' => $current->format( 'Y-m' ), 'previous_month' => $previous->format( 'Y-m' ), 'current' => null, 'previous' => null ];
+			$allowed[ $current->format( 'Ym' ) ] = true;
+			$allowed[ $previous->format( 'Ym' ) ] = true;
+		}
+		$values = [];
+		foreach ( $rows as $row ) {
+			$month = $row['dimensions'][0];
+			$value = $row['metrics']['activeUsers'];
+			if ( ! isset( $allowed[ $month ] ) || array_key_exists( $month, $values ) || ! is_finite( $value ) || $value < 0 ) {
+				return new WP_Error( 'google_history', __( 'Google returned invalid or duplicate monthly active-user data.', 'stuh' ) );
+			}
+			$values[ $month ] = $value;
+		}
+		foreach ( $months as &$month ) {
+			$month['current'] = $values[ str_replace( '-', '', $month['month'] ) ] ?? null;
+			$month['previous'] = $values[ str_replace( '-', '', $month['previous_month'] ) ] ?? null;
+		}
+		unset( $month );
+		return [
+			'period' => [ 'startDate' => $month_start->modify( '-12 months' )->format( 'Y-m-d' ), 'endDate' => $month_start->modify( '-1 day' )->format( 'Y-m-d' ) ],
+			'previous_period' => [ 'startDate' => $month_start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $month_start->modify( '-12 months -1 day' )->format( 'Y-m-d' ) ],
+			'months' => $months,
+		];
+	}
+
 	private static function fetch_report( array $mapping ) {
 		$today = new DateTimeImmutable( 'today', new DateTimeZone( $mapping['timezone'] ) );
 		$current = [ 'startDate' => $today->modify( '-28 days' )->format( 'Y-m-d' ), 'endDate' => $today->modify( '-1 day' )->format( 'Y-m-d' ) ];
@@ -788,12 +820,21 @@ final class STUH_Analytics {
 		$totals = array_merge( $base, [ 'metrics' => array_map( static fn( string $name ): array => [ 'name' => $name ], self::METRICS ) ] );
 		$pages = array_merge( $base, [ 'dimensions' => [ [ 'name' => 'pagePath' ] ], 'metrics' => [ [ 'name' => 'screenPageViews' ] ], 'orderBys' => [ [ 'metric' => [ 'metricName' => 'screenPageViews' ], 'desc' => true ] ], 'limit' => 10 ] );
 		$channels = array_merge( $base, [ 'dimensions' => [ [ 'name' => 'sessionDefaultChannelGroup' ] ], 'metrics' => [ [ 'name' => 'sessions' ] ], 'orderBys' => [ [ 'metric' => [ 'metricName' => 'sessions' ], 'desc' => true ] ], 'limit' => 10 ] );
-		$data = self::api( 'properties/' . $mapping['property_id'] . ':batchRunReports', [ 'requests' => [ $totals, array_merge( $totals, [ 'dateRanges' => [ $previous ] ] ), $pages, $channels ] ], 'data' );
+		$month_start = $today->modify( 'first day of this month' );
+		$monthly = array_merge( $base, [
+			'dateRanges' => [ [ 'startDate' => $month_start->modify( '-24 months' )->format( 'Y-m-d' ), 'endDate' => $month_start->modify( '-1 day' )->format( 'Y-m-d' ) ] ],
+			'dimensions' => [ [ 'name' => 'yearMonth' ] ],
+			'metrics' => [ [ 'name' => 'activeUsers' ] ],
+			'orderBys' => [ [ 'dimension' => [ 'dimensionName' => 'yearMonth' ] ] ],
+			'limit' => 24,
+			'keepEmptyRows' => true,
+		] );
+		$data = self::api( 'properties/' . $mapping['property_id'] . ':batchRunReports', [ 'requests' => [ $totals, array_merge( $totals, [ 'dateRanges' => [ $previous ] ] ), $pages, $channels, $monthly ] ], 'data' );
 		if ( is_wp_error( $data ) ) {
 			return $data;
 		}
-		if ( ! isset( $data['reports'] ) || ! is_array( $data['reports'] ) || count( $data['reports'] ) !== 4 ) {
-			return new WP_Error( 'google_report_shape', __( 'Google did not return all four requested reports.', 'stuh' ) );
+		if ( ! isset( $data['reports'] ) || ! is_array( $data['reports'] ) || count( $data['reports'] ) !== 5 ) {
+			return new WP_Error( 'google_report_shape', __( 'Google did not return all five requested reports.', 'stuh' ) );
 		}
 		$parsed = [];
 		$limited = false;
@@ -801,18 +842,27 @@ final class STUH_Analytics {
 			if ( ! is_array( $report ) ) {
 				return new WP_Error( 'google_report_shape', __( 'Google returned an invalid report.', 'stuh' ) );
 			}
-			$rows = self::report_rows( $report, $index < 2 ? self::METRICS : [ 2 === $index ? 'screenPageViews' : 'sessions' ], $index < 2 ? [] : [ 2 === $index ? 'pagePath' : 'sessionDefaultChannelGroup' ] );
+			$metrics = match ( $index ) { 0, 1 => self::METRICS, 2 => [ 'screenPageViews' ], 3 => [ 'sessions' ], 4 => [ 'activeUsers' ] };
+			$dimensions = match ( $index ) { 0, 1 => [], 2 => [ 'pagePath' ], 3 => [ 'sessionDefaultChannelGroup' ], 4 => [ 'yearMonth' ] };
+			$rows = self::report_rows( $report, $metrics, $dimensions );
 			if ( is_wp_error( $rows ) ) {
 				return $rows;
 			}
 			if ( $index < 2 && count( $rows ) > 1 ) {
 				return new WP_Error( 'google_report_shape', __( 'Google returned multiple totals rows.', 'stuh' ) );
 			}
+			if ( 4 === $index && (int) ( $report['rowCount'] ?? 0 ) !== count( $rows ) ) {
+				return new WP_Error( 'google_history', __( 'Google returned an incomplete monthly active-user report.', 'stuh' ) );
+			}
 			$parsed[] = $index < 2 ? ( $rows[0]['metrics'] ?? array_fill_keys( self::METRICS, 0.0 ) ) : $rows;
 			$metadata = $report['metadata'] ?? [];
 			$limited = $limited || ! empty( $metadata['subjectToThresholding'] ) || ! empty( $metadata['dataLossFromOtherRow'] ) || ! empty( $metadata['samplingMetadatas'] );
 		}
-		return [ 'current' => $parsed[0], 'previous' => $parsed[1], 'pages' => $parsed[2], 'channels' => $parsed[3], 'period' => $current, 'previous_period' => $previous, 'limited' => $limited ];
+		$history = self::monthly_history( $month_start, $parsed[4] );
+		if ( is_wp_error( $history ) ) {
+			return $history;
+		}
+		return [ 'current' => $parsed[0], 'previous' => $parsed[1], 'pages' => $parsed[2], 'channels' => $parsed[3], 'period' => $current, 'previous_period' => $previous, 'limited' => $limited, 'history' => $history ];
 	}
 
 	public static function refresh_report( string $client_id ): void {
@@ -845,11 +895,14 @@ final class STUH_Analytics {
 		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
 		wp_nonce_field( 'stuh_google' );
 		echo '<input type="hidden" name="action" value="stuh_google_action"><input type="hidden" name="operation" value="' . esc_attr( $operation ) . '"><input type="hidden" name="client_id" value="' . esc_attr( $client_id ) . '">';
+		if ( 'stuh-analytics' === self::input( $_GET, 'page' ) ) {
+			echo '<input type="hidden" name="return_page" value="analytics">';
+		}
 	}
 
 	public static function render_settings(): void {
 		self::require_admin();
-		echo '<div class="wrap"><h1>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h1>';
+		echo '<section id="stuh-google-settings"><h2>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h2>';
 		self::notice();
 		echo '<p>' . esc_html__( 'Read-only GA4 reporting. Google credentials stay on this host and are never sent to client sites.', 'stuh' ) . '</p>';
 		echo '<p>' . esc_html__( 'Authorized redirect URI:', 'stuh' ) . ' <code>' . esc_html( self::callback_url() ) . '</code></p>';
@@ -886,6 +939,66 @@ final class STUH_Analytics {
 			self::form_start( 'discover_all' );
 			submit_button( __( 'Discover unmapped client sites from GTM', 'stuh' ), 'secondary' );
 			echo '</form>';
+		}
+		echo '<p><a href="' . esc_url( self::reports_url() ) . '">' . esc_html__( 'View Analytics reports', 'stuh' ) . '</a></p></section>';
+	}
+
+	private static function reports_url( string $client_id = '' ): string {
+		$args = [ 'page' => 'stuh-analytics' ];
+		if ( '' !== $client_id ) {
+			$args['client_id'] = $client_id;
+		}
+		return add_query_arg( $args, admin_url( 'admin.php' ) );
+	}
+
+	public static function render_reports(): void {
+		self::require_admin();
+		$clients = STUH_Plugin::get_clients();
+		$mappings = self::mappings();
+		$client_id = self::input( $_GET, 'client_id' );
+		if ( '' === $client_id && $clients ) {
+			$preferred = array_values( array_filter( $clients, static fn( array $client ): bool => isset( $mappings[ $client['id'] ] ) ) );
+			$client_id = (string) ( $preferred[0]['id'] ?? $clients[0]['id'] );
+		}
+		$selected = null;
+		foreach ( $clients as $client ) {
+			if ( $client['id'] === $client_id ) {
+				$selected = $client;
+				break;
+			}
+		}
+		if ( '' !== $client_id && null === $selected ) {
+			wp_die( esc_html__( 'The selected client site could not be found.', 'stuh' ) );
+		}
+		echo '<div class="wrap stuh-client-sites"><h1>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h1>';
+		self::notice();
+		echo '<p><a href="' . esc_url( self::page_url() ) . '">' . esc_html__( 'Google Analytics settings', 'stuh' ) . '</a></p>';
+		$connection = self::connection();
+		if ( is_wp_error( $connection ) ) {
+			echo '<p role="alert">' . esc_html( $connection->get_error_message() ) . '</p>';
+		}
+		if ( $clients ) {
+			echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '" class="stuh-analytics-selector"><input type="hidden" name="page" value="stuh-analytics"><label for="stuh-analytics-client">' . esc_html__( 'Client site', 'stuh' ) . '</label> <select id="stuh-analytics-client" name="client_id">';
+			foreach ( $clients as $client ) {
+				$id = (string) $client['id'];
+				echo '<option value="' . esc_attr( $id ) . '"' . ( $id === $client_id ? ' selected' : '' ) . '>' . esc_html( $client['site_url'] ?? $id ) . '</option>';
+			}
+			echo '</select> <button type="submit" class="button">' . esc_html__( 'View report', 'stuh' ) . '</button></form>';
+		} else {
+			echo '<p>' . esc_html__( 'No client sites registered.', 'stuh' ) . '</p>';
+		}
+		if ( null !== $selected ) {
+			echo '<section id="stuh-analytics"><h2>' . esc_html( $selected['site_url'] ?? $client_id ) . '</h2>';
+			$mapping = $mappings[ $client_id ] ?? [];
+			if ( ! $mapping ) {
+				echo '<p>' . esc_html__( 'No Analytics property is connected to this site.', 'stuh' ) . '</p>';
+			} elseif ( ! is_wp_error( $connection ) && $mapping['connection_id'] === $connection['id'] ) {
+				echo '<p><strong>' . esc_html__( 'GA4 property', 'stuh' ) . ':</strong> ' . esc_html( $mapping['name'] . ' (' . $mapping['property_id'] . ')' ) . '</p>';
+				self::render_report( $client_id, $mapping, true );
+			} elseif ( ! is_wp_error( $connection ) ) {
+				echo '<p>' . esc_html__( 'Google was reconnected. Save this site mapping again before viewing reports.', 'stuh' ) . '</p>';
+			}
+			echo '<p><a href="' . esc_url( self::page_url( $client_id ) . '#stuh-analytics' ) . '">' . esc_html__( 'Manage this site mapping', 'stuh' ) . '</a></p></section>';
 		}
 		echo '</div>';
 	}
@@ -943,10 +1056,10 @@ final class STUH_Analytics {
 		return $values;
 	}
 
-	public static function render_client_column( string $client_id ): void {
+	public static function render_client_column( string $client_id, ?string $report_url = null ): void {
 		self::require_admin();
 		$mapping = self::mappings()[ $client_id ] ?? null;
-		$url = self::page_url( $client_id ) . '#stuh-analytics';
+		$url = $report_url ?? self::page_url( $client_id ) . '#stuh-analytics';
 		if ( ! $mapping ) {
 			echo '<a class="stuh-analytics-disconnected" href="' . esc_url( $url ) . '">' . esc_html__( 'Not connected', 'stuh' ) . '</a>';
 			return;
@@ -1036,10 +1149,133 @@ final class STUH_Analytics {
 			echo '<p>' . esc_html__( 'Google was reconnected. Save this mapping again before viewing reports.', 'stuh' ) . '</p></section>';
 			return;
 		}
-		$record = get_option( self::report_key( $client_id ), [] );
-		if ( ! is_array( $record ) || ( $record['fingerprint'] ?? '' ) !== self::fingerprint( $mapping ) ) {
-			$record = [];
+		self::render_report( $client_id, $mapping );
+		echo '</section>';
+	}
+
+	private static function metric_value( string $metric, float $value ): string {
+		return 'engagementRate' === $metric ? number_format_i18n( 100 * $value, 1 ) . '%' : number_format_i18n( $value, 'keyEvents' === $metric && floor( $value ) !== $value ? 2 : 0 );
+	}
+
+	private static function render_chart( string $title, array $rows, ?float $scale = null ): void {
+		echo '<figure class="stuh-analytics-chart"><figcaption><h3>' . esc_html( $title ) . '</h3></figcaption>';
+		if ( ! $rows ) {
+			echo '<p>' . esc_html__( 'No data returned for this hostname and period.', 'stuh' ) . '</p></figure>';
+			return;
 		}
+		$maximum = $scale ?? max( array_column( $rows, 'value' ) );
+		echo '<ol class="stuh-analytics-bars">';
+		foreach ( $rows as $row ) {
+			$width = $maximum > 0 ? min( 100, max( 0, $row['value'] / $maximum * 100 ) ) : 0;
+			echo '<li><div class="stuh-analytics-bar-label"><span>' . esc_html( $row['label'] ) . '</span><strong>' . esc_html( $row['display'] ) . '</strong></div>';
+			echo '<svg class="stuh-analytics-bar stuh-analytics-bar--' . esc_attr( $row['period'] ) . '" viewBox="0 0 100 12" preserveAspectRatio="none" aria-hidden="true" focusable="false"><rect class="stuh-analytics-bar-track" width="100" height="12" rx="2"/><rect width="' . esc_attr( number_format( $width, 3, '.', '' ) ) . '" height="12" rx="2"/></svg></li>';
+		}
+		echo '</ol></figure>';
+	}
+
+	private static function render_charts( array $data ): void {
+		if ( isset( $data['history'] ) ) {
+			self::render_history_chart( $data['history'] );
+		} else {
+			echo '<p>' . esc_html__( 'Refresh Analytics to load yearly data.', 'stuh' ) . '</p>';
+		}
+		echo '<p>' . esc_html( sprintf( __( 'Previous period: %1$s to %2$s.', 'stuh' ), $data['previous_period']['startDate'], $data['previous_period']['endDate'] ) ) . '</p>';
+		$labels = [ 'activeUsers' => __( 'Active users', 'stuh' ), 'sessions' => __( 'Sessions', 'stuh' ), 'screenPageViews' => __( 'Page views', 'stuh' ), 'engagementRate' => __( 'Engagement rate', 'stuh' ), 'keyEvents' => __( 'Key events', 'stuh' ) ];
+		echo '<div class="stuh-analytics-charts">';
+		foreach ( $labels as $metric => $label ) {
+			$rows = [];
+			foreach ( [ 'current' => __( 'Last 28 days', 'stuh' ), 'previous' => __( 'Previous 28 days', 'stuh' ) ] as $period => $period_label ) {
+				$value = $data[ $period ][ $metric ];
+				$rows[] = [ 'label' => $period_label, 'value' => $value, 'display' => self::metric_value( $metric, $value ), 'period' => $period ];
+			}
+			self::render_chart( $label, $rows, 'engagementRate' === $metric ? 1.0 : null );
+		}
+		echo '</div><div class="stuh-analytics-charts stuh-analytics-charts--rankings">';
+		foreach ( [ 'pages' => __( 'Top pages - page views', 'stuh' ), 'channels' => __( 'Top channels - sessions', 'stuh' ) ] as $key => $title ) {
+			$rows = [];
+			foreach ( $data[ $key ] as $row ) {
+				$value = reset( $row['metrics'] );
+				$rows[] = [ 'label' => $row['dimensions'][0], 'value' => $value, 'display' => number_format_i18n( $value ), 'period' => 'current' ];
+			}
+			self::render_chart( $title, $rows );
+		}
+		echo '</div>';
+	}
+
+	private static function render_history_chart( array $history ): void {
+		$title = __( 'Active users - year over year', 'stuh' );
+		$series = [ 'current' => __( 'Last 12 complete months', 'stuh' ), 'previous' => __( 'Previous 12 months', 'stuh' ) ];
+		$maximum = 0.0;
+		$has_data = false;
+		foreach ( $history['months'] as $month ) {
+			foreach ( $series as $key => $label ) {
+				if ( null !== $month[ $key ] ) {
+					$maximum = max( $maximum, $month[ $key ] );
+					$has_data = true;
+				}
+			}
+		}
+		echo '<figure class="stuh-analytics-chart stuh-analytics-history"><figcaption><h3>' . esc_html( $title ) . '</h3></figcaption><ul class="stuh-analytics-legend">';
+		foreach ( $series as $key => $label ) {
+			$period = 'current' === $key ? $history['period'] : $history['previous_period'];
+			echo '<li class="stuh-analytics-legend--' . esc_attr( $key ) . '">' . esc_html( $label . ': ' . $period['startDate'] . ' to ' . $period['endDate'] ) . '</li>';
+		}
+		echo '</ul><p>' . esc_html__( 'Gaps indicate missing data.', 'stuh' ) . '</p>';
+		if ( $has_data ) {
+			$maximum = max( 4, ceil( $maximum / 4 ) * 4 );
+			echo '<div class="stuh-analytics-line-scroll" tabindex="0" role="region" aria-label="' . esc_attr( $title ) . '"><svg class="stuh-analytics-line-chart" viewBox="0 0 920 300" role="img" aria-label="' . esc_attr( $title ) . '"><desc>' . esc_html__( 'Solid blue: last 12 complete months. Dashed grey: preceding 12 months. Exact values are available in the monthly data table below.', 'stuh' ) . '</desc>';
+			for ( $tick = 0; $tick <= 4; $tick++ ) {
+				$y = 250 - $tick * 50;
+				echo '<line class="stuh-analytics-gridline" x1="70" y1="' . esc_attr( $y ) . '" x2="870" y2="' . esc_attr( $y ) . '"/><text x="60" y="' . esc_attr( $y + 5 ) . '" text-anchor="end">' . esc_html( number_format_i18n( $maximum * $tick / 4 ) ) . '</text>';
+			}
+			foreach ( $history['months'] as $index => $month ) {
+				$x = 70 + $index * 800 / 11;
+				$date = new DateTimeImmutable( $month['month'] . '-01', new DateTimeZone( 'UTC' ) );
+				echo '<text x="' . esc_attr( number_format( $x, 2, '.', '' ) ) . '" y="280" text-anchor="middle">' . esc_html( wp_date( 'M', $date->getTimestamp(), new DateTimeZone( 'UTC' ) ) ) . '</text>';
+			}
+			foreach ( $series as $key => $label ) {
+				$segments = [];
+				$points = [];
+				$dots = '';
+				foreach ( $history['months'] as $index => $month ) {
+					$value = $month[ $key ];
+					if ( null === $value ) {
+						if ( $points ) {
+							$segments[] = $points;
+							$points = [];
+						}
+						continue;
+					}
+					$x = number_format( 70 + $index * 800 / 11, 2, '.', '' );
+					$y = number_format( 250 - $value / $maximum * 200, 2, '.', '' );
+					$points[] = $x . ',' . $y;
+					$month_label = 'current' === $key ? $month['month'] : $month['previous_month'];
+					$dots .= '<circle cx="' . esc_attr( $x ) . '" cy="' . esc_attr( $y ) . '" r="4"><title>' . esc_html( $month_label . ': ' . number_format_i18n( $value ) ) . '</title></circle>';
+				}
+				if ( $points ) {
+					$segments[] = $points;
+				}
+				echo '<g class="stuh-analytics-series stuh-analytics-series--' . esc_attr( $key ) . '">';
+				foreach ( $segments as $segment ) {
+					if ( count( $segment ) > 1 ) {
+						echo '<polyline points="' . esc_attr( implode( ' ', $segment ) ) . '"/>';
+					}
+				}
+				echo $dots . '</g>';
+			}
+			echo '</svg></div>';
+		} else {
+			echo '<p>' . esc_html__( 'No monthly data available.', 'stuh' ) . '</p>';
+		}
+		echo '<details class="stuh-analytics-monthly-data"><summary>' . esc_html__( 'View monthly values', 'stuh' ) . '</summary><div class="stuh-analytics-line-scroll"><table class="widefat striped"><caption class="screen-reader-text">' . esc_html( $title ) . '</caption><thead><tr><th scope="col">' . esc_html__( 'Month', 'stuh' ) . '</th><th scope="col">' . esc_html( $series['current'] ) . '</th><th scope="col">' . esc_html__( 'Prior-year month', 'stuh' ) . '</th><th scope="col">' . esc_html( $series['previous'] ) . '</th></tr></thead><tbody>';
+		foreach ( $history['months'] as $month ) {
+			echo '<tr><th scope="row">' . esc_html( $month['month'] ) . '</th><td>' . esc_html( null === $month['current'] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month['current'] ) ) . '</td><td>' . esc_html( $month['previous_month'] ) . '</td><td>' . esc_html( null === $month['previous'] ? __( 'No data reported', 'stuh' ) : number_format_i18n( $month['previous'] ) ) . '</td></tr>';
+		}
+		echo '</tbody></table></div></details></figure>';
+	}
+
+	private static function render_report( string $client_id, array $mapping, bool $charts = false ): void {
+		$record = self::column_record( $client_id, $mapping );
 		if ( ( $record['fetched_at'] ?? 0 ) < time() - 4 * HOUR_IN_SECONDS && ( $record['attempted_at'] ?? 0 ) < time() - 15 * MINUTE_IN_SECONDS ) {
 			$scheduled = self::schedule( $client_id );
 			if ( is_wp_error( $scheduled ) ) {
@@ -1056,16 +1292,19 @@ final class STUH_Analytics {
 		submit_button( __( 'Refresh Analytics', 'stuh' ), 'secondary' );
 		echo '</form>';
 		if ( empty( $record['data'] ) ) {
-			echo '<p>' . esc_html__( 'No successful report yet.', 'stuh' ) . '</p></section>';
+			echo '<p>' . esc_html__( 'No successful report yet.', 'stuh' ) . '</p>';
 			return;
 		}
 		$data = $record['data'];
 		$stale = ! empty( $record['error'] ) || $record['fetched_at'] < time() - 4 * HOUR_IN_SECONDS;
 		echo '<p><strong>' . esc_html( $stale ? __( 'Stale report - last successful data', 'stuh' ) : __( 'Last successful report', 'stuh' ) ) . '</strong>: ' . esc_html( wp_date( 'Y-m-d H:i T', $record['fetched_at'] ) ) . '</p>';
 		echo '<p>' . esc_html( $data['period']['startDate'] . ' to ' . $data['period']['endDate'] . ' / ' . $mapping['timezone'] . ' / ' . $mapping['hostname'] ) . '</p>';
-		echo '<p>' . esc_html__( 'Last 28 complete days compared with the previous 28. Google processing can delay recent data; consent and reporting settings affect results. Zero key events can also mean none are configured.', 'stuh' ) . '</p>';
 		if ( $data['limited'] ) {
 			echo '<p>' . esc_html__( 'Google flagged thresholding, sampling, or other-row data loss in this report.', 'stuh' ) . '</p>';
+		}
+		if ( $charts ) {
+			self::render_charts( $data );
+			return;
 		}
 		echo '<table class="widefat striped"><thead><tr><th>' . esc_html__( 'Metric', 'stuh' ) . '</th><th>' . esc_html__( 'Last 28 days', 'stuh' ) . '</th><th>' . esc_html__( 'Previous 28 days', 'stuh' ) . '</th></tr></thead><tbody>';
 		$labels = [ 'activeUsers' => __( 'Active users', 'stuh' ), 'sessions' => __( 'Sessions', 'stuh' ), 'screenPageViews' => __( 'Page views', 'stuh' ), 'engagementRate' => __( 'Engagement rate', 'stuh' ), 'keyEvents' => __( 'Key events', 'stuh' ) ];
@@ -1073,7 +1312,7 @@ final class STUH_Analytics {
 			echo '<tr><th>' . esc_html( $label ) . '</th>';
 			foreach ( [ 'current', 'previous' ] as $period ) {
 				$value = $data[ $period ][ $metric ];
-				echo '<td>' . esc_html( 'engagementRate' === $metric ? number_format_i18n( 100 * $value, 1 ) . '%' : number_format_i18n( $value, 'keyEvents' === $metric && floor( $value ) !== $value ? 2 : 0 ) ) . '</td>';
+				echo '<td>' . esc_html( self::metric_value( $metric, $value ) ) . '</td>';
 			}
 			echo '</tr>';
 		}
@@ -1088,6 +1327,5 @@ final class STUH_Analytics {
 			}
 			echo '</tbody></table>';
 		}
-		echo '</section>';
 	}
 }
