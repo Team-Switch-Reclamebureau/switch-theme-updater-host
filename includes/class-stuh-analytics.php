@@ -20,7 +20,11 @@ final class STUH_Analytics {
 	}
 
 	public static function register_menu(): void {
-		add_submenu_page( 'stuh', __( 'Google Analytics', 'stuh' ), __( 'Google Analytics', 'stuh' ), 'manage_options', 'stuh-analytics', [ self::class, 'render_reports' ] );
+		if ( current_user_can( 'manage_options' ) ) {
+			add_submenu_page( 'stuh', __( 'Google Analytics', 'stuh' ), __( 'Google Analytics', 'stuh' ), 'manage_options', 'stuh-analytics', [ self::class, 'render_reports' ] );
+		} else {
+			add_menu_page( __( 'Google Analytics', 'stuh' ), __( 'Google Analytics', 'stuh' ), 'edit_others_posts', 'stuh-analytics', [ self::class, 'render_reports' ], 'dashicons-chart-area' );
+		}
 	}
 
 	private static function config( string $name ): string {
@@ -57,6 +61,12 @@ final class STUH_Analytics {
 		}
 	}
 
+	private static function require_viewer(): void {
+		if ( ! current_user_can( 'manage_options' ) && ! current_user_can( 'edit_others_posts' ) ) {
+			wp_die( esc_html__( 'Insufficient permissions', 'stuh' ), '', [ 'response' => 403 ] );
+		}
+	}
+
 	private static function input( array $source, string $key ): string {
 		return isset( $source[ $key ] ) && is_string( $source[ $key ] ) ? trim( wp_unslash( $source[ $key ] ) ) : '';
 	}
@@ -64,6 +74,9 @@ final class STUH_Analytics {
 	private static function finish( string $message, bool $error = false, string $client_id = '' ): void {
 		set_transient( 'stuh_google_notice_' . get_current_user_id(), [ 'message' => $message, 'error' => $error ], 5 * MINUTE_IN_SECONDS );
 		$url = '' !== $client_id && 'analytics' === self::input( $_POST, 'return_page' ) ? self::reports_url( $client_id ) : self::page_url( $client_id );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			$url = self::reports_url( $client_id );
+		}
 		wp_safe_redirect( $url );
 		exit;
 	}
@@ -658,9 +671,13 @@ final class STUH_Analytics {
 	}
 
 	public static function handle_action(): void {
-		self::require_admin();
-		check_admin_referer( 'stuh_google' );
 		$action = self::input( $_POST, 'operation' );
+		if ( 'refresh' === $action ) {
+			self::require_viewer();
+		} else {
+			self::require_admin();
+		}
+		check_admin_referer( 'stuh_google' );
 		if ( 'connect' === $action ) {
 			self::start();
 		}
@@ -988,7 +1005,7 @@ final class STUH_Analytics {
 	}
 
 	public static function render_reports(): void {
-		self::require_admin();
+		self::require_viewer();
 		$clients = STUH_Plugin::get_clients();
 		$mappings = self::mappings();
 		$connection = self::connection();
@@ -1019,7 +1036,9 @@ final class STUH_Analytics {
 		}
 		echo '<div class="wrap stuh-client-sites"><h1>' . esc_html__( 'Google Analytics', 'stuh' ) . '</h1>';
 		self::notice();
-		echo '<p><a href="' . esc_url( self::page_url() ) . '">' . esc_html__( 'Google Analytics settings', 'stuh' ) . '</a></p>';
+		if ( current_user_can( 'manage_options' ) ) {
+			echo '<p><a href="' . esc_url( self::page_url() ) . '">' . esc_html__( 'Google Analytics settings', 'stuh' ) . '</a></p>';
+		}
 		if ( is_wp_error( $connection ) ) {
 			echo '<p role="alert">' . esc_html( $connection->get_error_message() ) . '</p>';
 		}
@@ -1047,7 +1066,10 @@ final class STUH_Analytics {
 			} elseif ( ! is_wp_error( $connection ) ) {
 				echo '<p>' . esc_html__( 'Google was reconnected. Save this site mapping again before viewing reports.', 'stuh' ) . '</p>';
 			}
-			echo '<p><a href="' . esc_url( self::page_url( $client_id ) . '#stuh-analytics' ) . '">' . esc_html__( 'Manage this site mapping', 'stuh' ) . '</a></p></section>';
+			if ( current_user_can( 'manage_options' ) ) {
+				echo '<p><a href="' . esc_url( self::page_url( $client_id ) . '#stuh-analytics' ) . '">' . esc_html__( 'Manage this site mapping', 'stuh' ) . '</a></p>';
+			}
+			echo '</section>';
 		}
 		echo '</div>';
 	}

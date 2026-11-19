@@ -26,6 +26,13 @@ Run the standalone view regression checks with `php tests/client-details.php`.
 
 ## Gripp / FMP
 
+FMP is available to administrators and editors (the `edit_others_posts`
+capability). Administrators open it under **Updater Host → FMP**; editors have
+a standalone **FMP** menu because the other Updater Host pages remain admin-only.
+Editors can view dashboard/details, refresh data and save their own Screen
+Options. Gripp connection settings, token replacement and disconnect remain
+restricted to administrators (`manage_options`).
+
 Open **Updater Host → Settings → Gripp** and enter a Gripp API v3 token.
 Create the token in Gripp with an API role that has **read** access to umbrella
 projects (`umbrellaproject`, **Projecten / Retainers**) and linked orders
@@ -388,8 +395,11 @@ server scheduler. Failed refreshes preserve the last successful report and
 clearly mark it stale, rather than displaying zero traffic. Until the first
 successful report, the panel explicitly says no report is available.
 
-Only administrators with `manage_options` can connect Google, map properties
-or view reports. OAuth uses a short-lived, user-bound, single-use state and
+Administrators and editors (`edit_others_posts`) can view reports and request
+Analytics refreshes. Editors have a standalone **Google Analytics** menu;
+other Updater Host pages remain admin-only. Only administrators with
+`manage_options` can connect/disconnect Google, manage properties, trigger GTM
+discovery or change site mappings. OAuth uses a short-lived, user-bound, single-use state and
 PKCE. Reconnecting requires confirming existing mappings again before showing
 reports from the new connection. Disconnecting attempts Google token revocation
 and removes local credentials, mappings and reports; an unconfirmed revocation

@@ -23,8 +23,10 @@ function esc_html( $value ) { return htmlspecialchars( (string) $value, ENT_QUOT
 function esc_attr( $value ) { return esc_html( $value ); }
 function esc_url( $value ) { return esc_html( $value ); }
 function add_action( ...$args ) {}
+function add_submenu_page( ...$args ) { $GLOBALS['submenus'][] = $args; }
+function add_menu_page( ...$args ) { $GLOBALS['top_menus'][] = $args; }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
-function current_user_can( $capability ) { return $GLOBALS['authorized'] ?? true; }
+function current_user_can( $capability ) { return isset( $GLOBALS['capabilities'] ) ? in_array( $capability, $GLOBALS['capabilities'], true ) : ( $GLOBALS['authorized'] ?? true ); }
 function get_current_user_id() { return $GLOBALS['user'] ?? 1; }
 function wp_die( $message, ...$args ) { throw new RuntimeException( $message ); }
 function wp_unslash( $value ) { return $value; }
@@ -362,6 +364,58 @@ if ( in_array( $argv[1] ?? '', [ '--render', '--render-demo' ], true ) ) {
 }
 expect_analytics( ! str_contains( $reports_html, 'value="connect"' ) && ! str_contains( $reports_html, 'value="map"' ) && ! str_contains( $reports_html, 'value="properties"' ), 'Analytics report page does not contain connection or mapping settings' );
 expect_analytics( str_contains( $reports_html, 'page=stuh-settings#stuh-google-settings' ) && str_contains( $reports_html, 'name="return_page" value="analytics"' ), 'Report page links to Settings and keeps refresh actions on reports' );
+STUH_Analytics::register_menu();
+expect_analytics( 'stuh' === $GLOBALS['submenus'][0][0] && 'manage_options' === $GLOBALS['submenus'][0][3], 'Administrators retain Analytics under the existing Updater Host menu' );
+$GLOBALS['capabilities'] = [ 'read', 'edit_posts', 'edit_others_posts' ];
+STUH_Analytics::register_menu();
+expect_analytics( 'edit_others_posts' === $GLOBALS['top_menus'][0][2] && 'stuh-analytics' === $GLOBALS['top_menus'][0][3], 'Editors get a standalone Google Analytics menu without exposing administrator-only host pages' );
+$editor_request_count = count( $GLOBALS['requests'] );
+$editor_reports = render_analytics_page( 'render_reports' );
+expect_analytics( str_contains( $editor_reports, 'Top pages - page views' ) && str_contains( $editor_reports, 'Refresh Analytics' ) && ! str_contains( $editor_reports, 'Google Analytics settings</a>' ) && ! str_contains( $editor_reports, 'Manage this site mapping' ) && count( $GLOBALS['requests'] ) === $editor_request_count, 'Editors can read cached reports and request refreshes without Google API calls or links to restricted settings/mappings' );
+$editor_connection = get_option( 'stuh_google_connection' );
+$editor_mappings = get_option( 'stuh_google_mappings' );
+foreach ( [ 'connect', 'disconnect', 'properties', 'discover_all', 'discover', 'map', 'unmap' ] as $operation ) {
+	try {
+		analytics_action( $operation );
+		throw new RuntimeException( 'Editor management action succeeded' );
+	} catch ( RuntimeException $error ) {
+		expect_analytics( 'Insufficient permissions' === $error->getMessage(), 'Editors cannot change Google credentials, properties, discovery or site mappings' );
+	}
+}
+foreach ( [ 'render_settings', 'callback' ] as $method ) {
+	try {
+		render_analytics_page( $method );
+		throw new RuntimeException( 'Editor opened restricted Google settings or callback' );
+	} catch ( RuntimeException $error ) {
+		expect_analytics( 'Insufficient permissions' === $error->getMessage(), 'Connection settings and OAuth callbacks remain administrator-only' );
+	}
+}
+expect_analytics( $editor_connection === get_option( 'stuh_google_connection' ) && $editor_mappings === get_option( 'stuh_google_mappings' ), 'Denied editor actions preserve credentials and mappings' );
+try {
+	analytics_action( 'refresh', [ '_wpnonce' => 'bad' ] );
+	throw new RuntimeException( 'Editor refreshed without a nonce' );
+} catch ( RuntimeException $error ) {
+	expect_analytics( 'Invalid nonce' === $error->getMessage(), 'Editor refresh remains nonce-protected' );
+}
+unset( $GLOBALS['scheduled']['site-1'] );
+[ $editor_refresh_url, $editor_refresh_notice ] = analytics_action( 'refresh' );
+expect_analytics( ! $editor_refresh_notice['error'] && isset( $GLOBALS['scheduled']['site-1'] ) && str_contains( $editor_refresh_url, 'page=stuh-analytics' ) && str_contains( $editor_refresh_url, 'client_id=site-1' ), 'Editors can queue a mapped report refresh and return to Analytics even without an explicit return-page field' );
+foreach ( [ [ 'read' ], [ 'read', 'edit_posts', 'publish_posts' ] ] as $capabilities ) {
+	$GLOBALS['capabilities'] = $capabilities;
+	foreach ( [ 'reports', 'refresh' ] as $operation ) {
+		try {
+			if ( 'reports' === $operation ) {
+				render_analytics_page( 'render_reports' );
+			} else {
+				analytics_action( 'refresh' );
+			}
+			throw new RuntimeException( 'Lower-privilege Analytics access succeeded' );
+		} catch ( RuntimeException $error ) {
+			expect_analytics( 'Insufficient permissions' === $error->getMessage(), 'Authors and subscribers cannot view or refresh Analytics reports' );
+		}
+	}
+}
+unset( $GLOBALS['capabilities'], $GLOBALS['scheduled']['site-1'] );
 [ $refresh_url ] = analytics_action( 'refresh', [ 'return_page' => 'analytics' ] );
 expect_analytics( str_contains( $refresh_url, 'page=stuh-analytics' ) && str_contains( $refresh_url, 'client_id=site-1' ), 'Report refresh returns to the selected Analytics report' );
 unset( $GLOBALS['scheduled']['site-1'] );

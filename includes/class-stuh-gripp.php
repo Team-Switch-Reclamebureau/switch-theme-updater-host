@@ -21,7 +21,7 @@ final class STUH_Gripp {
 	}
 
 	public static function enqueue_assets( string $hook ): void {
-		if ( get_plugin_page_hookname( 'stuh-fmp', 'stuh' ) !== $hook || ! isset( $_GET['project_id'] ) || ! current_user_can( 'manage_options' ) ) {
+		if ( ! in_array( $hook, [ get_plugin_page_hookname( 'stuh-fmp', 'stuh' ), 'toplevel_page_stuh-fmp' ], true ) || ! isset( $_GET['project_id'] ) || ! self::can_view() ) {
 			return;
 		}
 		$plugin = dirname( __DIR__ ) . '/switch-theme-updater-host.php';
@@ -31,7 +31,11 @@ final class STUH_Gripp {
 	}
 
 	public static function register_menu(): void {
-		$hook = add_submenu_page( 'stuh', __( 'FMP', 'stuh' ), __( 'FMP', 'stuh' ), 'manage_options', 'stuh-fmp', [ self::class, 'render_dashboard' ] );
+		if ( current_user_can( 'manage_options' ) ) {
+			$hook = add_submenu_page( 'stuh', __( 'FMP', 'stuh' ), __( 'FMP', 'stuh' ), 'manage_options', 'stuh-fmp', [ self::class, 'render_dashboard' ] );
+		} else {
+			$hook = add_menu_page( __( 'FMP', 'stuh' ), __( 'FMP', 'stuh' ), 'edit_others_posts', 'stuh-fmp', [ self::class, 'render_dashboard' ], 'dashicons-chart-line' );
+		}
 		add_action( 'load-' . $hook, [ self::class, 'register_screen_options' ] );
 	}
 
@@ -55,7 +59,7 @@ final class STUH_Gripp {
 	}
 
 	public static function save_display_unit( $status, string $option, $value ): string {
-		self::require_admin();
+		self::require_viewer();
 		if ( ! is_string( $value ) || ! in_array( $value, [ 'eur', 'hours' ], true ) ) {
 			wp_die( esc_html__( 'Invalid budget display unit.', 'stuh' ), '', [ 'response' => 400 ] );
 		}
@@ -83,6 +87,16 @@ final class STUH_Gripp {
 
 	private static function require_admin(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Insufficient permissions', 'stuh' ), '', [ 'response' => 403 ] );
+		}
+	}
+
+	private static function can_view(): bool {
+		return current_user_can( 'manage_options' ) || current_user_can( 'edit_others_posts' );
+	}
+
+	private static function require_viewer(): void {
+		if ( ! self::can_view() ) {
 			wp_die( esc_html__( 'Insufficient permissions', 'stuh' ), '', [ 'response' => 403 ] );
 		}
 	}
@@ -636,9 +650,14 @@ final class STUH_Gripp {
 	}
 
 	public static function handle_action(): void {
-		self::require_admin();
+		$operation = self::input( $_POST, 'operation' );
+		if ( 'refresh' === $operation ) {
+			self::require_viewer();
+		} else {
+			self::require_admin();
+		}
 		check_admin_referer( 'stuh_gripp' );
-		switch ( self::input( $_POST, 'operation' ) ) {
+		switch ( $operation ) {
 			case 'connect':
 				$token = self::input( $_POST, 'api_token' );
 				if ( '' === $token || preg_match( '/[\x00-\x20\x7f]/', $token ) ) {
@@ -1065,7 +1084,7 @@ final class STUH_Gripp {
 	}
 
 	public static function render_dashboard(): void {
-		self::require_admin();
+		self::require_viewer();
 		$offset = self::offset( $_GET );
 		$unit = self::display_unit( $_GET );
 		$project_id = self::selected_project( $_GET );
@@ -1075,7 +1094,11 @@ final class STUH_Gripp {
 		}
 		echo '<div class="wrap"><h1>' . esc_html__( 'FMP', 'stuh' ) . '</h1>';
 		self::notice();
-		echo '<p>' . esc_html__( 'Projecten / Retainers from Gripp, including archived umbrella projects. Individual orders (Opdrachten) are not shown.', 'stuh' ) . ' <a href="' . esc_url( self::settings_url() ) . '">' . esc_html__( 'Gripp settings', 'stuh' ) . '</a></p>';
+		echo '<p>' . esc_html__( 'Projecten / Retainers from Gripp, including archived umbrella projects. Individual orders (Opdrachten) are not shown.', 'stuh' );
+		if ( current_user_can( 'manage_options' ) ) {
+			echo ' <a href="' . esc_url( self::settings_url() ) . '">' . esc_html__( 'Gripp settings', 'stuh' ) . '</a>';
+		}
+		echo '</p>';
 		$token = self::connection();
 		if ( is_wp_error( $token ) ) {
 			echo '<p role="alert">' . esc_html( $token->get_error_message() ) . '</p></div>';

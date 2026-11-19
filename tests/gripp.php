@@ -20,10 +20,11 @@ function esc_attr__( $text, $domain = '' ) { return esc_attr( $text ); }
 function add_action( ...$args ) { $GLOBALS['hooks'][] = $args; }
 function add_filter( ...$args ) { $GLOBALS['filters'][] = $args; }
 function add_submenu_page( ...$args ) { $GLOBALS['menus'][] = $args; return 'updater-host_page_stuh-fmp'; }
+function add_menu_page( ...$args ) { $GLOBALS['top_menus'][] = $args; return 'toplevel_page_stuh-fmp'; }
 function get_current_screen() { return (object) [ 'id' => 'updater-host_page_stuh-fmp' ]; }
 function get_hidden_columns( $screen ) { return $GLOBALS['hidden_columns'][ get_current_user_id() ] ?? []; }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
-function current_user_can( $capability ) { return $GLOBALS['authorized'] ?? true; }
+function current_user_can( $capability ) { return isset( $GLOBALS['capabilities'] ) ? in_array( $capability, $GLOBALS['capabilities'], true ) : ( $GLOBALS['authorized'] ?? true ); }
 function get_current_user_id() { return $GLOBALS['user'] ?? 1; }
 function get_user_option( $key ) { return $GLOBALS['user_options'][ get_current_user_id() ][ $key ] ?? false; }
 function wp_die( $message, ...$args ) { throw new RuntimeException( $message ); }
@@ -870,5 +871,60 @@ foreach ( [ null, 'false' ] as $archive_status ) {
 	expect_gripp( is_wp_error( invoke_gripp( 'fetch_projects', 'test-token', 0 ) ), 'Missing or invalid archive states cannot silently produce a misleading active-project count' );
 }
 unset( $GLOBALS['entity_responses'] );
+$GLOBALS['capabilities'] = [ 'read', 'edit_posts', 'edit_others_posts' ];
+$GLOBALS['transients']['stuh_gripp_projects'] = $original_cache;
+STUH_Gripp::register_menu();
+expect_gripp( 'edit_others_posts' === $GLOBALS['top_menus'][0][2] && 'stuh-fmp' === $GLOBALS['top_menus'][0][3] && in_array( [ 'load-toplevel_page_stuh-fmp', [ STUH_Gripp::class, 'register_screen_options' ] ], $GLOBALS['hooks'], true ), 'Editors get a standalone FMP menu and native Screen Options without access to the administrator-only Updater Host parent' );
+$editor_dashboard = gripp_render( 'render_dashboard' );
+expect_gripp( str_contains( $editor_dashboard, 'id="stuh-fmp-current"' ) && str_contains( $editor_dashboard, 'Refresh projects' ) && ! str_contains( $editor_dashboard, '>Gripp settings</a>' ), 'Editors can view FMP and refresh data but do not see a link to restricted connection settings' );
+expect_gripp( 'hours' === STUH_Gripp::save_display_unit( false, 'stuh_fmp_unit', 'hours' ), 'Editors can save their own budget unit through native Screen Options' );
+$editor_detail = gripp_render( 'render_dashboard', 0, 'eur', 1 );
+expect_gripp( str_contains( $editor_detail, '<h1>' ) && str_contains( $editor_detail, 'id="stuh-fmp-active-projects"' ), 'Editors can open umbrella project details and their active-project table' );
+$_GET = [ 'project_id' => '1' ];
+$editor_script_count = count( $GLOBALS['enqueued_scripts'] );
+STUH_Gripp::enqueue_assets( 'toplevel_page_stuh-fmp' );
+$_GET = [];
+expect_gripp( count( $GLOBALS['enqueued_scripts'] ) === $editor_script_count + 2, 'Editor details load the interactive chart scripts on their standalone FMP screen' );
+foreach ( [ 'connect', 'disconnect' ] as $admin_operation ) {
+	try {
+		gripp_action( $admin_operation, [ 'api_token' => 'must-not-be-saved' ] );
+		throw new RuntimeException( 'Editor credential mutation succeeded' );
+	} catch ( RuntimeException $error ) {
+		expect_gripp( 'Insufficient permissions' === $error->getMessage() && $stored === get_option( 'stuh_gripp_connection' ), 'Editors cannot replace or disconnect the stored Gripp credentials' );
+	}
+}
+try {
+	gripp_render( 'render_settings' );
+	throw new RuntimeException( 'Editor opened connection settings' );
+} catch ( RuntimeException $error ) {
+	expect_gripp( 'Insufficient permissions' === $error->getMessage(), 'Gripp connection settings remain administrator-only' );
+}
+try {
+	gripp_action( 'refresh', [ '_wpnonce' => 'invalid' ] );
+	throw new RuntimeException( 'Editor refreshed without nonce' );
+} catch ( RuntimeException $error ) {
+	expect_gripp( 'Invalid nonce' === $error->getMessage(), 'Editor refresh still requires a valid nonce' );
+}
+$GLOBALS['responses'][] = project_response( [] );
+[ $editor_refresh_url, $editor_refresh_notice ] = gripp_action( 'refresh' );
+expect_gripp( ! $editor_refresh_notice['error'] && str_contains( $editor_refresh_url, 'page=stuh-fmp' ), 'Editors can explicitly refresh FMP data and return to the dashboard' );
+foreach ( [ [ 'read' ], [ 'read', 'edit_posts', 'publish_posts' ] ] as $lower_capabilities ) {
+	$GLOBALS['capabilities'] = $lower_capabilities;
+	foreach ( [ 'render_dashboard', 'save_display_unit', 'refresh' ] as $restricted_action ) {
+		try {
+			if ( 'refresh' === $restricted_action ) {
+				gripp_action( 'refresh' );
+			} elseif ( 'save_display_unit' === $restricted_action ) {
+				STUH_Gripp::save_display_unit( false, 'stuh_fmp_unit', 'hours' );
+			} else {
+				gripp_render( 'render_dashboard' );
+			}
+			throw new RuntimeException( 'Lower-privilege FMP access succeeded' );
+		} catch ( RuntimeException $error ) {
+			expect_gripp( 'Insufficient permissions' === $error->getMessage(), 'Authors and subscribers cannot view, refresh or change FMP preferences' );
+		}
+	}
+}
+unset( $GLOBALS['capabilities'] );
 expect_gripp( ! $GLOBALS['responses'] && ! $GLOBALS['order_responses'], 'All expected API responses were consumed' );
 echo "Gripp regression checks passed.\n";
