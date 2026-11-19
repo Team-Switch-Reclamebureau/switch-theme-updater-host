@@ -29,7 +29,8 @@ Run the standalone view regression checks with `php tests/client-details.php`.
 Open **Updater Host → Settings → Gripp** and enter a Gripp API v3 token.
 Create the token in Gripp with an API role that has **read** access to umbrella
 projects (`umbrellaproject`, **Projecten / Retainers**) and linked orders
-(`project`, **Opdrachten**);
+(`project`, **Opdrachten**) and logged hours (`hour`). Details usage charts
+additionally require read access to `invoiceline` and `invoice`;
 write permissions are not needed. Connecting verifies project access before
 replacing an existing connection. No Gripp account URL is needed: the integration
 uses Gripp's fixed HTTPS API endpoint.
@@ -38,6 +39,81 @@ uses Gripp's fixed HTTPS API endpoint.
 archived umbrella projects, with their number, name, start date, deadline and
 archive status, plus budget, monthly allowance, used and remaining budget,
 allowance to date, and budget schedule.
+The **Active projects** column counts all non-archived linked orders, including
+zero-value and overdue projects, using the same definition as the details table.
+Counts include every linked-order page, share the dashboard cache, and can be
+shown or hidden using Screen Options.
+**Real budget left to date** subtracts logged hours valued at EUR 90/hour from
+the allowance to date. It includes all linked orders (also archived and
+zero-value orders), Concept entries and time corrections through today, excluding
+future-dated time. Positive balances are green, negative red, and zero neutral.
+Missing budget/schedule dates show Unavailable. This column respects Screen
+Options and Euros / Hours; existing commitment-based columns are unchanged.
+Dashboard loading now requires read access to hours as well as orders. Every
+order/time page is loaded and cached with the dashboard; API errors are explicit,
+never a fabricated zero balance.
+Click a project title in either table to open its **FMP project details** screen.
+Below the chart, **Active projects** lists all non-archived linked projects
+(Gripp **Opdrachten**), with number, name, **actual logged hours** and order
+value excluding VAT. Numbers open the corresponding order in Gripp in a new tab,
+using the order's internal ID and the order-view navigation fragment (not the
+umbrella-project route). Start and delivery dates are omitted.
+Actual hours include Concept entries, zero-value work and time corrections,
+through today in the WordPress timezone. All time-entry pages are loaded for
+each batch of up to 250 order IDs; fractional hours are summed before rounding
+the displayed total to two decimals. They always display as hours, independent
+of the Euros / Hours preference, which only converts the order value.
+Active means
+not archived in Gripp, regardless of delivery date; archived orders still count
+in the existing budget and usage calculations. Every API page is loaded, and
+the table is cached for five minutes per umbrella project and connection.
+**Refresh projects**, reconnecting and disconnecting clear this cache.
+The table remains available when budget dates or usage data are unavailable;
+API failures display an error instead of an empty or partial list.
+Summary cards show total and monthly budget, committed order value, remaining
+budget, actual recorded time and invoiced value. An interactive
+chart plots budget on the Y axis and months (with years) on the X axis:
+the dashed horizontal line is the total budget, and the blue diagonal accumulates
+the monthly allowance from zero at the start to the full budget at the deadline.
+Partial months use the same daily proration as the dashboard.
+**Drag horizontally across a period to zoom directly into it.** The selected
+period is highlighted while dragging; **Reset zoom** restores the full period.
+The Y axis automatically fits the visible portions of enabled series, with
+padding instead of fixed zero/full-project limits. This also works between
+monthly points; hiding a series removes it from the automatic Y range.
+The date range is announced beside the button. All four series and the
+Euros / Hours preference are preserved when zooming. Calendar dates are plotted
+in UTC to prevent browser timezone shifts.
+Charts use locally bundled **uPlot 1.6.32** (MIT license, included under
+`assets/vendor/uplot/`), sourced from the published npm package
+<https://www.npmjs.com/package/uplot/v/1.6.32>. No CDN requests or external
+transmission of project data are needed. Its assets load only on FMP details.
+Without JavaScript, the existing scrollable SVG and accessible data tables
+remain available; a failed library load also displays a warning.
+The red usage line shows **all recorded hours**, including Concept entries and
+hours on fixed-price or zero-value orders, valued at **EUR 90 per hour**.
+The dashed green usage line shows **sent invoice value excluding VAT**, not
+billable-hour eligibility or order commitments. It includes linked-order invoice
+lines and lines directly linked to the umbrella project, deduplicated by line ID.
+Each line contributes quantity times selling price after its percentage discount,
+rounded to cents; credits reduce the cumulative total. Only this project's lines
+are counted on shared invoices. Draft invoices are excluded; payment is not required.
+Usage is grouped by recording date or invoice date respectively, with cumulative
+month-end points and a partial-month point through today. Future-dated usage is
+excluded. The timeline extends for usage before the start or after the deadline;
+the Y scale includes overruns and negative credit balances. Actual usage is not
+projected into future months.
+In Hours mode, actual time is recorded time; invoice values are divided by EUR 90
+and are **hour equivalents**, not invoiced time-entry quantities.
+The dashboard's existing budget-left calculations still use committed order value.
+Usage is fetched only for project details and cached for five minutes for the
+current project and connection; **Refresh projects** also clears that cache.
+An API failure displays an error and leaves usage unavailable, never zero.
+Hover points for exact values or expand
+**View monthly values** for an accessible data table. The chart and summary honor
+the Euros / Hours Screen Option. Missing budgets or missing/invalid dates show
+an explanation instead of a fabricated chart; zero budgets remain valid.
+**Back to FMP** retains the original list page and selected unit.
 Project numbers open the corresponding umbrella project in
 **switch.gripp.com** in a new tab, using the application's encoded navigation
 fragment and the internal record ID (for example, number 1002 is record 2).
@@ -52,16 +128,16 @@ Use WordPress **Screen Options** at the top of FMP to show or hide columns.
 Preferences are saved per administrator and apply to both tables together.
 The **Euros / Hours** selector in **Screen Options** converts all budget figures in both tables at
 **EUR 90 per hour** (EUR 6,480 = 72 hours; EUR 540/month = 6 hours/month).
-Hours are budget equivalents, not logged time, and are displayed to two decimal
+Dashboard hours are budget equivalents, not logged time, and are displayed to two decimal
 places. Calculations and cached data stay in cents; colors and schedule statuses
 are unchanged. Click **Apply** to save the unit per administrator. This saved
 preference applies to both tables, including after pagination, refresh and later
 visits, and takes precedence over unit parameters in older URLs.
-Dashboard rows use `umbrellaproject.get`; `project.get` is used only to total
-orders linked to the displayed umbrella projects.
+Dashboard rows use `umbrellaproject.get`; `project.get` totals linked orders and
+identifies their recorded time and invoice lines on the details screen.
 Old cached ordinary orders and reports without budget data are ignored automatically;
 an existing connection does not need to be replaced if its API role already
-has read access to both resources.
+has read access to umbrella projects, orders and hours.
 Gripp date objects are displayed as calendar dates, preserving
 the date supplied by Gripp without timezone conversion. Gripp's zero-date
 placeholder is treated as an unset date.
@@ -103,6 +179,7 @@ and cached project page; it does not revoke the token in Gripp.
 
 API reference: <https://api.gripp.com/public/api3.php>.
 Run the standalone regression checks with `php tests/gripp.php`.
+Run the interactive chart auto-scaling checks with `node --test tests/fmp-chart.js`.
 
 ## Google Analytics (GA4)
 

@@ -3,6 +3,64 @@
 	padding: 12px;
 }
 
+.stuh-fmp-summary {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 16px;
+	margin: 20px 0;
+}
+
+.stuh-fmp-summary > div {
+	padding: 18px;
+	border: 1px solid #dcdcde;
+	border-radius: 6px;
+	background: #fff;
+}
+
+.stuh-fmp-summary dt {
+	color: #50575e;
+}
+
+.stuh-fmp-summary dd {
+	margin: 8px 0 0;
+	font-size: 24px;
+	font-weight: 600;
+}
+
+.stuh-fmp-budget-chart h2 {
+	margin-top: 4px;
+}
+
+.stuh-fmp-interactive-plot {
+	width: 100%;
+	min-width: 0;
+}
+
+.stuh-fmp-interactive-plot .u-legend {
+	white-space: normal;
+	font-size: 12px;
+}
+
+.stuh-fmp-interactive-plot .u-select {
+	background: rgba(34, 113, 177, 0.18);
+}
+
+.stuh-fmp-budget-area {
+	fill: #2271b1;
+	fill-opacity: 0.08;
+}
+
+.stuh-fmp-budget-limit {
+	stroke: #646970;
+	stroke-width: 2;
+	stroke-dasharray: 6 4;
+	vector-effect: non-scaling-stroke;
+}
+
+.stuh-fmp-budget-chart .stuh-fmp-budget-cumulative {
+	stroke-width: 2.5;
+}
+
 .stuh-analytics-chart.stuh-analytics-history h3 {
 	margin-bottom: 10px;
 }
@@ -108,6 +166,29 @@
 
 .stuh-analytics-legend .stuh-analytics-legend--previous::before {
 	border-color: #646970;
+	border-top-style: dashed;
+}
+
+.stuh-fmp-series-actual {
+	fill: #d63638;
+	stroke: #d63638;
+}
+
+.stuh-fmp-series-invoiced {
+	fill: #008a20;
+	stroke: #008a20;
+}
+
+.stuh-fmp-series-invoiced polyline {
+	stroke-dasharray: 8 4;
+}
+
+.stuh-analytics-legend .stuh-fmp-legend-actual::before {
+	border-color: #d63638;
+}
+
+.stuh-analytics-legend .stuh-fmp-legend-invoiced::before {
+	border-color: #008a20;
 	border-top-style: dashed;
 }
 
