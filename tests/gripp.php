@@ -112,6 +112,7 @@ function project_rows( int $start, int $count ): array {
 }
 function gripp_balance_cache( int $id = 1 ): array {
 	return [
+		'resource' => 'umbrellaproject-budget-hours-active-v4',
 		'connection' => hash( 'sha256', get_option( 'stuh_gripp_connection', '' ) ),
 		'id' => $id,
 		'project' => [ 'budget' => 648000, 'startdate' => '2000-01-01', 'deadline' => '2000-12-31', 'used' => 0 ],
@@ -157,7 +158,7 @@ STUH_Gripp::enqueue_assets( 'updater-host_page_stuh-fmp' );
 expect_gripp( empty( $GLOBALS['enqueued_scripts'] ) && empty( $GLOBALS['enqueued_styles'] ), 'Do not load interactive chart assets on Settings or the FMP list' );
 $_GET = [ 'project_id' => '1' ];
 STUH_Gripp::enqueue_assets( 'updater-host_page_stuh-fmp' );
-expect_gripp( 3 === count( $GLOBALS['enqueued_scripts'] ) && [ 'stuh-uplot' ] === $GLOBALS['enqueued_scripts'][1][2] && true === $GLOBALS['enqueued_scripts'][1][4] && 'stuh-fmp-export' === $GLOBALS['enqueued_scripts'][2][0] && str_contains( $GLOBALS['enqueued_scripts'][0][1], 'https://host.example/wp-content/plugins/' ) && 1 === count( $GLOBALS['enqueued_styles'] ), 'Load the locally hosted chart and rich-copy scripts in the footer only for FMP details' );
+expect_gripp( 2 === count( $GLOBALS['enqueued_scripts'] ) && [ 'stuh-uplot' ] === $GLOBALS['enqueued_scripts'][1][2] && true === $GLOBALS['enqueued_scripts'][1][4] && str_contains( $GLOBALS['enqueued_scripts'][0][1], 'https://host.example/wp-content/plugins/' ) && 1 === count( $GLOBALS['enqueued_styles'] ), 'Load the locally hosted chart scripts only on the Overview tab' );
 $_GET = [];
 expect_gripp( in_array( [ 'load-updater-host_page_stuh-fmp', [ STUH_Gripp::class, 'register_screen_options' ] ], $GLOBALS['hooks'], true ) && in_array( [ 'manage_updater-host_page_stuh-fmp_columns', [ STUH_Gripp::class, 'columns' ] ], $GLOBALS['filters'], true ), 'Register native Screen Options columns only on the FMP screen load hook' );
 expect_gripp( 'stuh-fmp' === $GLOBALS['menus'][0][4] && 'manage_options' === $GLOBALS['menus'][0][3], 'Register administrator-only FMP under Updater Host' );
@@ -528,7 +529,7 @@ $GLOBALS['transients']['stuh_gripp_projects'] = $detail_cache;
 $GLOBALS['transients']['stuh_gripp_balance'] = gripp_balance_cache();
 $detail_request_count = count( $GLOBALS['requests'] );
 $detail_html = gripp_render( 'render_dashboard', 250, 'eur', 1 );
-expect_gripp( str_contains( $detail_html, '<h1>Chart &lt;retainer&gt;</h1>' ) && ! str_contains( $detail_html, 'id="stuh-fmp-current"' ) && str_contains( $detail_html, 'offset=250&amp;unit=eur' ) && count( $GLOBALS['requests'] ) === $detail_request_count + 3, 'Details reuse the matching cached project, load usage and active orders separately, escape the title, and return to the original page' );
+expect_gripp( str_contains( $detail_html, '<h1>Chart &lt;retainer&gt;</h1>' ) && ! str_contains( $detail_html, 'id="stuh-fmp-current"' ) && ! str_contains( $detail_html, 'id="stuh-fmp-active-projects"' ) && ! str_contains( $detail_html, 'id="stuh-fmp-export-preview"' ) && str_contains( $detail_html, 'offset=250&amp;unit=eur' ) && count( $GLOBALS['requests'] ) === $detail_request_count + 2, 'Overview reuses the cached project, loads only chart usage, escapes the title, and leaves monthly report data to its own tab' );
 $xml_errors = libxml_use_internal_errors( true );
 $chart_document = new DOMDocument();
 $chart_document->loadHTML( $detail_html );
@@ -536,8 +537,8 @@ libxml_clear_errors();
 libxml_use_internal_errors( $xml_errors );
 $chart_xpath = new DOMXPath( $chart_document );
 $interactive_data = json_decode( $chart_xpath->query( '//figure[@data-stuh-fmp-chart]' )->item( 0 )->getAttribute( 'data-stuh-fmp-chart' ), true, 512, JSON_THROW_ON_ERROR );
-expect_gripp( 4 === count( $interactive_data['series'] ) && 13 === count( $interactive_data['series'][1]['points'] ) && [ 0, 54000, 648000 ] === [ $interactive_data['series'][1]['points'][0][1], $interactive_data['series'][1]['points'][1][1], $interactive_data['series'][1]['points'][12][1] ], 'Interactive series preserve exact accumulated allowances and all four series instead of converting or recomputing budgets' );
-expect_gripp( '2026-01-01 00:00:00' === gmdate( 'Y-m-d H:i:s', $interactive_data['series'][1]['points'][0][0] ) && '2026-12-31 23:59:59' === gmdate( 'Y-m-d H:i:s', $interactive_data['series'][1]['points'][12][0] ) && str_contains( $detail_html, 'data-stuh-fmp-reset disabled' ) && str_contains( $detail_html, 'data-stuh-fmp-static' ), 'Interactive periods use inclusive UTC calendar dates, offer reset, and retain the static chart for no-JavaScript and library-load failures' );
+expect_gripp( 5 === count( $interactive_data['series'] ) && 'bars' === $interactive_data['series'][4]['type'] && 13 === count( $interactive_data['series'][1]['points'] ) && [ 0, 54000, 648000 ] === [ $interactive_data['series'][1]['points'][0][1], $interactive_data['series'][1]['points'][1][1], $interactive_data['series'][1]['points'][12][1] ], 'Interactive series preserve exact accumulated allowances and all four existing lines alongside the monthly bars' );
+expect_gripp( '2025-12-01 00:00:00' === gmdate( 'Y-m-d H:i:s', $interactive_data['series'][1]['points'][0][0] ) && '2026-12-01 00:00:00' === gmdate( 'Y-m-d H:i:s', $interactive_data['series'][1]['points'][12][0] ) && str_contains( $detail_html, 'data-stuh-fmp-reset disabled' ) && str_contains( $detail_html, 'data-stuh-fmp-static' ), 'Monthly points use canonical UTC months with a separate preceding baseline, offer reset, and retain the static fallback' );
 $budget_line = $chart_xpath->query( '//line[@class="stuh-fmp-budget-limit"]' )->item( 0 );
 $allowance_line = $chart_xpath->query( '//polyline[@class="stuh-fmp-budget-cumulative"]' )->item( 0 );
 expect_gripp( null !== $budget_line && null !== $allowance_line && $budget_line->getAttribute( 'y1' ) === $budget_line->getAttribute( 'y2' ), 'Details contain a truly horizontal total budget line and a separate cumulative allowance polyline' );
@@ -601,6 +602,8 @@ $usage_hours = [
 	[ 'id' => 51, 'offerprojectbase' => [ 'id' => 41 ], 'amount' => 2.125, 'date' => [ 'date' => '1999-12-20 00:00:00.000000' ], 'status' => [ 'id' => 1, 'searchname' => 'Concept' ] ],
 	[ 'id' => 52, 'offerprojectbase' => 42, 'amount' => '1.5', 'date' => '2000-02-15' ],
 	[ 'id' => 53, 'offerprojectbase' => 42, 'amount' => 100, 'date' => '3000-01-01' ],
+	[ 'id' => 54, 'offerprojectbase' => 41, 'offerprojectline' => 81, 'amount' => 100, 'date' => '1999-12-20' ],
+	[ 'id' => 55, 'offerprojectbase' => 42, 'offerprojectline' => 82, 'amount' => -5, 'date' => '2000-02-15' ],
 ];
 $sent_line = [ 'id' => 61, 'umbrellaproject' => [ 'id' => 1 ], 'project' => [ 'id' => 42 ], 'invoice' => [ 'id' => 71 ], 'amount' => 2, 'sellingprice' => '90.00', 'discount' => '10' ];
 $zero_line = array_merge( $sent_line, [ 'id' => 62, 'amount' => 0, 'umbrellaproject' => null ] );
@@ -609,6 +612,10 @@ $credit_line = array_merge( $sent_line, [ 'id' => 64, 'invoice' => 73, 'amount' 
 $GLOBALS['entity_responses'] = [
 	'project.get' => [ project_response( $usage_orders ) ],
 	'hour.get' => [ project_response( $usage_hours ) ],
+	'offerprojectline.get' => [ project_response( [
+		[ 'id' => 81, 'offerprojectbase' => 41, 'product' => [ 'id' => 91, 'searchname' => 'Webdevelopment (ND / intern) (8026)' ] ],
+		[ 'id' => 82, 'offerprojectbase' => 42, 'product' => [ 'id' => 92, 'searchname' => 'Marketing ( nd/intern )' ] ],
+	] ) ],
 	'invoiceline.get' => [ project_response( [ $sent_line ] ), project_response( [ $sent_line, $zero_line, $draft_line, $credit_line ] ) ],
 	'invoice.get' => [ project_response( [
 		[ 'id' => 71, 'date' => '2000-02-20', 'totalincldiscountexclvat' => '999999.00' ],
@@ -616,12 +623,14 @@ $GLOBALS['entity_responses'] = [
 	] ) ],
 ];
 $usage_request_count = count( $GLOBALS['requests'] );
-$events = invoke_gripp( 'fetch_usage', 'test-token', 1 );
-expect_gripp( is_array( $events ) && 6 === count( $events ) && 7200 === array_sum( array_column( $events, 'invoiced' ) ), 'Usage counts each invoice line once, excludes draft invoices and unrelated invoice totals, and retains discounts, zero amounts and negative credits' );
+$GLOBALS['transients']['stuh_gripp_usage'] = [ 'resource' => 'umbrellaproject-budget-hours-active-v3', 'connection' => hash( 'sha256', $stored ), 'id' => 1, 'events' => [ [ 'actual' => 999999 ] ] ];
+$events = invoke_gripp( 'usage', 'test-token', 1 );
+expect_gripp( is_array( $events ) && 5 === count( $events ) && 7200 === array_sum( array_column( $events, 'invoiced' ) ), 'Usage counts each invoice line once, excludes future time, draft invoices and unrelated invoice totals, and retains discounts, zero amounts and negative credits' );
 expect_gripp( 19125 === $events[0]['actual'] && '1999-12-20' === $events[0]['date'], 'Actual time includes Concept entries on zero-value orders and preserves fractional hours before conversion at EUR 90' );
+expect_gripp( 32625 === array_sum( array_column( $events, 'actual' ) ), 'Invalidate old usage caches and exclude ND / intern hours and corrections from the chart, matching case-insensitively with optional spacing and trailing product IDs' );
 $usage_calls = array_map( static fn( $request ) => json_decode( $request[1]['body'], true )[0], array_slice( $GLOBALS['requests'], $usage_request_count ) );
 expect_gripp( [ [ 'field' => 'hour.offerprojectbase', 'operator' => 'in', 'value' => [ 41, 42 ] ] ] === $usage_calls[2]['params'][0], 'Load all recorded time for linked orders without filtering out Concept entries or zero-value work' );
-expect_gripp( [ [ 'field' => 'invoice.id', 'operator' => 'in', 'value' => [ 71, 72, 73 ] ], [ 'field' => 'invoice.status', 'operator' => 'equals', 'value' => 'SENT' ] ] === $usage_calls[4]['params'][0], 'Use the API sent-invoice status filter, not localized status labels or time-entry authorization' );
+expect_gripp( [ [ 'field' => 'invoice.id', 'operator' => 'in', 'value' => [ 71, 72, 73 ] ], [ 'field' => 'invoice.status', 'operator' => 'equals', 'value' => 'SENT' ] ] === $usage_calls[5]['params'][0], 'Use the API sent-invoice status filter, not localized status labels or time-entry authorization' );
 expect_gripp( ! array_filter( $GLOBALS['entity_responses'] ), 'Consume all explicitly queued usage responses' );
 unset( $GLOBALS['entity_responses'] );
 
@@ -629,6 +638,7 @@ $usage_project = array_merge( $year, [ 'startdate' => '2000-01-01', 'deadline' =
 $usage_plan = invoke_gripp( 'budget_chart_data', $usage_project );
 $current_usage = invoke_gripp( 'usage_chart_data', $usage_project, $usage_plan, $events, new DateTimeImmutable( '2000-06-15', wp_timezone() ) );
 expect_gripp( 32625 === $current_usage['actual'] && 16200 === $current_usage['invoiced'] && '2000-06-15' === end( $current_usage['usage'] )['date'], 'Cumulative usage stops at today, retains all recorded time, and excludes future invoices and future time rather than forecasting them' );
+expect_gripp( [ 19125, 0, 13500, 0, 0, 0, 0 ] === array_column( $current_usage['monthly_usage'], 'actual' ) && '2000-06-15' === end( $current_usage['monthly_usage'] )['date'], 'Monthly bars reset each calendar month, include zero months and pre-start work, exclude internal/future time, and stop at today without changing cumulative lines' );
 expect_gripp( '1999-12-31' === $current_usage['axis'][0]['date'] && '2000-12-31' === end( $current_usage['axis'] )['date'] && $current_usage['points'][0]['months'] > 0, 'Pre-start work extends the monthly axis and shifts the planned line without changing the project allowance period' );
 $finished_usage = invoke_gripp( 'usage_chart_data', $usage_project, $usage_plan, $events, new DateTimeImmutable( '2001-02-01', wp_timezone() ) );
 expect_gripp( 7200 === $finished_usage['invoiced'] && '2001-01-15' === end( $finished_usage['usage'] )['date'] && '2001-01-15' === end( $finished_usage['axis'] )['date'], 'Post-deadline credits extend the timeline on their invoice date without flattening actual usage out to an unrelated future date' );
@@ -652,12 +662,44 @@ $actual_line = $chart_xpath->query( '//g[contains(@class,"stuh-fmp-series-actual
 $invoice_line = $chart_xpath->query( '//g[contains(@class,"stuh-fmp-series-invoiced")]/polyline' )->item( 0 );
 $actual_coordinates = array_map( static fn( $point ) => array_map( 'floatval', explode( ',', $point ) ), explode( ' ', $actual_line->getAttribute( 'points' ) ) );
 expect_gripp( null !== $invoice_line && 60.0 === end( $actual_coordinates )[1] && end( $actual_coordinates )[0] < 960, 'Both real usage curves render, overruns expand the Y scale, and actual usage stops before the future end of the planned line' );
-expect_gripp( str_contains( $usage_html, '3.63 h' ) && str_contains( $usage_html, '1.80 h' ) && str_contains( $usage_html, 'Recorded and invoiced usage' ) && str_contains( $usage_html, 'Concept' ), 'Accessible tables and hover values distinguish recorded hours from invoiced equivalents and describe the included time statuses' );
+expect_gripp( str_contains( $usage_html, '3.63 h' ) && str_contains( $usage_html, '1.80 h' ) && str_contains( $usage_html, 'Recorded and invoiced usage' ) && ! str_contains( $usage_html, 'The horizontal line is' ) && ! str_contains( $usage_html, 'The shaded gap between' ) && ! str_contains( $usage_html, 'Gold bars show' ) && ! str_contains( $usage_html, 'Red shows all' ), 'Keep exact accessible values and legends without the explanatory wall of text above the chart' );
 $negative_usage = invoke_gripp( 'usage_chart_data', $usage_project, $usage_plan, [ [ 'date' => '2000-02-01', 'actual' => 0, 'invoiced' => -9000 ] ], new DateTimeImmutable( '2000-03-01', wp_timezone() ) );
 ob_start();
 invoke_gripp( 'render_budget_chart', $usage_project, $negative_usage, 'eur' );
 $negative_html = ob_get_clean();
 expect_gripp( str_contains( $negative_html, '€-90.00' ) && ! str_contains( $negative_html, 'NAN' ) && ! str_contains( $negative_html, 'INF' ), 'Credit-only histories retain negative invoice values and finite chart coordinates' );
+$monthly_correction = invoke_gripp( 'usage_chart_data', $usage_project, $usage_plan, [
+	[ 'date' => '2000-01-31', 'actual' => 18000, 'invoiced' => 0 ],
+	[ 'date' => '2000-02-01', 'actual' => -27000, 'invoiced' => 0 ],
+	[ 'date' => '2000-02-29', 'actual' => 9000, 'invoiced' => 0 ],
+	[ 'date' => '2000-03-05', 'actual' => 4500, 'invoiced' => 0 ],
+	[ 'date' => '2000-03-11', 'actual' => 9000, 'invoiced' => 0 ],
+], new DateTimeImmutable( '2000-03-10', wp_timezone() ) );
+expect_gripp( [ 18000, -18000, 4500 ] === array_column( $monthly_correction['monthly_usage'], 'actual' ) && 4500 === $monthly_correction['actual'], 'Leap-month boundaries, negative monthly corrections and current-month partial hours aggregate independently, excluding future entries' );
+ob_start();
+invoke_gripp( 'render_budget_chart', $usage_project, $monthly_correction, 'eur' );
+$monthly_bar_html = ob_get_clean();
+$xml_errors = libxml_use_internal_errors( true );
+$chart_document->loadHTML( $monthly_bar_html );
+libxml_clear_errors();
+libxml_use_internal_errors( $xml_errors );
+$monthly_xpath = new DOMXPath( $chart_document );
+$monthly_payload = json_decode( $monthly_xpath->query( '//figure[@data-stuh-fmp-chart]' )->item( 0 )->getAttribute( 'data-stuh-fmp-chart' ), true, 512, JSON_THROW_ON_ERROR );
+expect_gripp( [ 18000, -18000, 4500 ] === array_column( $monthly_payload['series'][4]['points'], 1 ) && 3 === $monthly_xpath->query( '//rect[@class="stuh-fmp-monthly-bar" and number(@height)>0 and number(@width)>0]' )->length && str_contains( $monthly_bar_html, '2.00 h (€180.00)' ) && str_contains( $monthly_bar_html, '-2.00 h (€-180.00)' ) && str_contains( $monthly_bar_html, '<td>-2.00 h</td>' ), 'Interactive bars, accessible monthly-hour values and SVG bars share exact non-cumulative totals, with hour tooltips even in Euros mode' );
+expect_gripp( true === $monthly_payload['series'][2]['provisional'] && 1 === $monthly_xpath->query( '//g[contains(@class,"stuh-fmp-series-actual")]/polyline[@stroke-dasharray="2 4"]' )->length && array_column( $monthly_payload['series'][4]['points'], 0 ) === array_slice( array_column( $monthly_payload['series'][2]['points'], 0 ), 1 ), 'Align bars and cumulative actual points to the exact same month and dot only the provisional current-month segment in both chart renderers' );
+$svg_bar = $monthly_xpath->query( '//rect[@class="stuh-fmp-monthly-bar"]' )->item( 2 );
+$svg_actual = $monthly_xpath->query( '//g[contains(@class,"stuh-fmp-series-actual")]/circle' )->item( 3 );
+expect_gripp( abs( (float) $svg_actual->getAttribute( 'cx' ) - ( (float) $svg_bar->getAttribute( 'x' ) + (float) $svg_bar->getAttribute( 'width' ) / 2 ) ) < 0.01, 'Center partial-month SVG bars under the matching line point' );
+ob_start();
+invoke_gripp( 'render_budget_chart', $usage_project, $finished_usage, 'hours' );
+$historical_chart_html = ob_get_clean();
+expect_gripp( ! str_contains( $historical_chart_html, '&quot;provisional&quot;' ) && ! str_contains( $historical_chart_html, 'stroke-dasharray="2 4"' ), 'Entirely historical actual lines remain solid' );
+$variance_regions = invoke_gripp( 'budget_variance_regions', [ [ 0, 0 ], [ 100, 100 ] ], [ [ 0, 20 ], [ 100, 80 ], [ 200, 200 ] ] );
+expect_gripp( 2 === count( $variance_regions ) && true === $variance_regions[0]['over'] && false === $variance_regions[1]['over'] && [ 50.0, 50.0 ] === $variance_regions[0]['points'][1] && $variance_regions[0]['points'][1] === $variance_regions[1]['points'][0] && 100 === $variance_regions[1]['points'][1][0], 'Split budget variance exactly at the interpolated line crossing, red above and green below, without shading beyond the shared period' );
+expect_gripp( [] === invoke_gripp( 'budget_variance_regions', [ [ 0, 0 ], [ 100, 100 ] ], [ [ 0, 0 ], [ 100, 100 ] ] ) && [] === invoke_gripp( 'budget_variance_regions', [ [ 0, 0 ], [ 100, 100 ] ], [] ), 'Equal lines or unavailable recorded time do not create misleading colored areas' );
+$variance_regions = invoke_gripp( 'budget_variance_regions', [ [ 0, 0 ], [ 100, 0 ] ], [ [ 0, -20 ], [ 25, -10 ], [ 50, 0 ], [ 100, 20 ] ] );
+expect_gripp( [ false, false, true ] === array_column( $variance_regions, 'over' ), 'Negative corrections, extra actual samples and crossings exactly on a point preserve correct variance colors' );
+expect_gripp( $monthly_xpath->query( '//polygon[@class="stuh-fmp-variance-over"]' )->length > 0 && $monthly_xpath->query( '//polygon[@class="stuh-fmp-variance-under"]' )->length > 0 && count( $monthly_payload['variance'] ) === $monthly_xpath->query( '//polygon[starts-with(@class,"stuh-fmp-variance-")]' )->length, 'Static SVG and interactive shading use the same red/green regions, including the provisional current-month segment' );
 
 $hour_page = [];
 for ( $id = 1; $id <= 250; $id++ ) {
@@ -685,17 +727,17 @@ foreach ( [
 unset( $GLOBALS['entity_responses'] );
 $detail_cache['data']['rows'] = [ array_merge( $detail_project, $usage_project ) ];
 $GLOBALS['transients']['stuh_gripp_projects'] = $detail_cache;
-$GLOBALS['transients']['stuh_gripp_usage'] = [ 'connection' => hash( 'sha256', $stored ), 'id' => 1, 'events' => $events ];
+$GLOBALS['transients']['stuh_gripp_usage'] = [ 'resource' => 'umbrellaproject-budget-hours-active-v4', 'connection' => hash( 'sha256', $stored ), 'id' => 1, 'events' => $events ];
 $before_usage_cache = count( $GLOBALS['requests'] );
 $recorded_details = gripp_render( 'render_dashboard', 250, 'hours', 1 );
-expect_gripp( count( $GLOBALS['requests'] ) === $before_usage_cache + 1 && str_contains( $recorded_details, '3.63 h' ) && str_contains( $recorded_details, '0.80 h' ) && str_contains( $recorded_details, 'Committed order value' ), 'Details reuse the connection-specific usage cache, independently load the active table, and separate recorded hours, invoiced equivalents and committed value' );
+expect_gripp( count( $GLOBALS['requests'] ) === $before_usage_cache && str_contains( $recorded_details, '3.63 h' ) && str_contains( $recorded_details, '0.80 h' ) && str_contains( $recorded_details, 'Committed order value' ), 'Overview reuses the usage cache without loading active projects and separates recorded hours, invoiced equivalents and committed value' );
 $xml_errors = libxml_use_internal_errors( true );
 $chart_document->loadHTML( $recorded_details );
 libxml_clear_errors();
 libxml_use_internal_errors( $xml_errors );
 $chart_xpath = new DOMXPath( $chart_document );
 $interactive_usage = json_decode( $chart_xpath->query( '//figure[@data-stuh-fmp-chart]' )->item( 0 )->getAttribute( 'data-stuh-fmp-chart' ), true, 512, JSON_THROW_ON_ERROR );
-expect_gripp( 'hours' === $interactive_usage['unit'] && 32625 === end( $interactive_usage['series'][2]['points'] )[1] && 7200 === end( $interactive_usage['series'][3]['points'] )[1] && '2001-01-15' === gmdate( 'Y-m-d', end( $interactive_usage['series'][3]['points'] )[0] ), 'Zoomable payloads retain overruns, selected units, invoice credits and actual end dates without projecting usage to future points' );
+expect_gripp( 'hours' === $interactive_usage['unit'] && 32625 === end( $interactive_usage['series'][2]['points'] )[1] && 7200 === end( $interactive_usage['series'][3]['points'] )[1] && '2001-01-01' === gmdate( 'Y-m-d', end( $interactive_usage['series'][3]['points'] )[0] ), 'Zoomable payloads retain overruns, selected units and invoice credits while aligning usage to its month' );
 $GLOBALS['transients']['stuh_gripp_usage']['connection'] = 'another-connection';
 $GLOBALS['entity_responses'] = [
 	'project.get' => [ project_response( [] ) ],
@@ -731,6 +773,9 @@ $GLOBALS['entity_responses']['hour.get'] = [
 		[ 'id' => 2251, 'offerprojectbase' => 1001, 'offerprojectline' => 6002, 'amount' => 0.125, 'date' => '2000-01-01' ],
 		[ 'id' => 2252, 'offerprojectbase' => 1002, 'offerprojectline' => 6003, 'amount' => 4.25, 'date' => '2000-01-01' ],
 		[ 'id' => 2253, 'offerprojectbase' => 1001, 'amount' => 100, 'date' => '3000-01-01' ],
+		[ 'id' => 2255, 'offerprojectbase' => 1001, 'offerprojectline' => 6004, 'amount' => 10, 'date' => '2000-01-01' ],
+		[ 'id' => 2256, 'offerprojectbase' => 1001, 'offerprojectline' => 6004, 'amount' => -1, 'date' => '1999-12-01' ],
+		[ 'id' => 2257, 'offerprojectbase' => 1003, 'offerprojectline' => 6005, 'amount' => 5, 'date' => '1999-12-01' ],
 	] ),
 	project_response( [ [ 'id' => 2254, 'offerprojectbase' => 1251, 'amount' => 1.5, 'date' => '2000-01-01' ] ] ),
 ];
@@ -738,6 +783,8 @@ $GLOBALS['entity_responses']['offerprojectline.get'] = [ project_response( [
 	[ 'id' => 6001, 'offerprojectbase' => [ 'id' => 1001 ], 'product' => [ 'id' => 101, 'searchname' => 'Webdevelopment' ] ],
 	[ 'id' => 6002, 'offerprojectbase' => 1001, 'product' => [ 'id' => 102, 'searchname' => 'Project Management' ] ],
 	[ 'id' => 6003, 'offerprojectbase' => 1002, 'product' => [ 'id' => 101, 'searchname' => 'Webdevelopment' ] ],
+	[ 'id' => 6004, 'offerprojectbase' => 1001, 'product' => [ 'id' => 103, 'searchname' => 'Webdevelopment (ND / intern)' ] ],
+	[ 'id' => 6005, 'offerprojectbase' => 1003, 'product' => [ 'id' => 103, 'searchname' => 'Webdevelopment (ND / intern)' ] ],
 ] ) ];
 $active_request_count = count( $GLOBALS['requests'] );
 $active_orders = invoke_gripp( 'active_orders', 'test-token', 1 );
@@ -750,14 +797,15 @@ $last_hour_query = json_decode( end( $active_hour_requests )[1]['body'], true )[
 expect_gripp( [ [ 'field' => 'hour.offerprojectbase', 'operator' => 'in', 'value' => [ 1251 ] ] ] === $last_hour_query['params'][0], 'Load actual hours for the second batch of active order IDs, rather than only the first 250 projects' );
 expect_gripp( [ 'Webdevelopment', 'Project Management' ] === array_column( $active_orders[0]['products'], 'name' ) && 2.5 === $active_orders[0]['products'][0]['hours'] && 0.125 === $active_orders[0]['products'][1]['hours'] && 4.25 === $active_orders[1]['products'][0]['hours'] && 101 === $active_orders[1]['products'][0]['id'] && 'No product' === $active_orders[250]['products'][0]['name'] && [] === $active_orders[2]['products'], 'Summarize paginated Concept time by product within each project, without merging the same product across projects or fabricating rows for projects without time' );
 expect_gripp( abs( array_sum( array_column( $active_orders[0]['products'], 'hours' ) ) - $active_orders[0]['hours'] ) < 0.000001 && ! $GLOBALS['entity_responses']['offerprojectline.get'], 'Product-hour subtotals reconcile to the project total before display rounding and use the batched line metadata' );
+expect_gripp( 0.0 === $active_orders[2]['hours'] && [] === $active_orders[2]['months'] && [] === invoke_gripp( 'filter_active_orders', $active_orders, '1999-12' ) && ! str_contains( json_encode( $active_orders ), 'ND / intern' ), 'Exclude internal products from active totals and breakdowns, and hide projects and months with only internal time' );
 $active_cached_count = count( $GLOBALS['requests'] );
 invoke_gripp( 'active_orders', 'test-token', 1 );
 expect_gripp( count( $GLOBALS['requests'] ) === $active_cached_count, 'Repeated detail views reuse the matching active-project cache' );
 $detail_cache['data']['rows'] = [ array_merge( $detail_project, [ 'budget' => null ] ) ];
 $GLOBALS['transients']['stuh_gripp_projects'] = $detail_cache;
-$active_detail_html = gripp_render( 'render_dashboard', 250, 'eur', 1 );
+$active_detail_html = gripp_render( 'render_dashboard', 250, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $active_detail_html, 'id="stuh-fmp-active-projects"' ) && str_contains( $active_detail_html, 'Last active order' ) && str_contains( $active_detail_html, '&lt;img src=x onerror=alert(1)&gt;' ) && ! str_contains( $active_detail_html, '<img' ) && ! str_contains( $active_detail_html, '2000-01-01' ) && ! str_contains( $active_detail_html, '<svg' ) && str_contains( $active_detail_html, '2.63 h' ) && str_contains( $active_detail_html, '4.25 h' ) && ! str_contains( $active_detail_html, '>Delivery date<' ), 'Details replace unused dates with actual logged hours, including zero-value work, while escaping project content and working without a chart' );
-expect_gripp( str_contains( $active_detail_html, '€0.00' ) && str_contains( $active_detail_html, '€-90.00' ) && str_contains( gripp_render( 'render_dashboard', 250, 'hours', 1 ), '10.00 h' ), 'The active-project table respects the Euros/Hours choice without dropping zero or negative order values' );
+expect_gripp( str_contains( $active_detail_html, '€0.00' ) && str_contains( $active_detail_html, '€-90.00' ) && str_contains( gripp_render( 'render_dashboard', 250, 'hours', 1, 'reports' ), '10.00 h' ), 'The active-project table respects the Euros/Hours choice without dropping zero or negative order values' );
 $xml_errors = libxml_use_internal_errors( true );
 $chart_document->loadHTML( $active_detail_html );
 libxml_clear_errors();
@@ -780,15 +828,15 @@ foreach ( [ [ 'archived' => true ], [ 'archived' => null ], [ 'umbrellaproject' 
 	expect_gripp( is_wp_error( invoke_gripp( 'active_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'Invalid, archived or unrelated active-order responses are explicit errors and never cached as a successful list' );
 }
 $GLOBALS['entity_responses']['project.get'] = [ project_response( $active_page, true, 250 ), gripp_response( [], 403 ) ];
-$failed_active = gripp_render( 'render_dashboard', 250, 'eur', 1 );
+$failed_active = gripp_render( 'render_dashboard', 250, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $failed_active, 'HTTP 403' ) && ! str_contains( $failed_active, 'No active projects linked' ) && ! str_contains( $failed_active, 'id="stuh-fmp-active-projects"' ) && false === get_transient( 'stuh_gripp_active_orders' ), 'A failed later active-project page displays an error, never a partial table or misleading empty state' );
 $GLOBALS['entity_responses']['project.get'] = [ project_response( [] ) ];
-$empty_active = gripp_render( 'render_dashboard', 250, 'eur', 1 );
+$empty_active = gripp_render( 'render_dashboard', 250, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $empty_active, '<td colspan="4">No active projects linked to this umbrella project.</td>' ), 'An actually empty active-project list has an explicit table empty state matching the new columns' );
 delete_transient( 'stuh_gripp_active_orders' );
 $GLOBALS['entity_responses']['project.get'] = [ project_response( [ $active_order ] ) ];
 $GLOBALS['entity_responses']['hour.get'] = [ project_response( $active_hour_page, true, 250 ), gripp_response( [], 403 ) ];
-$failed_hours = gripp_render( 'render_dashboard', 250, 'eur', 1 );
+$failed_hours = gripp_render( 'render_dashboard', 250, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $failed_hours, 'HTTP 403' ) && ! str_contains( $failed_hours, 'id="stuh-fmp-active-projects"' ) && false === get_transient( 'stuh_gripp_active_orders' ), 'A failed later hour page cannot cache or display a misleading partial or zero-hours total' );
 $GLOBALS['transients']['stuh_gripp_active_orders'] = [ 'connection' => hash( 'sha256', $stored ), 'id' => 1, 'rows' => [ [ 'name' => 'Old date-only cache' ] ] ];
 $GLOBALS['entity_responses']['project.get'] = [ project_response( [ $active_order ] ) ];
@@ -907,13 +955,19 @@ $editor_dashboard = gripp_render( 'render_dashboard' );
 expect_gripp( str_contains( $editor_dashboard, 'id="stuh-fmp-current"' ) && str_contains( $editor_dashboard, 'Refresh projects' ) && ! str_contains( $editor_dashboard, '>Gripp settings</a>' ), 'Editors can view FMP and refresh data but do not see a link to restricted connection settings' );
 expect_gripp( 'hours' === STUH_Gripp::save_display_unit( false, 'stuh_fmp_unit', 'hours' ), 'Editors can save their own budget unit through native Screen Options' );
 $GLOBALS['transients']['stuh_gripp_balance'] = gripp_balance_cache();
-$editor_detail = gripp_render( 'render_dashboard', 0, 'eur', 1 );
+$editor_detail = gripp_render( 'render_dashboard', 0, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $editor_detail, '<h1>' ) && str_contains( $editor_detail, 'id="stuh-fmp-active-projects"' ), 'Editors can open umbrella project details and their active-project table' );
 $_GET = [ 'project_id' => '1' ];
 $editor_script_count = count( $GLOBALS['enqueued_scripts'] );
 STUH_Gripp::enqueue_assets( 'toplevel_page_stuh-fmp' );
 $_GET = [];
-expect_gripp( count( $GLOBALS['enqueued_scripts'] ) === $editor_script_count + 3, 'Editor details load the interactive chart and rich-copy scripts on their standalone FMP screen' );
+expect_gripp( count( $GLOBALS['enqueued_scripts'] ) === $editor_script_count + 2, 'Editor Overview loads the chart scripts on their standalone FMP screen' );
+$_GET = [ 'project_id' => '1', 'project_tab' => 'reports' ];
+$report_script_count = count( $GLOBALS['enqueued_scripts'] );
+$report_style_count = count( $GLOBALS['enqueued_styles'] );
+STUH_Gripp::enqueue_assets( 'toplevel_page_stuh-fmp' );
+$_GET = [];
+expect_gripp( count( $GLOBALS['enqueued_scripts'] ) === $report_script_count + 1 && 'stuh-fmp-export' === $GLOBALS['enqueued_scripts'][ $report_script_count ][0] && count( $GLOBALS['enqueued_styles'] ) === $report_style_count, 'Editors get only the rich-copy script on Monthly reports, without loading chart scripts or styles' );
 foreach ( [ 'connect', 'disconnect' ] as $admin_operation ) {
 	try {
 		gripp_action( $admin_operation, [ 'api_token' => 'must-not-be-saved' ] );
@@ -1255,11 +1309,38 @@ foreach ( [ [ 'edit_others_posts' ], [ 'read', 'edit_posts' ], [ 'read' ] ] as $
 	}
 }
 $GLOBALS['capabilities'] = [ 'edit_others_posts' ];
-$editor_project_html = gripp_render( 'render_dashboard', 0, 'eur', 1 );
-expect_gripp( str_contains( $editor_project_html, 'id="stuh-fmp-active-projects"' ) && ! str_contains( $editor_project_html, 'project_tab=settings' ) && ! str_contains( $editor_project_html, 'client_ids[]' ), 'Editors retain overview access without a Settings tab or site-link controls' );
+$editor_project_html = gripp_render( 'render_dashboard', 0, 'eur', 1, 'reports' );
+expect_gripp( str_contains( $editor_project_html, 'id="stuh-fmp-active-projects"' ) && str_contains( $editor_project_html, '>Monthly reports</a>' ) && ! str_contains( $editor_project_html, 'project_tab=settings' ) && ! str_contains( $editor_project_html, 'client_ids[]' ) && ! str_contains( $editor_project_html, 'data-stuh-fmp-chart=' ), 'Editors can open Monthly reports without seeing Settings, site-link controls or the Overview chart' );
 $GLOBALS['capabilities'] = [ 'manage_options' ];
-$admin_project_html = gripp_render( 'render_dashboard', 0, 'eur', 1 );
+$admin_project_html = gripp_render( 'render_dashboard', 0, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $admin_project_html, 'project_tab=settings' ) && str_contains( $admin_project_html, 'id="stuh-fmp-active-projects"' ), 'Administrators can navigate from the existing overview to project-specific Settings' );
+$tab_document = new DOMDocument();
+$xml_errors = libxml_use_internal_errors( true );
+$tab_document->loadHTML( $admin_project_html );
+libxml_clear_errors();
+libxml_use_internal_errors( $xml_errors );
+$tab_xpath = new DOMXPath( $tab_document );
+$tab_labels = [];
+foreach ( $tab_xpath->query( '//nav/a' ) as $tab_link ) {
+	$tab_labels[] = $tab_link->textContent;
+}
+expect_gripp( [ 'Overview', 'Monthly reports', 'Settings' ] === $tab_labels && 'Monthly reports' === $tab_xpath->query( '//nav/a[@aria-current="page"]' )->item( 0 )->textContent && 1 === $tab_xpath->query( '//form[@method="get"]//input[@name="project_tab" and @value="reports"]' )->length, 'Order administrator tabs as Overview, Monthly reports, Settings, mark the selected tab, and keep calendar-month submissions on Reports' );
+expect_gripp( ! str_contains( $admin_project_html, 'class="stuh-fmp-summary"' ) && ! str_contains( $admin_project_html, 'data-stuh-fmp-chart=' ) && str_contains( $admin_project_html, 'id="stuh-fmp-export-preview"' ), 'Monthly reports contains its export and filters, not duplicate Overview budget cards or charts' );
+$_GET = [ 'project_id' => '1', 'project_tab' => 'settings' ];
+$settings_script_count = count( $GLOBALS['enqueued_scripts'] );
+STUH_Gripp::enqueue_assets( 'updater-host_page_stuh-fmp' );
+$_GET = [];
+expect_gripp( $settings_script_count === count( $GLOBALS['enqueued_scripts'] ), 'Project Settings does not enqueue chart or rich-copy scripts' );
+foreach ( [ [ 'read' ], [ 'read', 'edit_posts' ] ] as $capabilities ) {
+	$GLOBALS['capabilities'] = $capabilities;
+	try {
+		gripp_render( 'render_dashboard', 0, 'eur', 1, 'reports' );
+		throw new RuntimeException( 'Lower-privilege monthly report access succeeded' );
+	} catch ( RuntimeException $error ) {
+		expect_gripp( 'Insufficient permissions' === $error->getMessage(), 'Authors and subscribers cannot directly open Monthly reports' );
+	}
+}
+$GLOBALS['capabilities'] = [ 'manage_options' ];
 expect_gripp( ! array_filter( $GLOBALS['entity_responses'] ), 'Consume all expected project-settings responses' );
 unset( $GLOBALS['capabilities'], $GLOBALS['entity_responses'], $GLOBALS['clients'] );
 $GLOBALS['clients'] = [
@@ -1320,7 +1401,7 @@ expect_gripp( $grouped_forms_only['text'] === $preview_value( $forms_only_html )
 $GLOBALS['capabilities'] = [ 'edit_others_posts' ];
 $editor_grouped_export = $export_document();
 expect_gripp( $editor_grouped_export === $grouped_forms_export, 'Editors receive the same filtered site-grouped export as administrators' );
-$editor_forms_html = gripp_render( 'render_dashboard', 0, 'eur', 1 );
+$editor_forms_html = gripp_render( 'render_dashboard', 0, 'eur', 1, 'reports' );
 expect_gripp( str_contains( $editor_forms_html, 'id="stuh-fmp-gravity-forms"' ) && ! str_contains( $editor_forms_html, 'project_tab=settings' ), 'Linked Gravity Forms reports appear on the editor overview while site-link settings remain admin-only' );
 $GLOBALS['capabilities'] = [ 'manage_options' ];
 $forms_settings_html = gripp_render( 'render_dashboard', 0, 'eur', 1, 'settings' );
@@ -1353,6 +1434,34 @@ $balance_history = [ '2025-12-31' => 122.26, '2026-09-01' => 1.0, '2026-09-02' =
 $balance_today = new DateTimeImmutable( '2026-11-19', wp_timezone() );
 $september_balance = invoke_gripp( 'calculate_monthly_balance', $balance_project, $balance_history, '2026-09', $balance_today );
 expect_gripp( abs( $september_balance['opening'] - 5.74 ) < 0.000001 && 16.0 === $september_balance['allowance'] && abs( $september_balance['worked'] - 7.83 ) < 0.000001 && abs( $september_balance['closing'] - 13.91 ) < 0.000001, 'Calculate the example opening, allowance, worked and closing values from the actual budget and full history, including pre-start hours and excluding future time' );
+foreach ( [ 100.0, 125.0 ] as $earlier_hours ) {
+	$carry_history = [ '2026-07-31' => $earlier_hours, '2026-08-31' => 20.0, '2026-09-05' => 7.83 ];
+	$carry_today = new DateTimeImmutable( '2026-09-10', wp_timezone() );
+	$previous_balance = invoke_gripp( 'calculate_monthly_balance', $balance_project, $carry_history, '2026-08', $carry_today );
+	$current_balance = invoke_gripp( 'calculate_monthly_balance', $balance_project, $carry_history, '2026-09', $carry_today );
+	$previous_schedule = invoke_gripp( 'budget_schedule', $balance_project, new DateTimeImmutable( '2026-08-31', wp_timezone() ) );
+	$previous_real_left = $previous_schedule['planned'] / 9000.0 - $earlier_hours - 20.0;
+	expect_gripp( abs( $current_balance['opening'] - $previous_real_left ) < 0.000001 && abs( $current_balance['opening'] - $previous_balance['closing'] ) < 0.000001 && 16.0 === $current_balance['allowance'] && abs( $current_balance['worked'] - 7.83 ) < 0.000001 && abs( $current_balance['closing'] - ( $previous_real_left + 16.0 - 7.83 ) ) < 0.000001, 'Carry positive or negative previous-month Real budget left to date into opening hours, then add the full regular monthly allowance and subtract this month actual hours even mid-month' );
+}
+$GLOBALS['entity_responses'] = [
+	'project.get' => [ project_response( [
+		[ 'id' => 1001, 'umbrellaproject' => 1, 'totalexclvat' => '900.00' ],
+	] ) ],
+	'hour.get' => [ project_response( [
+		[ 'id' => 1, 'offerprojectbase' => 1001, 'offerprojectline' => 11, 'amount' => 2.5, 'date' => '2000-01-01' ],
+		[ 'id' => 2, 'offerprojectbase' => 1001, 'offerprojectline' => 12, 'amount' => 10, 'date' => '2000-01-01' ],
+		[ 'id' => 3, 'offerprojectbase' => 1001, 'amount' => 0.5, 'date' => '2000-01-01' ],
+	] ) ],
+	'offerprojectline.get' => [ project_response( [
+		[ 'id' => 11, 'offerprojectbase' => 1001, 'product' => [ 'id' => 21, 'searchname' => 'Webdevelopment (intern)' ] ],
+		[ 'id' => 12, 'offerprojectbase' => 1001, 'product' => [ 'id' => 22, 'searchname' => 'Webdevelopment (ND / intern)' ] ],
+	] ) ],
+];
+$dashboard_recorded = [];
+$dashboard_totals = ( new ReflectionMethod( STUH_Gripp::class, 'order_totals' ) )->invokeArgs( null, [ 'test-token', [ 1 ], &$dashboard_recorded ] );
+expect_gripp( [ 1 => 90000 ] === $dashboard_totals && [ 1 => 27000 ] === $dashboard_recorded, 'Dashboard spent hours exclude only the ND / intern marker, keep other labels and no-product time, and leave committed order values unchanged' );
+expect_gripp( ! array_filter( $GLOBALS['entity_responses'] ), 'Dashboard product-aware hours consume all expected responses' );
+unset( $GLOBALS['entity_responses'] );
 $layout_orders = [
 	[ 'number' => '16780', 'name' => "FMP '26 - September", 'products' => [ [ 'name' => 'Webdevelopment', 'hours' => 1.0 ] ] ],
 	[ 'number' => '16780', 'name' => "FMP '26 - Oktober", 'products' => [ [ 'name' => 'Projectmanagement', 'hours' => 0.5 ], [ 'name' => 'Online marketing', 'hours' => 1.0 ], [ 'name' => 'Webdevelopment', 'hours' => 4.25 ] ] ],
@@ -1366,6 +1475,7 @@ $layout_export = invoke_gripp( 'format_monthly_export', $layout_orders, [], 1, '
 $rich_document = new DOMDocument();
 $rich_document->loadHTML( $layout_export['html'] );
 $rich_xpath = new DOMXPath( $rich_document );
+expect_gripp( 1 === $rich_xpath->query( '//p[text()="Onderstaan een overzicht van de verrichte werkzaamheden."]/following-sibling::p[starts-with(strong,"Opdracht ")][1]' )->length && ! str_contains( $layout_export['text'], 'Onderstaan een overzicht' ), 'Include the requested introduction above the project list in Word content only' );
 expect_gripp( 0 === $rich_xpath->query( '//p[not(contains(@style,"font-family:Montserrat,Arial,sans-serif;")) or not(contains(@style,"font-size:10pt;"))] | //td[not(contains(@style,"font-family:Montserrat,Arial,sans-serif;")) or not(contains(@style,"font-size:10pt;"))]' )->length && 3 === $rich_xpath->query( '//p[starts-with(strong,"Opdracht ")]/preceding-sibling::*[1][self::p and br]' )->length && 1 === $rich_xpath->query( '//div[@style="margin-top:24px;"]/preceding-sibling::*[1][self::p and br]' )->length, 'Use Montserrat 10 pt on all Word paragraphs/cells and explicit blank paragraphs before every order and the summary' );
 expect_gripp( 3 === $rich_xpath->query( '//p[contains(@style,"color:#ff0054")]/strong' )->length && 1 === $rich_xpath->query( '//td[contains(@style,"color:#ff0054")]/strong[text()="Uren eind van de maand"]' )->length && 1 === $rich_xpath->query( '//td[@align="right" and contains(@style,"color:#ff0054")]/strong[text()="13,91"]' )->length && 1 === $rich_xpath->query( '//td[@align="right"]/strong[text()="7,83"]' )->length && 1 === $rich_xpath->query( '//td[@align="right" and text()="4,25"]' )->length, 'Render pink bold order headings, a bold hours summary, a pink closing balance and aligned unchanged numeric values using Word-friendly inline styles' );
 expect_gripp( str_contains( $layout_export['text'], "Opdracht 16780 FMP '26 - September\nWebdevelopment\t1,00\n\nOpdracht 16780 FMP '26 - Oktober\nProjectmanagement\t0,50\nOnline marketing\t1,00\nWebdevelopment\t4,25\n\nOpdracht 16715 Online marketing - Google Ads\nOnline marketing\t1,08\n" ) && str_ends_with( $layout_export['text'], "Uren begin van de maand\t5,74\nBeschikbare uren in de periode\t16,00\nTotaal gewerkt\t7,83\nUren eind van de maand\t13,91\n" ), 'Match the screenshot order/product layout and four accurately calculated summary lines, using decimal commas and putting the summary at the very bottom' );
@@ -1381,7 +1491,7 @@ expect_gripp( 192.0 === $after_deadline['opening'] && 0.0 === $after_deadline['a
 foreach ( [ [ 'budget' => null ], [ 'startdate' => '' ], [ 'deadline' => '2025-01-01' ] ] as $invalid_balance_project ) {
 	expect_gripp( is_wp_error( invoke_gripp( 'calculate_monthly_balance', array_merge( $balance_project, $invalid_balance_project ), [], '2026-09', $balance_today ) ), 'Missing budgets, missing dates and invalid date ranges cannot generate invented balances' );
 }
-delete_transient( 'stuh_gripp_balance' );
+$GLOBALS['transients']['stuh_gripp_balance'] = array_merge( gripp_balance_cache(), [ 'resource' => 'umbrellaproject-budget-hours-active-v3' ] );
 $GLOBALS['entity_responses'] = [
 	'umbrellaproject.get' => [ project_response( [ [ 'id' => 1, 'budget' => '17280.00', 'startdate' => [ 'date' => '2026-01-01 00:00:00.000000' ], 'deadline' => '2026-12-31' ] ] ) ],
 	'project.get' => [ project_response( [
@@ -1394,13 +1504,19 @@ $GLOBALS['entity_responses'] = [
 		[ 'id' => 3, 'offerprojectbase' => 1002, 'amount' => 1.58, 'date' => '2026-09-02' ],
 		[ 'id' => 4, 'offerprojectbase' => 1002, 'amount' => -0.5, 'date' => '2026-09-03' ],
 		[ 'id' => 5, 'offerprojectbase' => 1002, 'amount' => 100, 'date' => '3000-01-01' ],
+		[ 'id' => 6, 'offerprojectbase' => 1002, 'offerprojectline' => 901, 'amount' => 10, 'date' => '2025-12-30' ],
+		[ 'id' => 7, 'offerprojectbase' => 1002, 'offerprojectline' => 901, 'amount' => 20, 'date' => '2026-09-02' ],
+		[ 'id' => 8, 'offerprojectbase' => 1002, 'offerprojectline' => 901, 'amount' => -1, 'date' => '2026-09-03' ],
+	] ) ],
+	'offerprojectline.get' => [ project_response( [
+		[ 'id' => 901, 'offerprojectbase' => 1002, 'product' => [ 'id' => 902, 'searchname' => 'Webdevelopment (ND / intern)' ] ],
 	] ) ],
 ];
 $balance_request_start = count( $GLOBALS['requests'] );
 $loaded_balance = invoke_gripp( 'monthly_balance', 'test-token', 1, '2026-09' );
-expect_gripp( abs( $loaded_balance['worked'] - 7.83 ) < 0.000001 && abs( $loaded_balance['closing'] - 13.91 ) < 0.000001, 'Load all linked orders including archived zero-value work, Concept entries and corrections without fetching product metadata or relying on rounded monetary time events' );
+expect_gripp( abs( $loaded_balance['opening'] - 5.74 ) < 0.000001 && abs( $loaded_balance['worked'] - 7.83 ) < 0.000001 && abs( $loaded_balance['closing'] - 13.91 ) < 0.000001, 'Invalidate old balance caches and exclude internal hours and corrections from both historical carry-over and this month, including archived orders' );
 $balance_order_query = json_decode( $GLOBALS['requests'][ $balance_request_start + 1 ][1]['body'], true )[0];
-expect_gripp( [ [ 'field' => 'project.umbrellaproject', 'operator' => 'equals', 'value' => 1 ] ] === $balance_order_query['params'][0] && 3 === count( $GLOBALS['requests'] ) - $balance_request_start, 'Balance reads do not filter out archived orders or require invoice or order-line permissions' );
+expect_gripp( [ [ 'field' => 'project.umbrellaproject', 'operator' => 'equals', 'value' => 1 ] ] === $balance_order_query['params'][0] && 4 === count( $GLOBALS['requests'] ) - $balance_request_start, 'Balance reads include archived orders and resolve products to exclude internal time, without requiring invoice permissions' );
 $balance_cached_count = count( $GLOBALS['requests'] );
 invoke_gripp( 'monthly_balance', 'test-token', 1, '2026-10' );
 expect_gripp( $balance_cached_count === count( $GLOBALS['requests'] ), 'Changing the selected month reuses the full balance history cache' );

@@ -198,6 +198,28 @@
 	stroke: #d63638;
 }
 
+.stuh-fmp-monthly-bar {
+	fill: #dba617;
+	fill-opacity: 0.35;
+	stroke: #b38600;
+}
+
+.stuh-fmp-variance-over {
+	fill: rgba(214, 54, 56, 0.16);
+	stroke: none;
+}
+
+.stuh-fmp-variance-under {
+	fill: rgba(0, 138, 32, 0.16);
+	stroke: none;
+}
+
+.stuh-analytics-legend .stuh-fmp-legend-monthly::before {
+	height: 10px;
+	border: 1px solid #b38600;
+	background: rgba(219, 166, 23, 0.35);
+}
+
 .stuh-fmp-series-invoiced {
 	fill: #008a20;
 	stroke: #008a20;

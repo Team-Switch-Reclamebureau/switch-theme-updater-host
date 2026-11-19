@@ -53,20 +53,31 @@ shown or hidden using Screen Options.
 **Real budget left to date** subtracts logged hours valued at EUR 90/hour from
 the allowance to date. It includes all linked orders (also archived and
 zero-value orders), Concept entries and time corrections through today, excluding
-future-dated time. Positive balances are green, negative red, and zero neutral.
+future-dated time and products whose names contain **(ND / intern)**. The marker
+is matched case-insensitively with optional spacing around the slash. Those hours
+(including corrections) are ignored throughout FMP: dashboard spent hours, charts,
+active-project/product totals, monthly carry-over, and TXT/Word exports. A month
+with only these hours does not keep an active project visible. Order values and
+invoices are unchanged. Positive balances are green, negative red, and zero neutral.
 Missing budget/schedule dates show Unavailable. This column respects Screen
 Options and Euros / Hours; existing commitment-based columns are unchanged.
-Dashboard loading now requires read access to hours as well as orders. Every
+Dashboard loading requires read access to hours, orders and `offerprojectline`
+to identify excluded products. Every
 order/time page is loaded and cached with the dashboard; API errors are explicit,
 never a fabricated zero balance.
 Click a project title in either table to open its **FMP project details** screen.
 Each umbrella project / retainer has an administrator-only **Settings** tab.
+The tabs are **Overview**, **Monthly reports**, then **Settings**. Administrators
+and editors can open Overview and Monthly reports; Settings remains admin-only.
+Overview contains the budget chart and cards. Monthly reports contains the
+shared month filter, active projects, Gravity Forms, export previews and copy/download
+buttons. Applying the filter stays on Monthly reports.
 Select one or more registered client sites and choose **Save linked sites**;
 unchecking all sites removes the links. The selection is stored per Gripp
 umbrella project ID on this host, not in Gripp, and survives dashboard refreshes.
 Editors can still view the overview but cannot open or change these settings.
 Removed client sites are flagged in settings and their links are cleared on save.
-Linked sites' reported Gravity Forms counts appear on the FMP overview; saving
+Linked sites' reported Gravity Forms counts appear in Monthly reports; saving
 links does not request new reports or start additional data collection.
 
 ### Gravity Forms reports from client sites
@@ -110,7 +121,7 @@ cannot be recovered unless they are reported again.
 Existing metadata size limits apply. Receiving reports does not require the
 site to be linked to an FMP project.
 
-An FMP overview with linked sites shows a **Gravity Forms** table with the
+The Monthly reports tab of an FMP with linked sites shows a **Gravity Forms** table with the
 client site, form title and entry count. Forms remain separate per site, even
 when IDs or titles match. The shared **Calendar month** dropdown above Active
 projects filters both tables; **All months** sums each form's reported counts.
@@ -124,7 +135,7 @@ Run `php tests/batch-versions.php` for report-ingestion regression checks.
 
 ### Active projects
 
-Below the chart, **Active projects** lists all non-archived linked projects
+In Monthly reports, **Active projects** lists all non-archived linked projects
 (Gripp **Opdrachten**), with number, name, **actual logged hours** and order
 value excluding VAT. Numbers open the corresponding order in Gripp in a new tab,
 using the order's internal ID and the order-view navigation fragment (not the
@@ -178,7 +189,10 @@ Between the order breakdown and Gravity Forms, an hours summary shows **Uren beg
 **Uren eind van de maand** (using "periode" for All months):
 
 - Opening hours = allowance accrued before the selected month / EUR 90 minus
-  all earlier logged hours.
+  all earlier logged hours. This is **Real budget left to date** at the end of
+  the previous month, in hours: only the surplus or deficit carried forward,
+  not including the new month's regular budget. It equals the previous month's
+  **Uren eind van de maand**, and negative balances remain negative.
 - Available hours = that calendar month's allowance / EUR 90, using the existing
   Gripp budget schedule, including partial project months and the project deadline.
   A selected calendar month includes its full allowance, even in the current month;
@@ -187,6 +201,8 @@ Between the order breakdown and Gravity Forms, an hours summary shows **Uren beg
   entries, zero-value work and corrections. This can exceed the active-only
   breakdown because archived orders are included.
 - Closing hours = opening + available - worked.
+  This is the new **Real budget left to date** using the selected month's full
+  allowance (whereas the live dashboard accrues the current month through today).
 
 **All months** starts at zero and uses the accrued allowance through today and
 all recorded hours through today, including work outside the project dates.
@@ -199,7 +215,7 @@ selected month (or `all-months`). Administrators and editors can export; the
 download uses the same permissions, cached data and month filter as the preview.
 Sub-rows include only recorded time through today, keep corrections, and always
 display hours; each displayed value is rounded independently to two decimals.
-This details breakdown additionally requires read access to `offerprojectline`.
+All FMP spent-hour calculations require read access to `offerprojectline`.
 All referenced line pages are loaded and validated against their parent order;
 missing/inaccessible lines or API failures show an explicit error, never a
 misleading partial breakdown. The breakdown shares the active-project cache.
@@ -231,7 +247,23 @@ transmission of project data are needed. Its assets load only on FMP details.
 Without JavaScript, the existing scrollable SVG and accessible data tables
 remain available; a failed library load also displays a warning.
 The red usage line shows **all recorded hours**, including Concept entries and
-hours on fixed-price or zero-value orders, valued at **EUR 90 per hour**.
+hours on fixed-price or zero-value orders, valued at **EUR 90 per hour**,
+excluding products marked **(ND / intern)**.
+Gold bars show **actual hours in each calendar month**, rather than cumulative
+hours. They include corrections (negative totals draw below zero), exclude
+**(ND / intern)** time, and show only logged time through today for the current
+month. Like the lines, bars follow the Euros / Hours setting at EUR 90/hour;
+their hover values and the accessible table also show the actual hours.
+The bars remain available in the static SVG when JavaScript is unavailable.
+Line points and bars share a single position per calendar month; axis and hover
+labels show the month and year rather than a day. The zero starting baseline is
+placed before the first project month. The actual recorded-time segment from the
+previous month into the current month is dotted because its total can still
+change; completed months remain solid. Exact cutoff dates remain in the tables.
+The gap between actual recorded time and accumulated allowance is shaded red
+above the allowance and green below it, switching color at line crossings.
+Shading stops where recorded-time data ends and is hidden when either line is
+hidden in the interactive chart. This also applies to the provisional segment.
 The dashed green usage line shows **sent invoice value excluding VAT**, not
 billable-hour eligibility or order commitments. It includes linked-order invoice
 lines and lines directly linked to the umbrella project, deduplicated by line ID.

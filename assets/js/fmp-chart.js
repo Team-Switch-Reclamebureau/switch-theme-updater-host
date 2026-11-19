@@ -21,7 +21,7 @@
 			style: config.unit === 'hours' ? 'decimal' : 'currency',
 			currency: 'EUR'
 		});
-		var dates = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+		var hours = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 		var months = new Intl.DateTimeFormat(locale, { month: 'short', year: 'numeric', timeZone: 'UTC' });
 		var formatValue = function (value) {
 			return value == null ? '-' : numbers.format(value) + (config.unit === 'hours' ? ' h' : '');
@@ -45,6 +45,14 @@
 					return;
 				}
 				item.points.forEach(function (point, pointIndex) {
+					if (item.type === 'bars') {
+						var period = item.periods[pointIndex];
+						if (period[1] >= visibleMin && period[0] <= visibleMax) {
+							include(0);
+							include(point[1]);
+						}
+						return;
+					}
 					if (point[0] >= visibleMin && point[0] <= visibleMax) {
 						include(point[1]);
 					}
@@ -71,24 +79,38 @@
 		var data = [timestamps];
 		var series = [{
 			label: config.dateLabel,
-			value: function (plot, value) { return value == null ? '-' : dates.format(new Date(value * 1000)); }
+			value: function (plot, value) { return value == null ? '-' : months.format(new Date(value * 1000)); }
 		}];
 		config.series.forEach(function (item, index) {
+			var bar = item.type === 'bars';
+			var paths;
+			if (item.provisional) {
+				var linear = window.uPlot.paths.linear();
+				var previousTime = item.points[item.points.length - 2][0];
+				paths = function (chart, seriesIndex, start, end) {
+					var lastSolid = timestamps.indexOf(previousTime);
+					return linear(chart, seriesIndex, Math.min(start, lastSolid), Math.min(end, lastSolid));
+				};
+			}
 			var values = new Map(item.points);
 			data.push(timestamps.map(function (timestamp) {
 				if (index === 0) {
 					return item.points[0][1] / divisor;
 				}
-				return values.has(timestamp) ? values.get(timestamp) / divisor : null;
+				return values.has(timestamp) ? values.get(timestamp) / divisor : (bar ? undefined : null);
 			}));
 			series.push({
 				label: item.label,
 				stroke: item.stroke,
 				dash: item.dash,
-				width: 2,
-				spanGaps: true,
+				width: bar ? 1 : 2,
+				fill: bar ? item.fill : undefined,
+				paths: bar ? window.uPlot.paths.bars({ size: [0.65, 40] }) : paths,
+				spanGaps: !bar,
 				points: { show: false },
-				value: function (plot, value) { return formatValue(value); }
+				value: function (plot, value) {
+					return formatValue(value) + (bar && config.unit !== 'hours' && value != null ? ' (' + hours.format(value / 90) + ' h)' : '');
+				}
 			});
 		});
 		interactive.hidden = false;
@@ -111,9 +133,11 @@
 			axes: [{
 				label: config.xLabel,
 				space: 100,
+				splits: function (chart, index, min, max) {
+					return timestamps.filter(function (timestamp) { return timestamp >= min && timestamp <= max; });
+				},
 				values: function (chart, ticks) {
-					var formatter = chart.scales.x.max - chart.scales.x.min > 90 * 86400 ? months : dates;
-					return ticks.map(function (tick) { return formatter.format(new Date(tick * 1000)); });
+					return ticks.map(function (tick) { return months.format(new Date(tick * 1000)); });
 				}
 			}, {
 				label: config.yLabel,
@@ -122,12 +146,59 @@
 			}],
 			cursor: { drag: { x: true, y: false, setScale: true, dist: 10 } },
 			hooks: {
+				drawAxes: [function (chart) {
+					if (!config.variance || !chart.series[2].show || !chart.series[3].show) {
+						return;
+					}
+					var ctx = chart.ctx;
+					ctx.save();
+					ctx.beginPath();
+					ctx.rect(chart.bbox.left, chart.bbox.top, chart.bbox.width, chart.bbox.height);
+					ctx.clip();
+					config.variance.forEach(function (region) {
+						ctx.beginPath();
+						region.points.forEach(function (point, index) {
+							var x = chart.valToPos(point[0], 'x', true);
+							var y = chart.valToPos(point[1] / divisor, 'y', true);
+							if (index === 0) {
+								ctx.moveTo(x, y);
+							} else {
+								ctx.lineTo(x, y);
+							}
+						});
+						ctx.closePath();
+						ctx.fillStyle = region.over ? 'rgba(214,54,56,0.16)' : 'rgba(0,138,32,0.16)';
+						ctx.fill();
+					});
+					ctx.restore();
+				}],
+				drawSeries: [function (chart, seriesIndex) {
+					var item = config.series[seriesIndex - 1];
+					if (!item || !item.provisional || !chart.series[seriesIndex].show) {
+						return;
+					}
+					var points = item.points.slice(-2);
+					var ctx = chart.ctx;
+					var ratio = window.uPlot.pxRatio;
+					ctx.save();
+					ctx.beginPath();
+					ctx.rect(chart.bbox.left, chart.bbox.top, chart.bbox.width, chart.bbox.height);
+					ctx.clip();
+					ctx.beginPath();
+					ctx.strokeStyle = item.stroke;
+					ctx.lineWidth = 2 * ratio;
+					ctx.setLineDash([2 * ratio, 4 * ratio]);
+					ctx.moveTo(chart.valToPos(points[0][0], 'x', true), chart.valToPos(points[0][1] / divisor, 'y', true));
+					ctx.lineTo(chart.valToPos(points[1][0], 'x', true), chart.valToPos(points[1][1] / divisor, 'y', true));
+					ctx.stroke();
+					ctx.restore();
+				}],
 				setScale: [function (chart, key) {
 					if (key !== 'x') {
 						return;
 					}
 					reset.disabled = Math.abs(chart.scales.x.min - fullMin) < 1 && Math.abs(chart.scales.x.max - fullMax) < 1;
-					range.textContent = dates.format(new Date(chart.scales.x.min * 1000)) + ' - ' + dates.format(new Date(chart.scales.x.max * 1000));
+					range.textContent = months.format(new Date(chart.scales.x.min * 1000)) + ' - ' + months.format(new Date(chart.scales.x.max * 1000));
 				}]
 			}
 		}, data, host);
