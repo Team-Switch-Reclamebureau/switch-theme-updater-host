@@ -24,6 +24,7 @@ function esc_js( $value ) { return addslashes( $value ); }
 function esc_url( $value ) { return esc_html( $value ); }
 function esc_url_raw( $value ) { return trim( $value ); }
 function esc_html__( $text, $domain = '' ) { return esc_html( $text ); }
+function esc_attr__( $text, $domain = '' ) { return esc_attr( $text ); }
 function esc_html_e( $text, $domain = '' ) { echo esc_html( $text ); }
 function esc_attr_e( $text, $domain = '' ) { echo esc_attr( $text ); }
 function add_action( ...$args ) {}
@@ -41,11 +42,13 @@ function sanitize_html_class( $value ) { return preg_replace( '/[^A-Za-z0-9_-]/'
 function is_email( $value ) { return false !== filter_var( $value, FILTER_VALIDATE_EMAIL ); }
 function get_option( $key, $default = false ) { return $GLOBALS['options'][ $key ] ?? $default; }
 function update_option( $key, $value ) {
+	if ( $GLOBALS['storage_fail'] ?? false ) { return false; }
 	if ( get_option( $key ) === $value ) { return false; }
 	$GLOBALS['options'][ $key ] = $value;
 	return true;
 }
 function get_transient( $key ) { return $GLOBALS['transients'][ $key ] ?? false; }
+function set_transient( $key, $value, $ttl ) { $GLOBALS['transients'][ $key ] = $value; return true; }
 function delete_transient( $key ) { unset( $GLOBALS['transients'][ $key ] ); }
 function get_current_user_id() { return 1; }
 function wp_next_scheduled( ...$args ) { return true; }
@@ -230,6 +233,9 @@ expect_view( 1 === $settings_xpath->query( '//section[@id="stuh-gripp-settings"]
 expect_view( 1 === $settings_xpath->query( '//section[@id="stuh-gripp-settings"]//form/input[@name="operation" and @value="connect"]' )->length, 'Settings includes the separate Gripp connection form' );
 
 $_GET['client_id'] = 'site-1';
+if ( '--render' === ( $argv[1] ?? '' ) ) {
+	$_GET['client_tab'] = $argv[2] ?? 'overview';
+}
 $GLOBALS['transients']['stuh_pending_updates_1'] = [ 'type' => 'success', 'message' => 'Updates installed' ];
 $detail = render_view();
 if ( '--render' === ( $argv[1] ?? '' ) ) {
@@ -239,10 +245,37 @@ if ( '--render' === ( $argv[1] ?? '' ) ) {
 	echo '</style>' . $detail . '</html>';
 	exit;
 }
-$xpath = view_xpath( $detail );
+$details = [ 'overview' => $detail ];
+foreach ( [ 'packages', 'forms', 'analytics', 'diagnostics' ] as $tab ) {
+	$_GET['client_tab'] = $tab;
+	$details[ $tab ] = render_view();
+}
+$tab_labels = [ 'Overview', 'Plugins & Themes', 'Forms', 'Analytics', 'Diagnostics' ];
+foreach ( $details as $tab => $html ) {
+	$tab_xpath = view_xpath( $html );
+	$labels = [];
+	foreach ( $tab_xpath->query( '//nav[@aria-label="Client site sections"]/a' ) as $link ) {
+		$labels[] = $link->textContent;
+		expect_view( str_contains( $link->getAttribute( 'href' ), 'client_id=site-1' ) && str_contains( $link->getAttribute( 'href' ), 'stuh_search=webshop' ) && str_contains( $link->getAttribute( 'href' ), 'stuh_status=enabled' ), 'Tab links preserve the selected client and list filters' );
+	}
+	expect_view( $tab_labels === $labels && 1 === $tab_xpath->query( '//nav/a[@aria-current="page" and contains(@class,"nav-tab-active") and contains(@href,"client_tab=' . $tab . '")]' )->length, 'Tabs retain the requested order and mark only the active section: ' . $tab );
+	expect_view( ( 'overview' === $tab ? 4 : ( 'forms' === $tab ? 0 : 1 ) ) === $tab_xpath->query( '//section[contains(@class,"stuh-client-detail-group")]' )->length, 'Only the selected tab renders its information groups: ' . $tab );
+	expect_view( ( 'forms' === $tab ? 1 : 0 ) === $tab_xpath->query( '//section[@class="stuh-gravity-forms-import"]' )->length && ( 'analytics' === $tab ? 1 : 0 ) === $tab_xpath->query( '//section[@id="stuh-analytics"]' )->length, 'Forms uploads and Analytics panels appear only in their respective tabs' );
+	expect_view( ( 'forms' === $tab ? 1 : 0 ) === $tab_xpath->query( '//section[@class="stuh-client-gravity-forms"]' )->length, 'Combined form history is available only on the Forms tab' );
+	expect_view( ( 'packages' === $tab ? 2 : 0 ) === $tab_xpath->query( '//table[contains(@class,"stuh-package-table")]' )->length && ( 'diagnostics' === $tab ? 1 : 0 ) === $tab_xpath->query( '//details[not(@open)]' )->length, 'Package inventories and raw diagnostics appear only in their respective tabs' );
+	expect_view( ( 'overview' === $tab ? 1 : 0 ) === $tab_xpath->query( '//table[contains(@class,"stuh-client-detail-editors")]' )->length, 'Inline editors stay with their Overview controls' );
+	$tab_back = $tab_xpath->query( '//a[contains(text(),"Back to Client Sites")]' )->item( 0 )->getAttribute( 'href' );
+	expect_view( ! str_contains( $tab_back, 'client_id=' ) && ! str_contains( $tab_back, 'client_tab=' ), 'Back link clears detail selection and tab: ' . $tab );
+}
+foreach ( [ 'missing-tab', [ 'forms' ] ] as $invalid_tab ) {
+	$_GET['client_tab'] = $invalid_tab;
+	$fallback_xpath = view_xpath( render_view() );
+	expect_view( 1 === $fallback_xpath->query( '//nav/a[@aria-current="page" and contains(@href,"client_tab=overview")]' )->length && 4 === $fallback_xpath->query( '//section[contains(@class,"stuh-client-detail-group")]' )->length, 'Unknown or malformed tab requests fall back to Overview without exposing other sections' );
+}
+unset( $_GET['client_tab'] );
+$xpath = view_xpath( implode( '', $details ) );
 $columns = ( new STUH_Plugin() )->client_columns();
-expect_view( 6 === $xpath->query( '//section[contains(@class,"stuh-client-detail-group")]' )->length, 'Details use six compact information groups' );
-expect_view( count( $columns ) === $xpath->query( '//div[contains(@class,"stuh-client-detail-field--")]' )->length, 'Every field appears once, independent of Screen Options' );
+expect_view( count( $columns ) === $xpath->query( '//div[contains(@class,"stuh-client-detail-field--")]' )->length, 'Every existing field appears on exactly one tab, independent of Screen Options' );
 foreach ( array_keys( $columns ) as $column ) {
 	expect_view( 1 === $xpath->query( '//section/div[@class="stuh-client-detail-field stuh-client-detail-field--' . $column . '"]/h3' )->length, 'Grouped field has label: ' . $column );
 }
@@ -256,7 +289,7 @@ expect_view( 2 === $xpath->query( '//section[contains(@class,"--packages")]//tab
 expect_view( 1 === $xpath->query( '//table[contains(@class,"--themes")]//tr[td/strong[text()="Test Theme"]]/td[text()="2.0"]' )->length, 'Theme table shows version' );
 expect_view( 1 === $xpath->query( '//table[contains(@class,"--themes")]//tr[td/strong[text()="Test Theme"]]/td[text()="No"]' )->length, 'Theme table shows inactive status' );
 expect_view( 1 === $xpath->query( '//table[contains(@class,"--plugins")]//tr[td/strong[text()="Test Plugin"]]/td[text()="Yes"]' )->length, 'Plugin table shows active status' );
-expect_view( strpos( $detail, 'stuh-package-table--themes' ) < strpos( $detail, 'stuh-package-table--plugins' ), 'Themes appear before plugins' );
+expect_view( strpos( $details['packages'], 'stuh-package-table--themes' ) < strpos( $details['packages'], 'stuh-package-table--plugins' ), 'Themes appear before plugins' );
 expect_view( 0 === $xpath->query( '//section[contains(@class,"--packages")]//details' )->length, 'Package tables are never collapsed' );
 expect_view( 1 === $xpath->query( '//details[not(@open)]' )->length, 'Only raw diagnostics are collapsed initially' );
 foreach ( [ 'toggle_client', 'delete_client', 'refresh_client_diagnostics', 'check_client_ssl', 'bulk_update_clients', 'install_wordpress_update', 'install_pending_updates', 'retry_failed_smtp_emails', 'disable_debugging', 'toggle_search_engine_visibility', 'set_post_revisions', 'skip_new_bundled_themes', 'edit_client_urls', 'edit_client_tags', 'assign_external_party' ] as $action ) {
@@ -265,12 +298,121 @@ foreach ( [ 'toggle_client', 'delete_client', 'refresh_client_diagnostics', 'che
 expect_view( 0 === $xpath->query( '//form[not(input[@name="_wpnonce"])]' )->length, 'Every action form has a nonce' );
 $back = $xpath->query( '//a[contains(text(),"Back to Client Sites")]' )->item( 0 )->getAttribute( 'href' );
 expect_view( ! str_contains( $back, 'client_id' ) && str_contains( $back, 'stuh_search=webshop' ) && str_contains( $back, 'stuh_status=enabled' ), 'Back link preserves list filters, not detail selection' );
+expect_view( 1 === $xpath->query( '//form[@enctype="multipart/form-data" and input[@name="stuh_action" and @value="import_gravity_forms"] and input[@name="client_id" and @value="site-1"] and input[@name="_wpnonce"]]//input[@type="file" and @name="gravity_forms_file" and @accept=".json,application/json"]' )->length, 'Client details offer a nonce-protected JSON upload tied to the selected client' );
+expect_view( ! str_contains( $list, 'value="import_gravity_forms"' ), 'History upload is not repeated on the client list' );
+expect_view( str_contains( $details['forms'], 'No Gravity Forms report received yet.' ) && ! str_contains( $details['forms'], '<table id="stuh-client-gravity-forms"' ), 'The Forms tab distinguishes missing history from zero entries' );
+$import_forms = static fn( string $id, string $json ) => ( new ReflectionMethod( STUH_Plugin::class, 'import_gravity_forms_json' ) )->invoke( null, $id, $json );
+$GLOBALS['options'][ STUH_OPTION_TELEMETRY ]['site-1']['gravity_forms'] = [
+	'received_at' => 100,
+	'forms' => [
+		[ 'form_id' => 1, 'form_title' => 'Contact live', 'months' => [ '2026-10' => 8, '2026-11' => 7 ] ],
+		[ 'form_id' => 3, 'form_title' => 'Reported only', 'months' => [ '2025-01' => 4 ] ],
+	],
+];
+$before_import = STUH_Plugin::get_telemetry()['site-1'];
+expect_view( true === $import_forms( 'site-1', '[{"form_id":1,"form_title":"Contact","months":{"2024-12":12,"2026-10":8},"entries":[{"email":"must-not-be-saved"}]}]' ), 'Import historical form counts using the client-reported array format' );
+expect_view( array_diff_key( STUH_Plugin::get_telemetry()['site-1'], [ 'gravity_forms_import' => true ] ) === $before_import && ! str_contains( json_encode( STUH_Plugin::get_telemetry() ), 'must-not-be-saved' ), 'Imports preserve client-reported history, diagnostics and real last-received metadata and discard submission fields' );
+$_GET['client_tab'] = 'forms';
+$forms_xpath = view_xpath( render_view() );
+expect_view( '8' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="October 2026"]/td[1]' )->item( 0 )->textContent && 0 === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="October 2026"]/td[1]/em' )->length && '12' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="December 2024"]/td[1]/em' )->item( 0 )->textContent, 'Equal counts use normal reported styling while imported-only counts are italicized' );
+unset( $_GET['client_tab'] );
+expect_view( true === $import_forms( 'site-2', '{"gravity_forms":[{"form_id":1,"form_title":"Other site","months":{"2024-12":99}}]}' ) && ! isset( STUH_Plugin::get_telemetry()['site-2']['received_at'] ), 'Accept a gravity_forms envelope for a site without prior telemetry without inventing a live report receipt' );
+expect_view( true === $import_forms( 'site-1', '{"gravity_forms":[{"form_id":1,"form_title":"Contact renamed","months":{"2024-12":3,"2026-10":10,"2025-01":0}},{"form_id":2,"form_title":"Appointment","months":{"2025-01":5}}]}' ), 'Replace the previous uploaded snapshot, accepting lower historical counts in a new import' );
+$imported_forms = STUH_Plugin::get_telemetry()['site-1']['gravity_forms_import']['forms'];
+expect_view( [
+	[ 'form_id' => 1, 'form_title' => 'Contact renamed', 'months' => [ '2024-12' => 3, '2026-10' => 10, '2025-01' => 0 ] ],
+	[ 'form_id' => 2, 'form_title' => 'Appointment', 'months' => [ '2025-01' => 5 ] ],
+] === $imported_forms && 99 === STUH_Plugin::get_telemetry()['site-2']['gravity_forms_import']['forms'][0]['months']['2024-12'] && $before_import['gravity_forms'] === STUH_Plugin::get_telemetry()['site-1']['gravity_forms'], 'Store imports separately, replace old uploaded counts, and leave all reported history and other clients untouched' );
+$combined = STUH_Plugin::get_gravity_forms_report( 'site-1' );
+expect_view( [
+	[ 'form_id' => 1, 'form_title' => 'Contact live', 'months' => [ '2024-12' => 3, '2026-10' => 10, '2025-01' => 0, '2026-11' => 7 ] ],
+	[ 'form_id' => 2, 'form_title' => 'Appointment', 'months' => [ '2025-01' => 5 ] ],
+	[ 'form_id' => 3, 'form_title' => 'Reported only', 'months' => [ '2025-01' => 4 ] ],
+] === $combined['forms'] && STUH_Plugin::get_telemetry()['site-1']['gravity_forms_import']['received_at'] === $combined['received_at'], 'Combine source maxima per form and month, union forms and months, prefer live titles and keep actual source timestamps' );
+$before_render = STUH_Plugin::get_telemetry();
+$_GET['client_tab'] = 'forms';
+$forms_xpath = view_xpath( render_view() );
+expect_view( '10' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="October 2026"]/td[1]/em' )->item( 0 )->textContent && '7' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="November 2026"]/td[1]' )->item( 0 )->textContent && 0 === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="November 2026"]/td[1]/em' )->length, 'The client Forms table italicizes imported maxima and keeps higher or exclusively live-reported values normal' );
+expect_view( '0' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="January 2025"]/td[1]/em' )->item( 0 )->textContent && '5' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="January 2025"]/td[2]/em' )->item( 0 )->textContent && '4' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="January 2025"]/td[3]' )->item( 0 )->textContent, 'Imported zeros remain explicit italic zeros and forms unique to each source are separate columns' );
+expect_view( 24 === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]/tbody/tr' )->length && 3 === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="February 2025"]/td[text()="-"]' )->length && 0 === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="February 2025"]//em' )->length && 'November 2026' === $forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]/tbody/tr[1]/th' )->item( 0 )->textContent, 'The monthly table includes missing months as non-italic dashes and sorts newest first' );
+expect_view( $before_render === STUH_Plugin::get_telemetry(), 'Rendering combined history never changes either source' );
+$_GET['client_id'] = 'site-2';
+$other_forms_xpath = view_xpath( render_view() );
+expect_view( '99' === $other_forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="December 2024"]/td/em' )->item( 0 )->textContent && 1 === $other_forms_xpath->query( '//table[@id="stuh-client-gravity-forms"]/tbody/tr' )->length, 'Imported-only clients display their own history entirely in italics without leaking another site\'s counts' );
+$_GET['client_id'] = 'site-1';
+unset( $_GET['client_tab'] );
+$GLOBALS['options']['stuh_fmp_project_sites_99'] = [ 'site-1', 'site-2' ];
+$fmp_sites = ( new ReflectionMethod( STUH_Gripp::class, 'linked_gravity_forms' ) )->invoke( null, 99 );
+expect_view( $combined === $fmp_sites[0]['report'] && STUH_Plugin::get_telemetry()['site-2']['gravity_forms_import'] === $fmp_sites[1]['report'], 'FMP receives combined source data for each linked site, including imported-only sites' );
+$combined_matrix = ( new ReflectionMethod( STUH_Gripp::class, 'gravity_forms_word_matrix' ) )->invoke( null, $combined['forms'], '2026-10', 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;' );
+$combined_xpath = view_xpath( $combined_matrix );
+expect_view( '10' === $combined_xpath->query( '//tr[th/strong="OKT"]/td[last()]' )->item( 0 )->textContent && '9' === $combined_xpath->query( '//tr[th="JAN" and td="5"]/td[last()]' )->item( 0 )->textContent, 'Word matrix totals use the maximum overlapping count and combine distinct forms from both sources without double counting' );
+unset( $GLOBALS['options']['stuh_fmp_project_sites_99'] );
+$replacement = '[{"form_id":1,"form_title":"Contact renamed","months":{"2026-10":2}}]';
+$import_forms( 'site-1', $replacement );
+expect_view( [ [ 'form_id' => 1, 'form_title' => 'Contact renamed', 'months' => [ '2026-10' => 2 ] ] ] === STUH_Plugin::get_telemetry()['site-1']['gravity_forms_import']['forms'] && 8 === STUH_Plugin::get_gravity_forms_report( 'site-1' )['forms'][0]['months']['2026-10'] && ! isset( STUH_Plugin::get_gravity_forms_report( 'site-1' )['forms'][0]['months']['2024-12'] ) && 2 === count( STUH_Plugin::get_gravity_forms_report( 'site-1' )['forms'] ), 'A replacement removes omitted imported-only months and forms, and falls back to the untouched reported count when the new upload is lower' );
+$_GET['client_tab'] = 'forms';
+$replaced_forms = view_xpath( render_view() );
+expect_view( '8' === $replaced_forms->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="October 2026"]/td[1]' )->item( 0 )->textContent && 0 === $replaced_forms->query( '//table[@id="stuh-client-gravity-forms"]//em' )->length && 0 === $replaced_forms->query( '//table[@id="stuh-client-gravity-forms"]//tr[th="December 2024"]' )->length && 3 === $replaced_forms->query( '//table[@id="stuh-client-gravity-forms"]/thead/tr/th' )->length, 'Re-uploading lower counts immediately restores normal reported numbers and removes obsolete imported-only months and forms from the table' );
+unset( $_GET['client_tab'] );
+$import_forms( 'site-1', '[]' );
+expect_view( [] === STUH_Plugin::get_telemetry()['site-1']['gravity_forms_import']['forms'] && $before_import['gravity_forms']['forms'] === STUH_Plugin::get_gravity_forms_report( 'site-1' )['forms'], 'An empty upload clears only the imported snapshot, retaining all client-reported history' );
+expect_view( true === $import_forms( 'site-1', '[]' . str_repeat( ' ', 1048574 ) ), 'Accept a valid JSON file exactly at the 1 MB size limit' );
+$import_forms( 'site-1', $replacement );
+$import_forms( 'site-1', $replacement );
+expect_view( 2 === STUH_Plugin::get_telemetry()['site-1']['gravity_forms_import']['forms'][0]['months']['2026-10'] && $before_import['gravity_forms'] === STUH_Plugin::get_telemetry()['site-1']['gravity_forms'], 'Repeated uploads do not add counts or mutate reported history' );
+foreach ( [ '{', 'null', '{}', '{"gravity_forms":{}}', '[{"form_id":1,"form_title":"Bad","months":[]}]', '[{"form_id":1,"form_title":"Bad","months":{"2025-13":1}}]', '[{"form_id":1,"form_title":"Bad","months":{"2025-01":-1}}]', str_repeat( ' ', 1048577 ) ] as $invalid_json ) {
+	$before = STUH_Plugin::get_telemetry();
+	expect_view( is_wp_error( $import_forms( 'site-1', $invalid_json ) ) && $before === STUH_Plugin::get_telemetry(), 'Reject malformed, invalid or oversized imports atomically' );
+}
+expect_view( is_wp_error( $import_forms( 'unknown', '[]' ) ), 'Do not import into removed or unknown client sites' );
+$before = STUH_Plugin::get_telemetry();
+$GLOBALS['storage_fail'] = true;
+$failed_import = $import_forms( 'site-1', '[{"form_id":3,"form_title":"Not saved","months":{"2025-01":1}}]' );
+unset( $GLOBALS['storage_fail'] );
+expect_view( is_wp_error( $failed_import ) && 'Could not save Gravity Forms history. Please try again.' === $failed_import->get_error_message() && $before === STUH_Plugin::get_telemetry(), 'Storage failures are explicit and preserve all previous telemetry' );
+foreach ( [
+	[ [], [], 'The JSON upload failed.' ],
+	[ [], [ 'gravity_forms_file' => [ 'error' => UPLOAD_ERR_INI_SIZE ] ], 'The JSON upload failed.' ],
+	[ [], [ 'gravity_forms_file' => [ 'error' => UPLOAD_ERR_OK, 'name' => 'data.php', 'tmp_name' => __FILE__ ] ], 'Please upload a valid .json file.' ],
+	[ [], [ 'gravity_forms_file' => [ 'error' => UPLOAD_ERR_OK, 'name' => 'data.json', 'tmp_name' => __FILE__ ] ], 'Please upload a valid .json file.' ],
+	[ [ '_wpnonce' => 'wrong' ], [], 'Invalid nonce' ],
+	[ [ 'client_id' => 'unknown' ], [], 'The selected client site could not be found.' ],
+] as [ $fields, $files, $message ] ) {
+	$_FILES = $files;
+	try {
+		post_view_action( 'import_gravity_forms', $fields );
+		throw new LogicException( 'Invalid file import was accepted' );
+	} catch ( RuntimeException $error ) {
+		expect_view( str_starts_with( $error->getMessage(), $message ) && $before === STUH_Plugin::get_telemetry(), 'Validate upload errors, real upload provenance, nonce and client before changing history' );
+	} finally {
+		$_POST = [];
+		$_FILES = [];
+	}
+}
+$GLOBALS['authorized'] = false;
+try {
+	post_view_action( 'import_gravity_forms' );
+	throw new LogicException( 'Unauthorized import was accepted' );
+} catch ( RuntimeException $error ) {
+	expect_view( 'Insufficient permissions' === $error->getMessage() && $before === STUH_Plugin::get_telemetry(), 'Non-administrators cannot import historical client data' );
+} finally {
+	$_POST = [];
+	unset( $GLOBALS['authorized'] );
+}
 
 $_GET['client_id'] = 'site-2';
 $without_report = render_view();
-expect_view( str_contains( $without_report, '<h1>other.example</h1>' ) && str_contains( $without_report, 'None received' ), 'Clients without telemetry still have a details page' );
+expect_view( str_contains( $without_report, '<h1>other.example</h1>' ), 'Clients without telemetry still have a details page' );
 expect_view( ! str_contains( $without_report, 'class="login"' ), 'Do not invent a login URL' );
-expect_view( 2 === substr_count( $without_report, 'None reported.' ), 'Empty inventories retain separate tables with explicit empty states' );
+$_GET['client_tab'] = 'packages';
+expect_view( 2 === substr_count( render_view(), 'None reported.' ), 'The inventory tab retains both explicit empty states for clients without telemetry' );
+$_GET['client_tab'] = 'diagnostics';
+expect_view( str_contains( render_view(), 'None received' ), 'The Diagnostics tab has an explicit empty state for clients without telemetry' );
+$redirect = post_view_action( 'toggle_client', [ 'client_id' => 'site-2' ] );
+expect_view( str_contains( $redirect, 'client_id=site-2' ) && str_contains( $redirect, 'client_tab=diagnostics' ), 'Client actions preserve the selected details tab on redirect' );
+post_view_action( 'toggle_client', [ 'client_id' => 'site-2' ] );
+unset( $_GET['client_tab'] );
 $_GET['client_id'] = 'site-1';
 $redirect = post_view_action( 'edit_client_tags', [ 'client_tags' => 'updated, maintenance' ] );
 expect_view( str_contains( $redirect, 'client_id=site-1' ), 'Editing returns to website details' );
@@ -285,6 +427,7 @@ expect_view( str_contains( $disabled, '>Enable</button>' ) && ! str_contains( $d
 expect_view( str_contains( $disabled, 'Example owner' ), 'Updated owner appears on details' );
 $redirect = post_view_action( 'delete_client' );
 expect_view( ! str_contains( $redirect, 'client_id=' ) && 1 === count( STUH_Plugin::get_clients() ), 'Deletion persists and returns to list' );
+expect_view( ! isset( STUH_Plugin::get_telemetry()['site-1'] ), 'Deleting a client removes both its reported and imported form history' );
 try {
 	render_view();
 	throw new LogicException( 'Missing client was not rejected' );

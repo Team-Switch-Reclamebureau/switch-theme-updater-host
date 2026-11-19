@@ -52,7 +52,7 @@ final class STUH_Analytics {
 	private static function page_url( string $client_id = '' ): string {
 		return '' === $client_id
 			? admin_url( 'admin.php?page=stuh-settings#stuh-google-settings' )
-			: add_query_arg( [ 'page' => 'stuh', 'client_id' => $client_id ], admin_url( 'admin.php' ) );
+			: add_query_arg( [ 'page' => 'stuh', 'client_id' => $client_id, 'client_tab' => 'analytics' ], admin_url( 'admin.php' ) );
 	}
 
 	private static function require_admin(): void {

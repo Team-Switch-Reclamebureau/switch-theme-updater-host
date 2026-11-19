@@ -1407,14 +1407,13 @@ final class STUH_Gripp {
 			return [];
 		}
 		$clients = array_column( STUH_Plugin::get_clients(), null, 'id' );
-		$telemetry = STUH_Plugin::get_telemetry();
 		$sites = [];
 		foreach ( array_unique( $ids ) as $client_id ) {
 			$client = $clients[ $client_id ] ?? null;
 			$sites[] = [
 				'name' => null === $client ? __( 'Removed client site', 'stuh' ) : ( $client['site_url'] ?? $client_id ),
 				'exists' => null !== $client,
-				'report' => null === $client ? null : ( $telemetry[ $client_id ]['gravity_forms'] ?? null ),
+				'report' => null === $client ? null : STUH_Plugin::get_gravity_forms_report( $client_id ),
 			];
 		}
 		return $sites;

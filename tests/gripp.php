@@ -14,6 +14,7 @@ class GrippRedirect extends RuntimeException {}
 class STUH_Plugin {
 	public static function get_clients(): array { return $GLOBALS['clients'] ?? []; }
 	public static function get_telemetry(): array { return $GLOBALS['telemetry'] ?? []; }
+	public static function get_gravity_forms_report( string $client_id ): ?array { return self::get_telemetry()[ $client_id ]['gravity_forms'] ?? null; }
 }
 function __( $text, $domain = '' ) { return $text; }
 function esc_html( $value ) { return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' ); }

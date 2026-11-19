@@ -483,6 +483,16 @@
 	overflow-wrap: anywhere;
 }
 
+#stuh-client-gravity-forms {
+	width: auto;
+}
+
+#stuh-client-gravity-forms th,
+#stuh-client-gravity-forms td {
+	padding: 4px 8px;
+	white-space: nowrap;
+}
+
 .stuh-client-details-grid {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));

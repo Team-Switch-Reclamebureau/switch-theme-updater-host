@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.9.10
+ * Version: 0.9.11
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -921,6 +921,18 @@ class STUH_Plugin {
 		return get_option( STUH_OPTION_TELEMETRY, [] ) === $telemetry || update_option( STUH_OPTION_TELEMETRY, $telemetry, false );
 	}
 
+	public static function get_gravity_forms_report( string $client_id ): ?array {
+		$telemetry = self::get_telemetry();
+		$reported = $telemetry[ $client_id ]['gravity_forms'] ?? null;
+		$imported = $telemetry[ $client_id ]['gravity_forms_import'] ?? null;
+		if ( null === $reported || null === $imported ) {
+			return $reported ?? $imported;
+		}
+		$combined = self::merge_gravity_forms( $imported['forms'], $reported['forms'] );
+		$combined['received_at'] = max( $imported['received_at'], $reported['received_at'] );
+		return $combined;
+	}
+
 	/**
 	 * Returns true if the given IP is in the whitelist.
 	 */
@@ -1188,21 +1200,13 @@ class STUH_Plugin {
 
 		$telemetry = self::get_telemetry();
 		$gravity_forms = $telemetry[ $client_id ]['gravity_forms'] ?? null;
+		$gravity_forms_import = $telemetry[ $client_id ]['gravity_forms_import'] ?? null;
 		if ( array_key_exists( 'gravity_forms', $data ) ) {
 			$forms = self::validate_gravity_forms( json_decode( $json )->gravity_forms );
 			if ( is_wp_error( $forms ) ) {
 				error_log( sprintf( '[STUH telemetry] Invalid gravity_forms report for client %s: %s', $client_id, $forms->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			} else {
-				$saved_forms = array_column( $gravity_forms['forms'] ?? [], null, 'form_id' );
-				foreach ( $forms as $form ) {
-					$months = $saved_forms[ $form['form_id'] ]['months'] ?? [];
-					foreach ( $form['months'] as $month => $count ) {
-						$months[ $month ] = max( $months[ $month ] ?? 0, $count );
-					}
-					$form['months'] = $months;
-					$saved_forms[ $form['form_id'] ] = $form;
-				}
-				$gravity_forms = [ 'received_at' => time(), 'forms' => array_values( $saved_forms ) ];
+				$gravity_forms = self::merge_gravity_forms( $gravity_forms['forms'] ?? [], $forms );
 			}
 			unset( $data['gravity_forms'] );
 		}
@@ -1215,11 +1219,50 @@ class STUH_Plugin {
 		if ( null !== $gravity_forms ) {
 			$telemetry[ $client_id ]['gravity_forms'] = $gravity_forms;
 		}
+		if ( null !== $gravity_forms_import ) {
+			$telemetry[ $client_id ]['gravity_forms_import'] = $gravity_forms_import;
+		}
 		if ( ! self::save_telemetry( $telemetry ) ) {
 			error_log( sprintf( '[STUH telemetry] Could not save telemetry for client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		}
 		STUH_Analytics::queue_discovery( $client );
 		self::check_client_homepage( $client, $data );
+	}
+
+	private static function merge_gravity_forms( array $saved, array $forms ): array {
+		$saved_forms = array_column( $saved, null, 'form_id' );
+		foreach ( $forms as $form ) {
+			$months = $saved_forms[ $form['form_id'] ]['months'] ?? [];
+			foreach ( $form['months'] as $month => $count ) {
+				$months[ $month ] = max( $months[ $month ] ?? 0, $count );
+			}
+			$form['months'] = $months;
+			$saved_forms[ $form['form_id'] ] = $form;
+		}
+		return [ 'received_at' => time(), 'forms' => array_values( $saved_forms ) ];
+	}
+
+	private static function import_gravity_forms_json( string $client_id, string $json ) {
+		if ( ! in_array( $client_id, array_column( self::get_clients(), 'id' ), true ) ) {
+			return new WP_Error( 'invalid_client', __( 'The selected client site could not be found.', 'stuh' ) );
+		}
+		if ( strlen( $json ) > 1048576 ) {
+			return new WP_Error( 'gravity_forms_size', __( 'The JSON file must be no larger than 1 MB.', 'stuh' ) );
+		}
+		$data = json_decode( $json );
+		if ( JSON_ERROR_NONE !== json_last_error() ) {
+			return new WP_Error( 'gravity_forms_json', __( 'The file does not contain valid JSON.', 'stuh' ) );
+		}
+		$forms = self::validate_gravity_forms( $data instanceof stdClass && property_exists( $data, 'gravity_forms' ) ? $data->gravity_forms : $data );
+		if ( is_wp_error( $forms ) ) {
+			return $forms;
+		}
+		$telemetry = self::get_telemetry();
+		$telemetry[ $client_id ]['gravity_forms_import'] = [ 'received_at' => time(), 'forms' => $forms ];
+		if ( ! self::save_telemetry( $telemetry ) ) {
+			return new WP_Error( 'gravity_forms_save', __( 'Could not save Gravity Forms history. Please try again.', 'stuh' ) );
+		}
+		return true;
 	}
 
 	private static function validate_gravity_forms( $forms ) {
@@ -3210,6 +3253,7 @@ class STUH_Plugin {
 		$client_id = sanitize_text_field( wp_unslash( $_GET['client_id'] ?? '' ) );
 		if ( '' !== $client_id && 'delete_client' !== ( $_POST['stuh_action'] ?? '' ) ) {
 			$args['client_id'] = $client_id;
+			$args['client_tab'] = self::client_detail_tab();
 		}
 
 		$search = sanitize_text_field( wp_unslash( $_GET['stuh_search'] ?? '' ) );
@@ -3229,8 +3273,16 @@ class STUH_Plugin {
 		return add_query_arg( 'client_id', $client_id, self::client_list_url() );
 	}
 
+	private static function client_detail_tab(): string {
+		$tab = isset( $_GET['client_tab'] ) && is_string( $_GET['client_tab'] ) ? sanitize_key( wp_unslash( $_GET['client_tab'] ) ) : '';
+		return in_array( $tab, [ 'overview', 'packages', 'forms', 'analytics', 'diagnostics' ], true ) ? $tab : 'overview';
+	}
+
 	public function handle_admin_actions(): void {
 		if ( empty( $_POST['stuh_action'] ) || ! current_user_can( 'manage_options' ) ) {
+			if ( 'import_gravity_forms' === ( $_POST['stuh_action'] ?? '' ) ) {
+				wp_die( esc_html__( 'Insufficient permissions', 'stuh' ) );
+			}
 			return;
 		}
 		check_admin_referer( 'stuh_admin' );
@@ -3239,6 +3291,30 @@ class STUH_Plugin {
 		$clients = self::get_clients();
 
 		switch ( $action ) {
+
+			case 'import_gravity_forms':
+				$id = isset( $_POST['client_id'] ) && is_string( $_POST['client_id'] ) ? sanitize_text_field( wp_unslash( $_POST['client_id'] ) ) : '';
+				if ( ! in_array( $id, array_column( $clients, 'id' ), true ) ) {
+					wp_die( esc_html__( 'The selected client site could not be found.', 'stuh' ) );
+				}
+				$file = $_FILES['gravity_forms_file'] ?? null;
+				if ( ! is_array( $file ) || ( $file['error'] ?? null ) !== UPLOAD_ERR_OK ) {
+					wp_die( esc_html__( 'The JSON upload failed. Choose a file no larger than 1 MB and try again.', 'stuh' ) );
+				}
+				if ( ! is_string( $file['name'] ?? null ) || 'json' !== strtolower( pathinfo( $file['name'], PATHINFO_EXTENSION ) ) || ! is_string( $file['tmp_name'] ?? null ) || ! is_uploaded_file( $file['tmp_name'] ) ) {
+					wp_die( esc_html__( 'Please upload a valid .json file.', 'stuh' ) );
+				}
+				$json = file_get_contents( $file['tmp_name'], false, null, 0, 1048577 ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+				if ( false === $json ) {
+					wp_die( esc_html__( 'The uploaded JSON file could not be read.', 'stuh' ) );
+				}
+				$result = self::import_gravity_forms_json( $id, $json );
+				if ( is_wp_error( $result ) ) {
+					wp_die( esc_html( $result->get_error_message() ) );
+				}
+				set_transient( 'stuh_gravity_forms_import_' . get_current_user_id(), __( 'Gravity Forms import replaced. Client-reported history is unchanged; FMP shows the highest count from both sources.', 'stuh' ), 5 * MINUTE_IN_SECONDS );
+				wp_safe_redirect( add_query_arg( 'client_tab', 'forms', self::client_details_url( $id ) ) );
+				exit;
 
 			case 'add_client':
 				// Parse one URL per line from the textarea; sanitize and filter empties.
@@ -4633,6 +4709,48 @@ class STUH_Plugin {
 	// Admin page: client site list
 	// --------------------------------------------------------
 
+	private static function render_client_gravity_forms( string $client_id ): void {
+		$report = self::get_gravity_forms_report( $client_id );
+		echo '<section class="stuh-client-gravity-forms"><h2 id="stuh-client-forms-heading">' . esc_html__( 'Gravity Forms history', 'stuh' ) . '</h2>';
+		if ( ! $report || ! $report['forms'] ) {
+			echo '<p>' . esc_html( null === $report ? __( 'No Gravity Forms report received yet.', 'stuh' ) : __( 'No forms reported.', 'stuh' ) ) . '</p></section>';
+			return;
+		}
+		$reported = array_column( self::get_telemetry()[ $client_id ]['gravity_forms']['forms'] ?? [], 'months', 'form_id' );
+		$periods = [];
+		foreach ( $report['forms'] as $form ) {
+			foreach ( $form['months'] as $period => $count ) {
+				$periods[ $period ] = true;
+			}
+		}
+		echo '<p>' . esc_html__( 'The highest count per form and month from client reports and imports is shown. Italic numbers come from imports; equal counts use the client-reported value. A dash means not reported, not zero.', 'stuh' ) . '</p>';
+		echo '<div class="stuh-analytics-line-scroll" role="region" tabindex="0" aria-labelledby="stuh-client-forms-heading"><table id="stuh-client-gravity-forms" class="widefat striped" aria-labelledby="stuh-client-forms-heading"><thead><tr><th scope="col">' . esc_html__( 'Month', 'stuh' ) . '</th>';
+		foreach ( $report['forms'] as $form ) {
+			echo '<th scope="col">' . esc_html( $form['form_title'] ) . ' <span class="description">#' . esc_html( (string) $form['form_id'] ) . '</span></th>';
+		}
+		echo '</tr></thead><tbody>';
+		if ( $periods ) {
+			$first = min( array_keys( $periods ) );
+			$cursor = new DateTimeImmutable( max( array_keys( $periods ) ) . '-01', wp_timezone() );
+			while ( $cursor->format( 'Y-m' ) >= $first ) {
+				$period = $cursor->format( 'Y-m' );
+				echo '<tr><th scope="row">' . esc_html( wp_date( 'F Y', $cursor->getTimestamp(), wp_timezone() ) ) . '</th>';
+				foreach ( $report['forms'] as $form ) {
+					$count = $form['months'][ $period ] ?? null;
+					$live_count = $reported[ $form['form_id'] ][ $period ] ?? null;
+					$imported = null !== $count && ( null === $live_count || $count > $live_count );
+					$value = null === $count ? '-' : number_format_i18n( $count );
+					echo '<td>' . ( $imported ? '<em title="' . esc_attr__( 'Imported count', 'stuh' ) . '">' : '' ) . esc_html( $value ) . ( $imported ? '</em>' : '' ) . '</td>';
+				}
+				echo '</tr>';
+				$cursor = $cursor->modify( '-1 month' );
+			}
+		} else {
+			echo '<tr><td colspan="' . esc_attr( (string) ( count( $report['forms'] ) + 1 ) ) . '">' . esc_html__( 'No monthly entry counts available.', 'stuh' ) . '</td></tr>';
+		}
+		echo '</tbody></table></div></section>';
+	}
+
 	public function render_clients_page(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_die( esc_html__( 'Insufficient permissions', 'stuh' ) );
@@ -4641,6 +4759,14 @@ class STUH_Plugin {
 		$clients = self::get_clients();
 		$client_id = sanitize_text_field( wp_unslash( $_GET['client_id'] ?? '' ) );
 		$is_detail = '' !== $client_id;
+		$detail_tab = self::client_detail_tab();
+		$detail_tabs = [
+			'overview' => __( 'Overview', 'stuh' ),
+			'packages' => __( 'Plugins & Themes', 'stuh' ),
+			'forms' => __( 'Forms', 'stuh' ),
+			'analytics' => __( 'Analytics', 'stuh' ),
+			'diagnostics' => __( 'Diagnostics', 'stuh' ),
+		];
 		if ( $is_detail ) {
 			$clients = array_values( array_filter( $clients, fn( array $client ): bool => $client['id'] === $client_id ) );
 			if ( ! $clients ) {
@@ -4649,6 +4775,10 @@ class STUH_Plugin {
 		}
 		$telemetry = self::get_telemetry();
 		$external_parties = self::get_external_parties();
+		$gravity_forms_import = get_transient( 'stuh_gravity_forms_import_' . get_current_user_id() );
+		if ( $gravity_forms_import ) {
+			delete_transient( 'stuh_gravity_forms_import_' . get_current_user_id() );
+		}
 		$ssl_statuses = [];
 		foreach ( $clients as $client ) {
 			$ssl_statuses[ $client['id'] ] = self::client_ssl_status( $client );
@@ -4693,30 +4823,42 @@ class STUH_Plugin {
 		if ( $is_detail ) {
 			$detail_groups = [
 				'overview' => [
+					'tab' => 'overview',
 					'label' => __( 'Website & access', 'stuh' ),
 					'columns' => [ 'site', 'site_url', 'tags', 'created_at', 'last_seen' ],
 				],
 				'health' => [
+					'tab' => 'overview',
 					'label' => __( 'Health & updates', 'stuh' ),
 					'columns' => [ 'homepage_status', 'ssl', 'telemetry_wp', 'telemetry_php', 'telemetry_updater', 'telemetry_pending_updates', 'telemetry_smtp', 'telemetry_debug' ],
 				],
 				'infrastructure' => [
+					'tab' => 'overview',
 					'label' => __( 'Hosting & contacts', 'stuh' ),
-					'columns' => [ 'last_seen_ip', 'server_owner', 'domain_owner', 'telemetry_admin_email', 'email_owner', 'telemetry_site', 'telemetry_home', 'telemetry_database', 'telemetry_analytics' ],
+					'columns' => [ 'last_seen_ip', 'server_owner', 'domain_owner', 'telemetry_admin_email', 'email_owner', 'telemetry_site', 'telemetry_home', 'telemetry_database' ],
 				],
 				'configuration' => [
+					'tab' => 'overview',
 					'label' => __( 'WordPress settings', 'stuh' ),
 					'columns' => [ 'telemetry_search_engine_visibility', 'telemetry_post_revisions', 'telemetry_core_upgrade_skip_new_bundled', 'telemetry_multisite', 'telemetry_multilanguage', 'telemetry_locale' ],
 				],
 				'packages' => [
+					'tab' => 'packages',
 					'label' => __( 'Themes & plugins', 'stuh' ),
 					'columns' => [ 'telemetry_active_theme', 'telemetry_packages' ],
 				],
 				'diagnostics' => [
+					'tab' => 'diagnostics',
 					'label' => __( 'Diagnostics', 'stuh' ),
 					'columns' => [ 'diagnostics' ],
 				],
+				'analytics' => [
+					'tab' => 'analytics',
+					'label' => __( 'Analytics', 'stuh' ),
+					'columns' => [ 'telemetry_analytics' ],
+				],
 			];
+			$detail_groups = array_filter( $detail_groups, fn( array $group ): bool => $group['tab'] === $detail_tab );
 			$ordered_columns = [];
 			foreach ( $detail_groups as $group ) {
 				foreach ( $group['columns'] as $column_id ) {
@@ -4776,7 +4918,7 @@ class STUH_Plugin {
 				$detail_site   = is_array( $telemetry[ $client_id ]['data']['site'] ?? null ) ? $telemetry[ $client_id ]['data']['site'] : [];
 				$detail_title  = is_string( $detail_site['title'] ?? null ) && '' !== $detail_site['title'] ? $detail_site['title'] : self::client_url_label( (string) ( $detail_client['site_url'] ?? '' ) );
 				?>
-				<p><a href="<?php echo esc_url( remove_query_arg( 'client_id', self::client_list_url() ) ); ?>">&larr; <?php esc_html_e( 'Back to Client Sites', 'stuh' ); ?></a></p>
+				<p><a href="<?php echo esc_url( remove_query_arg( 'client_tab', remove_query_arg( 'client_id', self::client_list_url() ) ) ); ?>">&larr; <?php esc_html_e( 'Back to Client Sites', 'stuh' ); ?></a></p>
 				<h1><?php echo esc_html( $detail_title ); ?></h1>
 				<p class="stuh-client-details-meta">
 					<strong><?php echo ( $detail_client['enabled'] ?? true ) ? esc_html__( 'Enabled', 'stuh' ) : esc_html__( 'Disabled', 'stuh' ); ?></strong>
@@ -4785,6 +4927,10 @@ class STUH_Plugin {
 				</p>
 			<?php else : ?>
 				<h1><?php esc_html_e( 'Team Switch — Client Sites', 'stuh' ); ?></h1>
+			<?php endif; ?>
+
+			<?php if ( $gravity_forms_import ) : ?>
+			<div class="notice notice-success is-dismissible"><p><?php echo esc_html( $gravity_forms_import ); ?></p></div>
 			<?php endif; ?>
 
 			<?php if ( $new_key ) : ?>
@@ -4968,6 +5114,14 @@ class STUH_Plugin {
 				return ' <span class="dashicons dashicons-arrow-' . ( $order === 'asc' ? 'up' : 'down' ) . '" style="vertical-align:middle;font-size:14px;"></span>';
 			};
 			?>
+			<?php if ( $is_detail ) : ?>
+			<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Client site sections', 'stuh' ); ?>">
+				<?php foreach ( $detail_tabs as $tab_id => $tab_label ) : ?>
+				<a href="<?php echo esc_url( add_query_arg( 'client_tab', $tab_id, self::client_details_url( $client_id ) ) ); ?>" class="nav-tab<?php echo $detail_tab === $tab_id ? ' nav-tab-active' : ''; ?>"<?php echo $detail_tab === $tab_id ? ' aria-current="page"' : ''; ?>><?php echo esc_html( $tab_label ); ?></a>
+				<?php endforeach; ?>
+			</nav>
+			<?php endif; ?>
+			<?php if ( ! $is_detail || $detail_groups ) : ?>
 			<?php if ( ! $is_detail ) : ?>
 			<p class="search-box" style="float:right;margin:8px 0 0;">
 				<label class="screen-reader-text" for="stuh-client-search"><?php esc_html_e( 'Search client sites', 'stuh' ); ?></label>
@@ -5415,10 +5569,13 @@ class STUH_Plugin {
 						<?php endforeach; ?>
 					<?php if ( $is_detail ) : ?>
 					</div>
+					<?php if ( 'overview' === $detail_tab ) : ?>
 					<table class="widefat stuh-client-detail-editors"><tbody>
+					<?php endif; ?>
 					<?php else : ?>
 					</tr>
 					<?php endif; ?>
+					<?php if ( ! $is_detail || 'overview' === $detail_tab ) : ?>
 					<?php self::render_external_party_owner_editor( $c, $external_parties, 'domain', $visible_column_count ); ?>
 					<?php self::render_external_party_owner_editor( $c, $external_parties, 'server', $visible_column_count ); ?>
 					<?php self::render_external_party_owner_editor( $c, $external_parties, 'email', $visible_column_count ); ?>
@@ -5464,6 +5621,7 @@ class STUH_Plugin {
 							</form>
 						</td>
 					</tr>
+					<?php endif; ?>
 					<?php endforeach; ?>
 					<?php endif; ?>
 					<?php if ( ! $is_detail ) : ?>
@@ -5473,10 +5631,31 @@ class STUH_Plugin {
 						</td>
 					</tr>
 					<?php endif; ?>
+			<?php if ( ! $is_detail || 'overview' === $detail_tab ) : ?>
 				</tbody>
 			</table>
-			<?php if ( $is_detail ) : ?>
+			<?php endif; ?>
+			<?php endif; ?>
+			<?php if ( $is_detail && 'forms' === $detail_tab ) : ?>
+			<?php self::render_client_gravity_forms( $client_id ); ?>
+			<section class="stuh-gravity-forms-import">
+				<h2><?php esc_html_e( 'Import Gravity Forms history', 'stuh' ); ?></h2>
+				<p><?php esc_html_e( 'Upload a JSON file for this client site containing the form reports array, or an object with a gravity_forms array. Each upload completely replaces this site\'s previous import, including omitted forms and months. Client-reported history is stored separately and never changed by imports. FMP shows the highest count per form and month from both sources. Upload [] to clear only the imported history. No form submissions are imported. Maximum file size: 1 MB.', 'stuh' ); ?></p>
+				<form method="post" enctype="multipart/form-data">
+					<?php wp_nonce_field( 'stuh_admin' ); ?>
+					<input type="hidden" name="stuh_action" value="import_gravity_forms">
+					<input type="hidden" name="client_id" value="<?php echo esc_attr( $client_id ); ?>">
+					<input type="hidden" name="MAX_FILE_SIZE" value="1048576">
+					<label for="stuh-gravity-forms-file"><?php esc_html_e( 'Gravity Forms JSON file', 'stuh' ); ?></label>
+					<input type="file" id="stuh-gravity-forms-file" name="gravity_forms_file" accept=".json,application/json" required>
+					<?php submit_button( __( 'Import history', 'stuh' ) ); ?>
+				</form>
+			</section>
+			<?php endif; ?>
+			<?php if ( $is_detail && 'analytics' === $detail_tab ) : ?>
 			<?php STUH_Analytics::render_client_panel( $clients[0] ); ?>
+			<?php endif; ?>
+			<?php if ( $is_detail && 'overview' === $detail_tab ) : ?>
 			<script>
 			document.querySelector('.stuh-client-details').addEventListener('click', function(event) {
 				var action = event.target.closest('[data-stuh-editor]');

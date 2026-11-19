@@ -7,15 +7,22 @@ administrators.
 ## Website details
 
 Click a website's title or domain in **Updater Host → Client Sites** to open its
-details page. Six compact panels group website/access, health/updates,
-hosting/contacts, WordPress settings, themes/plugins, and diagnostics.
-Aligned label/value rows show every field, even columns hidden by Screen
-Options. Separate, always-visible inventory tables show themes first and plugins
-second, including names, identifiers, versions, and active status. Raw diagnostics
-expand on demand.
+details page. Five tabs organize its contents:
+
+- **Overview**: website/access, health/updates, hosting/contacts and WordPress settings.
+- **Plugins & Themes**: active theme and separate inventory tables showing themes
+  first, then plugins, including identifiers, versions and active status.
+- **Forms**: monthly Gravity Forms history and historical JSON uploads. The table
+  combines both sources using the highest count per form/month. Imported winning
+  counts are italicized; equal counts use normal client-reported styling. Missing
+  months remain visible as dashes, distinct from reported zero counts.
+- **Analytics**: Google Analytics connection status, property mapping and reports.
+- **Diagnostics**: the latest report and expandable raw diagnostics.
+
+Aligned label/value rows show every field, even columns hidden by Screen Options.
 Available actions stay visible beside the relevant details, including URL, tag,
 and ownership editing, health checks, access controls, and applicable remote
-maintenance actions. Actions return to the same website; deleting it returns to
+maintenance actions. Actions return to the same website and tab; deleting it returns to
 the list. **Back to Client Sites** retains the list's search and status filters.
 
 Use **Open site**, immediately before **Login** in the main table's row actions,
@@ -103,7 +110,7 @@ a positive integer ID, a string title and a months object with `YYYY-MM` keys
 and non-negative integer counts. Only these aggregate fields are retained; do
 not send individual entries or personal submission data.
 
-The saved report is available at
+The client-reported source is available at
 `STUH_Plugin::get_telemetry()[$client_id]['gravity_forms']`, containing
 `received_at` (Unix timestamp) and `forms` (the normalized array above).
 It is separate from the latest diagnostics `data`, so reports without the
@@ -120,6 +127,48 @@ removes its saved report with its telemetry. Previously overwritten counts
 cannot be recovered unless they are reported again.
 Existing metadata size limits apply. Receiving reports does not require the
 site to be linked to an FMP project.
+
+#### Importing historical Gravity Forms counts
+
+Administrators can open **Client Sites**, select a website, then use
+the **Forms** tab's **Import Gravity Forms history** section. Choose a `.json` file
+(maximum 1 MB) and click **Import history**. The file may contain the array the
+client reports, or an object containing a `gravity_forms` array:
+
+```json
+[
+  {
+    "form_id": 1,
+    "form_title": "Contact",
+    "months": {"2024-12": 12, "2025-01": 8, "2026-10": 20}
+  }
+]
+```
+
+Use the site's actual form IDs so imports and client reports can be combined.
+Both sources use the same validation, but are stored independently:
+
+- Client reports remain in `get_telemetry()[$client_id]['gravity_forms']` and
+  retain their historical maximum per form/month, as described above.
+- The latest upload is in `get_telemetry()[$client_id]['gravity_forms_import']`,
+  also containing `received_at` and `forms`. **Every valid upload completely
+  replaces the previous imported snapshot**, including omitted forms/months.
+  Corrected uploads can lower imported counts. Upload `[]` to clear only the
+  imported source.
+- Imports never change reported counts or their timestamp. Live reports never
+  change the imported snapshot or copy imported counts into reported history.
+- `STUH_Plugin::get_gravity_forms_report($client_id)` combines both sources for
+  FMP tables, month options and Word matrices. Each form/month uses the **highest
+  count across the two sources**, not their sum. Reported form titles take
+  precedence over imported titles for matching IDs. Combined results are
+  calculated when read, not saved back into either source.
+
+Imports are isolated to the selected client site, preserve other diagnostics
+and do not mark the site as having checked in.
+Only aggregate counts are saved; uploaded files are not retained or published.
+Invalid files and storage errors are explicit and leave previous data intact.
+Replacing or clearing imported history appears immediately in linked FMP reports and Word matrices;
+no Gripp refresh or new client report is needed.
 
 The Monthly reports tab of an FMP with linked sites shows a **Gravity Forms** table with the
 client site, form title and entry count. Forms remain separate per site, even

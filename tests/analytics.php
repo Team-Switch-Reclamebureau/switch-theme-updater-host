@@ -567,7 +567,7 @@ update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'Stale data' ), 'Old cached reports are explicitly stale even without a failed refresh' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ) ] );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'A connected property without data is pending, not zero' );
-expect_analytics( str_contains( render_analytics_column(), '#stuh-analytics' ), 'Pending reports retain the client details link' );
+expect_analytics( str_contains( render_analytics_column(), 'client_tab=analytics' ) && str_contains( render_analytics_column(), '#stuh-analytics' ), 'Pending reports open the client details Analytics tab' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ), 'error' => 'Quota exceeded' ] );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report failed' ), 'A failed first report must not appear merely pending' );
 $column_record['fingerprint'] = 'obsolete-mapping';
@@ -583,7 +583,7 @@ expect_analytics( [ 'site-1' => null ] === STUH_Analytics::column_sort_values( [
 update_option( 'stuh_google_mappings', [] );
 expect_analytics( str_contains( render_analytics_column(), 'Not connected' ), 'Unmapped sites explicitly show not connected' );
 expect_analytics( str_contains( render_analytics_column(), 'class="stuh-analytics-disconnected"' ), 'Disconnected link has its own light-grey style' );
-expect_analytics( str_contains( render_analytics_column(), '#stuh-analytics' ) && ! str_contains( render_analytics_column(), 'page=stuh-analytics' ), 'Unconnected sites retain the existing client details link' );
+expect_analytics( str_contains( render_analytics_column(), 'client_tab=analytics' ) && str_contains( render_analytics_column(), '#stuh-analytics' ) && ! str_contains( render_analytics_column(), 'page=stuh-analytics' ), 'Unconnected sites open their client details Analytics tab rather than the report dashboard' );
 update_option( 'stuh_google_mappings', $original_mappings );
 update_option( $key, $good );
 expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Column rendering must never call Google' );

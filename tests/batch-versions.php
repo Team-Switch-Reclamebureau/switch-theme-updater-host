@@ -166,9 +166,16 @@ expect_batch( [
 ] === $retained_report['forms'] && 99 === STUH_Plugin::get_telemetry()['site-two']['gravity_forms']['forms'][0]['months']['2026-11'], 'Increase counts without adding them, preserve historical maxima against explicit zero, append new months/forms including zero, and keep client histories isolated' );
 $send_report( 'one', 'key-one', [ 'gravity_forms' => $increased_report ] );
 expect_batch( $retained_report['forms'] === STUH_Plugin::get_telemetry()['site-one']['gravity_forms']['forms'], 'Repeated reports do not double count or duplicate forms' );
+$reported_before_import = STUH_Plugin::get_telemetry()['site-one']['gravity_forms'];
+$import_result = ( new ReflectionMethod( STUH_Plugin::class, 'import_gravity_forms_json' ) )->invoke( null, 'site-one', '[{"form_id":1,"form_title":"Historical contact","months":{"2026-11":100,"2020-01":10}},{"form_id":8,"form_title":"Imported only","months":{"2020-01":0}}]' );
+expect_batch( true === $import_result && $reported_before_import === STUH_Plugin::get_telemetry()['site-one']['gravity_forms'], 'Historical uploads are persisted separately without changing live-reported counts or timestamps' );
+$import_snapshot = STUH_Plugin::get_telemetry()['site-one']['gravity_forms_import'];
+$send_report( 'one', 'key-one', [ 'gravity_forms' => [ [ 'form_id' => 1, 'form_title' => 'Renamed contact', 'months' => (object) [ '2026-11' => 3 ] ] ] ] );
+$combined_report = STUH_Plugin::get_gravity_forms_report( 'site-one' );
+expect_batch( $import_snapshot === STUH_Plugin::get_telemetry()['site-one']['gravity_forms_import'] && 15 === STUH_Plugin::get_telemetry()['site-one']['gravity_forms']['forms'][0]['months']['2026-11'] && ! isset( STUH_Plugin::get_telemetry()['site-one']['gravity_forms']['forms'][0]['months']['2020-01'] ) && 100 === $combined_report['forms'][0]['months']['2026-11'] && 10 === $combined_report['forms'][0]['months']['2020-01'], 'Live reports retain their own historical maxima without absorbing imported values or modifying the imported snapshot, while combined reads show source maxima' );
 $retained_report = STUH_Plugin::get_telemetry()['site-one']['gravity_forms'];
 $send_report( 'one', 'key-one', [ 'php_version' => '8.4' ] );
-expect_batch( $retained_report === STUH_Plugin::get_telemetry()['site-one']['gravity_forms'] && [ 'php_version' => '8.4' ] === STUH_Plugin::get_telemetry()['site-one']['data'], 'Omitted gravity_forms reports preserve the existing history and timestamp while updating diagnostics' );
+expect_batch( $retained_report === STUH_Plugin::get_telemetry()['site-one']['gravity_forms'] && $import_snapshot === STUH_Plugin::get_telemetry()['site-one']['gravity_forms_import'] && [ 'php_version' => '8.4' ] === STUH_Plugin::get_telemetry()['site-one']['data'], 'Diagnostics without form reports preserve both independent sources and their timestamps' );
 
 $log_path = tempnam( sys_get_temp_dir(), 'stuh-gravity-test-' );
 $previous_log = ini_set( 'error_log', $log_path );
@@ -194,7 +201,7 @@ try {
 		expect_batch( true === $send_report( 'one', 'key-one', [ 'gravity_forms' => $invalid_forms, 'diagnostics' => 'still accepted' ] ), 'Malformed form reports must not block client update checks' );
 		expect_batch( $retained_report === STUH_Plugin::get_telemetry()['site-one']['gravity_forms'] && [ 'diagnostics' => 'still accepted' ] === STUH_Plugin::get_telemetry()['site-one']['data'], 'Reject malformed reports atomically without overwriting prior counts or persisting raw invalid data' );
 	}
-	expect_batch( substr_count( file_get_contents( $log_path ), 'Invalid gravity_forms report for client site-one' ) === 16 && ! str_contains( file_get_contents( $log_path ), 'must-not-be-persisted' ), 'Log every malformed report without logging submitted form data' );
+	expect_batch( substr_count( file_get_contents( $log_path ), 'Invalid gravity_forms report for client site-one' ) === 16 && ! str_contains( file_get_contents( $log_path ), 'must-not-be-persisted' ) && $import_snapshot === STUH_Plugin::get_telemetry()['site-one']['gravity_forms_import'], 'Log malformed live reports without logging submitted data or changing the imported snapshot' );
 	$GLOBALS['storage_fail'] = true;
 	$send_report( 'one', 'key-one', [ 'gravity_forms' => [] ] );
 	expect_batch( $retained_report === STUH_Plugin::get_telemetry()['site-one']['gravity_forms'] && str_contains( file_get_contents( $log_path ), 'Could not save telemetry for client site-one' ), 'Storage failures preserve the previous report and are logged instead of silently appearing saved' );
