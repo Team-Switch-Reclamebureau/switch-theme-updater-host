@@ -60,6 +60,70 @@ Dashboard loading now requires read access to hours as well as orders. Every
 order/time page is loaded and cached with the dashboard; API errors are explicit,
 never a fabricated zero balance.
 Click a project title in either table to open its **FMP project details** screen.
+Each umbrella project / retainer has an administrator-only **Settings** tab.
+Select one or more registered client sites and choose **Save linked sites**;
+unchecking all sites removes the links. The selection is stored per Gripp
+umbrella project ID on this host, not in Gripp, and survives dashboard refreshes.
+Editors can still view the overview but cannot open or change these settings.
+Removed client sites are flagged in settings and their links are cleared on save.
+Linked sites' reported Gravity Forms counts appear on the FMP overview; saving
+links does not request new reports or start additional data collection.
+
+### Gravity Forms reports from client sites
+
+Clients can include `gravity_forms` in the existing version-1 `X-STU-Metadata`
+JSON object (gzip-compressed, then Base64URL-encoded as usual):
+
+```json
+{
+  "gravity_forms": [
+    {
+      "form_id": 1,
+      "form_title": "Contact",
+      "months": {"2026-10": 12, "2026-11": 8}
+    }
+  ]
+}
+```
+
+The host retains the **highest reported entry count per client site, form and
+calendar month**, not per FMP project. Form IDs are unique only within that site. Each form needs
+a positive integer ID, a string title and a months object with `YYYY-MM` keys
+and non-negative integer counts. Only these aggregate fields are retained; do
+not send individual entries or personal submission data.
+
+The saved report is available at
+`STUH_Plugin::get_telemetry()[$client_id]['gravity_forms']`, containing
+`received_at` (Unix timestamp) and `forms` (the normalized array above).
+It is separate from the latest diagnostics `data`, so reports without the
+`gravity_forms` field preserve the previous report and its timestamp.
+Valid reports merge into saved history: new forms/months are added and existing
+counts only increase. Lower counts, explicit zeros, omitted forms/months and
+`gravity_forms: []` never erase existing counts. Repeated reports do not add
+counts together. Reported form titles update to the latest title, and
+`received_at` records the latest valid report, even when counts do not increase.
+This preserves history when client sites automatically delete old entries.
+A malformed report is logged and rejected in full, preserving saved history
+without blocking update checks or other diagnostics. Deleting a client still
+removes its saved report with its telemetry. Previously overwritten counts
+cannot be recovered unless they are reported again.
+Existing metadata size limits apply. Receiving reports does not require the
+site to be linked to an FMP project.
+
+An FMP overview with linked sites shows a **Gravity Forms** table with the
+client site, form title and entry count. Forms remain separate per site, even
+when IDs or titles match. The shared **Calendar month** dropdown above Active
+projects filters both tables; **All months** sums each form's reported counts.
+Month options include both logged-hour months and linked sites' reported months.
+Explicit zero counts display as zero; missing months display **Not reported**.
+Sites without a report, sites reporting no forms and removed sites each show
+an explicit status rather than fabricated counts. Administrators and editors
+can view this table. No client-site or Gripp requests are made for form counts.
+
+Run `php tests/batch-versions.php` for report-ingestion regression checks.
+
+### Active projects
+
 Below the chart, **Active projects** lists all non-archived linked projects
 (Gripp **Opdrachten**), with number, name, **actual logged hours** and order
 value excluding VAT. Numbers open the corresponding order in Gripp in a new tab,
@@ -70,6 +134,75 @@ through today in the WordPress timezone. All time-entry pages are loaded for
 each batch of up to 250 order IDs; fractional hours are summed before rounding
 the displayed total to two decimals. They always display as hours, independent
 of the Euros / Hours preference, which only converts the order value.
+Indented sub-rows summarize actual hours **per Gripp product** (for example
+Webdevelopment, Art Direction or Project Management), using the product's label.
+All order lines (regels) referencing the same product ID are combined within
+each project. Different product IDs remain separate even if their labels match.
+Trailing numeric references such as `(8026)` are hidden from product labels in
+the table, TXT preview and download; descriptive parentheses are kept.
+Time without an order line or product appears under **No product**, so it still reconciles to
+the project total. Projects without time have zero hours and no breakdown.
+The shared **Calendar month** dropdown filters this table and Gravity Forms, showing
+only that month's project and product hours and hiding projects without time
+entries in that month. **All months** (the default) restores the full table.
+Options include months with recorded time, linked form reports and the current month. Corrections
+remain included, including months whose entries cancel to zero. Order values,
+the budget chart and summary cards do not change. Monthly breakdowns share the
+same cache, so changing the filter does not reload Gripp data while it is fresh.
+At the bottom of Monthly reports, a read-only textarea previews the current
+TXT content. **Export TXT**, below the preview, downloads the currently applied
+filter as a UTF-8 text document. Each active order is a heading
+(`Opdracht <number> <title>`) followed by product names and actual hours, separated
+by tabs, with decimal commas and two decimals. Order values and duplicate
+project totals are omitted; the export always uses actual hours regardless of
+the Euros / Hours preference. TXT remains plain text.
+
+The **formatted preview** and **Copy for Word** button provide a rich-text
+version of the same filtered report in **Montserrat 10 pt**, with blank lines
+before each order heading and the summary. Order headings are bold pink, the hours
+summary is bold, the closing balance is pink, and numbers are right-aligned in
+borderless tables. Gravity Forms stays grouped by site. Pasting into Word with
+**Keep Source Formatting** preserves this styling (exact fonts/layout depend on
+Word's paste settings). Montserrat must be installed on the computer running
+Word; otherwise Word substitutes an available font. Clipboard data includes both HTML and the TXT content.
+If automatic rich-text copying is unavailable or denied, the report is selected
+and an explicit message explains how to copy it manually with Ctrl+C / Command+C.
+Without JavaScript, the formatted preview remains selectable and TXT still works.
+Run `node --test tests/fmp-export.js` for clipboard success/failure checks.
+
+The order breakdown is followed by filtered Gravity Forms counts grouped
+by client site. Each site's URL appears once as a heading above its form titles
+and counts; missing-report and missing-month statuses match the on-screen table.
+Between the order breakdown and Gravity Forms, an hours summary shows **Uren begin van de maand**,
+**Beschikbare uren in de periode**, **Totaal gewerkt**, and
+**Uren eind van de maand** (using "periode" for All months):
+
+- Opening hours = allowance accrued before the selected month / EUR 90 minus
+  all earlier logged hours.
+- Available hours = that calendar month's allowance / EUR 90, using the existing
+  Gripp budget schedule, including partial project months and the project deadline.
+  A selected calendar month includes its full allowance, even in the current month;
+  logged hours still only run through today.
+- Worked hours include **all linked orders, including archived orders**, Concept
+  entries, zero-value work and corrections. This can exceed the active-only
+  breakdown because archived orders are included.
+- Closing hours = opening + available - worked.
+
+**All months** starts at zero and uses the accrued allowance through today and
+all recorded hours through today, including work outside the project dates.
+Calculations use unrounded logged hours; rounding is only for display. Summary
+data is cached per umbrella project and connection for five minutes and cleared
+on refresh/reconnect/disconnect. Missing budgets/dates or API failures show an
+explicit error instead of offering a misleading export or preview.
+The filename includes the umbrella project ID and
+selected month (or `all-months`). Administrators and editors can export; the
+download uses the same permissions, cached data and month filter as the preview.
+Sub-rows include only recorded time through today, keep corrections, and always
+display hours; each displayed value is rounded independently to two decimals.
+This details breakdown additionally requires read access to `offerprojectline`.
+All referenced line pages are loaded and validated against their parent order;
+missing/inaccessible lines or API failures show an explicit error, never a
+misleading partial breakdown. The breakdown shares the active-project cache.
 Active means
 not archived in Gripp, regardless of delivery date; archived orders still count
 in the existing budget and usage calculations. Every API page is loaded, and

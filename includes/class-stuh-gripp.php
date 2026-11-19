@@ -9,13 +9,16 @@ final class STUH_Gripp {
 	private const CACHE = 'stuh_gripp_projects';
 	private const USAGE_CACHE = 'stuh_gripp_usage';
 	private const ACTIVE_ORDERS_CACHE = 'stuh_gripp_active_orders';
+	private const BALANCE_CACHE = 'stuh_gripp_balance';
 	private const CACHE_RESOURCE = 'umbrellaproject-budget-hours-active-v3';
 	private const PAGE_SIZE = 250;
 	private const UNIT_OPTION = 'stuh_fmp_unit';
+	private const PROJECT_SITES_PREFIX = 'stuh_fmp_project_sites_';
 
 	public static function init(): void {
 		add_action( 'admin_menu', [ self::class, 'register_menu' ], 20 );
 		add_action( 'admin_post_stuh_gripp_action', [ self::class, 'handle_action' ] );
+		add_action( 'admin_post_stuh_gripp_export', [ self::class, 'handle_export' ] );
 		add_action( 'admin_enqueue_scripts', [ self::class, 'enqueue_assets' ] );
 		add_filter( 'set_screen_option_' . self::UNIT_OPTION, [ self::class, 'save_display_unit' ], 10, 3 );
 	}
@@ -28,6 +31,7 @@ final class STUH_Gripp {
 		wp_enqueue_style( 'stuh-uplot', plugins_url( 'assets/vendor/uplot/uPlot.min.css', $plugin ), [], '1.6.32' );
 		wp_enqueue_script( 'stuh-uplot', plugins_url( 'assets/vendor/uplot/uPlot.iife.min.js', $plugin ), [], '1.6.32', true );
 		wp_enqueue_script( 'stuh-fmp-chart', plugins_url( 'assets/js/fmp-chart.js', $plugin ), [ 'stuh-uplot' ], (string) filemtime( dirname( __DIR__ ) . '/assets/js/fmp-chart.js' ), true );
+		wp_enqueue_script( 'stuh-fmp-export', plugins_url( 'assets/js/fmp-export.js', $plugin ), [], (string) filemtime( dirname( __DIR__ ) . '/assets/js/fmp-export.js' ), true );
 	}
 
 	public static function register_menu(): void {
@@ -113,8 +117,23 @@ final class STUH_Gripp {
 		return add_query_arg( [ 'page' => 'stuh-fmp', 'offset' => $offset, 'unit' => $unit ], admin_url( 'admin.php' ) );
 	}
 
-	private static function details_url( int $id, int $offset, string $unit ): string {
-		return add_query_arg( [ 'page' => 'stuh-fmp', 'project_id' => $id, 'offset' => $offset, 'unit' => $unit ], admin_url( 'admin.php' ) );
+	private static function details_url( int $id, int $offset, string $unit, string $tab = 'overview' ): string {
+		$args = [ 'page' => 'stuh-fmp', 'project_id' => $id, 'offset' => $offset, 'unit' => $unit ];
+		if ( 'settings' === $tab ) {
+			$args['project_tab'] = $tab;
+		}
+		return add_query_arg( $args, admin_url( 'admin.php' ) );
+	}
+
+	private static function project_tab( array $source ): string {
+		$tab = isset( $source['project_tab'] ) ? self::input( $source, 'project_tab' ) : 'overview';
+		if ( ! in_array( $tab, [ 'overview', 'settings' ], true ) ) {
+			wp_die( esc_html__( 'Invalid FMP project tab.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		if ( 'settings' === $tab ) {
+			self::require_admin();
+		}
+		return $tab;
 	}
 
 	private static function selected_project( array $source ): ?int {
@@ -126,6 +145,14 @@ final class STUH_Gripp {
 			wp_die( esc_html__( 'Invalid Gripp project ID.', 'stuh' ), '', [ 'response' => 400 ] );
 		}
 		return $id;
+	}
+
+	private static function selected_hours_month( array $source ): string {
+		$month = self::input( $source, 'hours_month' );
+		if ( isset( $source['hours_month'] ) && ( ! is_string( $source['hours_month'] ) || ( '' !== $month && ! preg_match( '/\A(?!0000)[0-9]{4}-(0[1-9]|1[0-2])\z/', $month ) ) ) ) {
+			wp_die( esc_html__( 'Invalid recorded-hours month. Choose a calendar month or All months.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		return $month;
 	}
 
 	private static function display_unit( array $source ): string {
@@ -199,6 +226,7 @@ final class STUH_Gripp {
 		delete_transient( self::CACHE );
 		delete_transient( self::USAGE_CACHE );
 		delete_transient( self::ACTIVE_ORDERS_CACHE );
+		delete_transient( self::BALANCE_CACHE );
 		return true;
 	}
 
@@ -245,7 +273,7 @@ final class STUH_Gripp {
 			return new WP_Error( 'gripp_response', __( 'Gripp returned an invalid project response.', 'stuh' ) );
 		}
 		if ( ! empty( $data[0]['error'] ) ) {
-			return new WP_Error( 'gripp_api', __( 'Gripp rejected the request. Check API read permissions for umbrella projects, orders, hours, invoice lines and invoices, and check the rate limit.', 'stuh' ) );
+			return new WP_Error( 'gripp_api', __( 'Gripp rejected the request. Check API read permissions for umbrella projects, orders, order lines, hours, invoice lines and invoices, and check the rate limit.', 'stuh' ) );
 		}
 		$result = $data[0]['result'] ?? null;
 		if ( ! is_array( $result ) || ! isset( $result['rows'], $result['more_items_in_collection'] ) || ! is_array( $result['rows'] ) || ! array_is_list( $result['rows'] ) || ! is_bool( $result['more_items_in_collection'] ) || count( $result['rows'] ) > self::PAGE_SIZE ) {
@@ -500,7 +528,7 @@ final class STUH_Gripp {
 	private static function active_orders( string $token, int $id ) {
 		$fingerprint = hash( 'sha256', (string) get_option( self::CONNECTION, '' ) );
 		$cache = get_transient( self::ACTIVE_ORDERS_CACHE );
-		if ( is_array( $cache ) && ( $cache['version'] ?? null ) === 2 && ( $cache['connection'] ?? '' ) === $fingerprint && ( $cache['id'] ?? null ) === $id ) {
+		if ( is_array( $cache ) && ( $cache['version'] ?? null ) === 5 && ( $cache['connection'] ?? '' ) === $fingerprint && ( $cache['id'] ?? null ) === $id ) {
 			return $cache['rows'];
 		}
 		$orders = self::fetch_all( $token, 'project', [
@@ -522,23 +550,45 @@ final class STUH_Gripp {
 			}
 			$rows[] = $row;
 		}
-		$hours = self::order_hours( $token, array_keys( $orders ) );
+		$breakdown = [];
+		$monthly = [];
+		$hours = self::order_hours( $token, array_keys( $orders ), $breakdown, $monthly );
 		if ( is_wp_error( $hours ) ) {
 			return $hours;
 		}
 		foreach ( $rows as &$row ) {
 			$row['hours'] = $hours[ $row['id'] ];
+			$row['products'] = $breakdown[ $row['id'] ];
+			$row['months'] = $monthly[ $row['id'] ];
 		}
 		unset( $row );
 		if ( hash_equals( $fingerprint, hash( 'sha256', (string) get_option( self::CONNECTION, '' ) ) ) ) {
-			set_transient( self::ACTIVE_ORDERS_CACHE, [ 'version' => 2, 'connection' => $fingerprint, 'id' => $id, 'rows' => $rows ], 5 * MINUTE_IN_SECONDS );
+			set_transient( self::ACTIVE_ORDERS_CACHE, [ 'version' => 5, 'connection' => $fingerprint, 'id' => $id, 'rows' => $rows ], 5 * MINUTE_IN_SECONDS );
 		}
 		return $rows;
 	}
 
-	private static function order_hours( string $token, array $ids ) {
+	private static function add_hours( float &$total, float &$compensation, float $amount ): ?WP_Error {
+		// Compensate floating-point error before rounding fractional hours for display.
+		$adjusted = $amount - $compensation;
+		$sum = $total + $adjusted;
+		if ( ! is_finite( $sum ) ) {
+			return new WP_Error( 'gripp_amount', __( 'The recorded hours total is too large to calculate safely.', 'stuh' ) );
+		}
+		$compensation = ( $sum - $total ) - $adjusted;
+		$total = $sum;
+		return null;
+	}
+
+	private static function order_hours( string $token, array $ids, ?array &$breakdown = null, ?array &$monthly = null, ?array &$history = null ) {
 		$totals = array_fill_keys( $ids, 0.0 );
 		$compensation = array_fill_keys( $ids, 0.0 );
+		$groups = array_fill_keys( $ids, [] );
+		$line_orders = [];
+		$history_compensation = [];
+		if ( null !== $history ) {
+			$history = [];
+		}
 		$today = ( new DateTimeImmutable( 'today', wp_timezone() ) )->format( 'Y-m-d' );
 		foreach ( array_chunk( $ids, self::PAGE_SIZE ) as $chunk ) {
 			$hours = self::fetch_all( $token, 'hour', [ [ 'field' => 'hour.offerprojectbase', 'operator' => 'in', 'value' => $chunk ] ] );
@@ -554,14 +604,103 @@ final class STUH_Gripp {
 					continue;
 				}
 				$id = $record['order'];
-				// Compensate floating-point error before rounding fractional hours for display.
-				$adjusted = $record['amount'] - $compensation[ $id ];
-				$total = $totals[ $id ] + $adjusted;
-				if ( ! is_finite( $total ) ) {
-					return new WP_Error( 'gripp_amount', __( 'The recorded hours total is too large to calculate safely.', 'stuh' ) );
+				$error = self::add_hours( $totals[ $id ], $compensation[ $id ], $record['amount'] );
+				if ( $error ) {
+					return $error;
 				}
-				$compensation[ $id ] = ( $total - $totals[ $id ] ) - $adjusted;
-				$totals[ $id ] = $total;
+				if ( null !== $history ) {
+					$date = $record['date'];
+					$history[ $date ] ??= 0.0;
+					$history_compensation[ $date ] ??= 0.0;
+					$error = self::add_hours( $history[ $date ], $history_compensation[ $date ], $record['amount'] );
+					if ( $error ) {
+						return $error;
+					}
+				}
+				if ( null !== $breakdown ) {
+					$reference = $hour['offerprojectline'] ?? null;
+					$line_id = null === $reference || '' === $reference ? 0 : self::reference_id( $reference );
+					if ( null === $line_id || ( isset( $line_orders[ $line_id ] ) && $line_orders[ $line_id ] !== $id ) ) {
+						return new WP_Error( 'gripp_hour', __( 'Gripp returned an invalid or conflicting order line reference for recorded time.', 'stuh' ) );
+					}
+					if ( $line_id > 0 ) {
+						$line_orders[ $line_id ] = $id;
+					}
+					$periods = null === $monthly ? [ '' ] : [ '', substr( $record['date'], 0, 7 ) ];
+					foreach ( $periods as $period ) {
+						if ( ! isset( $groups[ $id ][ $period ][ $line_id ] ) ) {
+							$groups[ $id ][ $period ][ $line_id ] = [ 'hours' => 0.0, 'compensation' => 0.0 ];
+						}
+						$group = &$groups[ $id ][ $period ][ $line_id ];
+						$error = self::add_hours( $group['hours'], $group['compensation'], $record['amount'] );
+						unset( $group );
+						if ( $error ) {
+							return $error;
+						}
+					}
+				}
+			}
+		}
+		if ( null !== $breakdown ) {
+			$line_products = [ 0 => [ 'id' => 0, 'name' => __( 'No product', 'stuh' ) ] ];
+			foreach ( array_chunk( array_keys( $line_orders ), self::PAGE_SIZE ) as $line_ids ) {
+				$lines = self::fetch_all( $token, 'offerprojectline', [ [ 'field' => 'offerprojectline.id', 'operator' => 'in', 'value' => $line_ids ] ] );
+				if ( is_wp_error( $lines ) ) {
+					return $lines;
+				}
+				foreach ( $lines as $line_id => $line ) {
+					if ( ! in_array( $line_id, $line_ids, true ) || self::reference_id( $line['offerprojectbase'] ?? null ) !== $line_orders[ $line_id ] ) {
+						return new WP_Error( 'gripp_hour', __( 'Gripp returned an invalid order line for recorded time.', 'stuh' ) );
+					}
+					$product = $line['product'] ?? null;
+					if ( null === $product || '' === $product ) {
+						$line_products[ $line_id ] = $line_products[0];
+						continue;
+					}
+					$product_id = self::reference_id( $product );
+					if ( null === $product_id || ! is_array( $product ) || ! isset( $product['searchname'] ) || ! is_string( $product['searchname'] ) || '' === trim( $product['searchname'] ) ) {
+						return new WP_Error( 'gripp_hour', __( 'Gripp returned an invalid product or product label for recorded time.', 'stuh' ) );
+					}
+					$line_products[ $line_id ] = [ 'id' => $product_id, 'name' => $product['searchname'] ];
+				}
+				if ( count( $lines ) !== count( $line_ids ) ) {
+					return new WP_Error( 'gripp_hour', __( 'Some recorded-time order lines are missing or inaccessible in Gripp. Check order-line read permissions.', 'stuh' ) );
+				}
+			}
+			$breakdown = array_fill_keys( $ids, [] );
+			if ( null !== $monthly ) {
+				$monthly = array_fill_keys( $ids, [] );
+			}
+			foreach ( $groups as $order_id => $order_periods ) {
+				foreach ( $order_periods as $period => $order_groups ) {
+					$products = [];
+					$total = 0.0;
+					$total_compensation = 0.0;
+					foreach ( $order_groups as $line_id => $group ) {
+						$product = $line_products[ $line_id ];
+						$product_id = $product['id'];
+						if ( ! isset( $products[ $product_id ] ) ) {
+							$products[ $product_id ] = $product + [ 'hours' => 0.0, 'compensation' => 0.0 ];
+						}
+						$error = self::add_hours( $products[ $product_id ]['hours'], $products[ $product_id ]['compensation'], $group['hours'] );
+						if ( $error ) {
+							return $error;
+						}
+						$error = self::add_hours( $total, $total_compensation, $group['hours'] );
+						if ( $error ) {
+							return $error;
+						}
+					}
+					foreach ( $products as &$product ) {
+						unset( $product['compensation'] );
+					}
+					unset( $product );
+					if ( '' === $period ) {
+						$breakdown[ $order_id ] = array_values( $products );
+					} else {
+						$monthly[ $order_id ][ $period ] = [ 'hours' => $total, 'products' => array_values( $products ) ];
+					}
+				}
 			}
 		}
 		return $totals;
@@ -658,6 +797,9 @@ final class STUH_Gripp {
 		}
 		check_admin_referer( 'stuh_gripp' );
 		switch ( $operation ) {
+			case 'save_project_sites':
+				self::save_project_sites( $_POST );
+				break;
 			case 'connect':
 				$token = self::input( $_POST, 'api_token' );
 				if ( '' === $token || preg_match( '/[\x00-\x20\x7f]/', $token ) ) {
@@ -685,6 +827,7 @@ final class STUH_Gripp {
 				delete_transient( self::CACHE );
 				delete_transient( self::USAGE_CACHE );
 				delete_transient( self::ACTIVE_ORDERS_CACHE );
+				delete_transient( self::BALANCE_CACHE );
 				self::finish( __( 'Gripp disconnected and cached projects removed.', 'stuh' ) );
 				break;
 			case 'refresh':
@@ -697,12 +840,289 @@ final class STUH_Gripp {
 				delete_transient( self::CACHE );
 				delete_transient( self::USAGE_CACHE );
 				delete_transient( self::ACTIVE_ORDERS_CACHE );
+				delete_transient( self::BALANCE_CACHE );
 				$result = self::projects( $token, $offset );
 				self::finish( is_wp_error( $result ) ? $result->get_error_message() : __( 'Projects refreshed from Gripp.', 'stuh' ), is_wp_error( $result ), $offset, $unit );
 				break;
 			default:
 				wp_die( esc_html__( 'Unknown Gripp action.', 'stuh' ), '', [ 'response' => 400 ] );
 		}
+	}
+
+	private static function project_site_ids( int $id ): array {
+		$ids = get_option( self::PROJECT_SITES_PREFIX . $id, [] );
+		if ( ! is_array( $ids ) || array_filter( $ids, static fn( $value ): bool => ! is_string( $value ) || '' === $value ) ) {
+			wp_die( esc_html__( 'Stored FMP client-site links are invalid.', 'stuh' ), '', [ 'response' => 500 ] );
+		}
+		return array_values( $ids );
+	}
+
+	private static function save_project_sites( array $source ): void {
+		$id = self::selected_project( $source );
+		if ( null === $id ) {
+			wp_die( esc_html__( 'Select a Gripp umbrella project to configure.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		$offset = self::offset( $source );
+		$unit = self::display_unit( $source );
+		$submitted = $source['client_ids'] ?? [];
+		if ( ! is_array( $submitted ) ) {
+			wp_die( esc_html__( 'Invalid client-site selection.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		$available = array_column( STUH_Plugin::get_clients(), 'id' );
+		$ids = [];
+		foreach ( $submitted as $value ) {
+			if ( ! is_string( $value ) || ! in_array( wp_unslash( $value ), $available, true ) ) {
+				wp_die( esc_html__( 'A selected client site no longer exists. Reload the settings and try again.', 'stuh' ), '', [ 'response' => 400 ] );
+			}
+			$ids[] = wp_unslash( $value );
+		}
+		$ids = array_values( array_unique( $ids ) );
+		$token = self::connection();
+		$projects = is_wp_error( $token ) ? $token : self::fetch_all( $token, 'umbrellaproject', [ [ 'field' => 'umbrellaproject.id', 'operator' => 'equals', 'value' => $id ] ] );
+		if ( is_wp_error( $projects ) ) {
+			wp_die( esc_html( $projects->get_error_message() ), '', [ 'response' => 502 ] );
+		}
+		if ( 1 !== count( $projects ) || ! isset( $projects[ $id ] ) ) {
+			wp_die( esc_html__( 'Gripp project not found or no longer accessible.', 'stuh' ), '', [ 'response' => 404 ] );
+		}
+		$key = self::PROJECT_SITES_PREFIX . $id;
+		if ( get_option( $key, [] ) !== $ids && ! update_option( $key, $ids, false ) ) {
+			wp_die( esc_html__( 'Could not save the FMP client-site links. Retry.', 'stuh' ), '', [ 'response' => 500 ] );
+		}
+		set_transient( 'stuh_gripp_notice_' . get_current_user_id(), [ 'message' => __( 'Linked client sites saved.', 'stuh' ), 'error' => false ], 5 * MINUTE_IN_SECONDS );
+		wp_safe_redirect( self::details_url( $id, $offset, $unit, 'settings' ) );
+		exit;
+	}
+
+	private static function render_project_settings( int $id, int $offset, string $unit ): void {
+		self::require_admin();
+		$selected = self::project_site_ids( $id );
+		$clients = STUH_Plugin::get_clients();
+		usort( $clients, static fn( array $a, array $b ): int => strcasecmp( $a['site_url'] ?? $a['id'], $b['site_url'] ?? $b['id'] ) );
+		echo '<h2>' . esc_html__( 'Linked client sites', 'stuh' ) . '</h2><p>' . esc_html__( 'Select the client sites belonging to this FMP project or retainer. Their reported Gravity Forms counts appear on the overview; linking does not start additional data collection.', 'stuh' ) . '</p>';
+		$missing = array_diff( $selected, array_column( $clients, 'id' ) );
+		if ( $missing ) {
+			echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'Some linked client sites have been removed from the host. Saving will remove those unavailable links.', 'stuh' ) . '</p></div>';
+		}
+		self::form_start( 'save_project_sites' );
+		foreach ( [ 'project_id' => $id, 'offset' => $offset, 'unit' => $unit ] as $key => $value ) {
+			echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
+		}
+		echo '<fieldset><legend class="screen-reader-text">' . esc_html__( 'Client sites', 'stuh' ) . '</legend>';
+		foreach ( $clients as $client ) {
+			echo '<p><label><input type="checkbox" name="client_ids[]" value="' . esc_attr( $client['id'] ) . '"' . ( in_array( $client['id'], $selected, true ) ? ' checked' : '' ) . '> ' . esc_html( $client['site_url'] ?? $client['id'] ) . '</label></p>';
+		}
+		if ( ! $clients ) {
+			echo '<p>' . esc_html__( 'No client sites are registered on this host yet.', 'stuh' ) . '</p>';
+		}
+		echo '</fieldset>';
+		submit_button( __( 'Save linked sites', 'stuh' ) );
+		echo '</form>';
+	}
+
+	public static function handle_export(): void {
+		$export = self::active_orders_export( $_POST );
+		nocache_headers();
+		header( 'Content-Type: text/plain; charset=UTF-8' );
+		header( 'Content-Disposition: attachment; filename="' . $export['filename'] . '"' );
+		header( 'X-Content-Type-Options: nosniff' );
+		echo $export['text'];
+		exit;
+	}
+
+	private static function active_orders_export( array $source ): array {
+		self::require_viewer();
+		check_admin_referer( 'stuh_gripp' );
+		$id = self::selected_project( $source );
+		if ( null === $id ) {
+			wp_die( esc_html__( 'Select a Gripp umbrella project to export.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		$month = self::selected_hours_month( $source );
+		$unit = self::display_unit( $source );
+		$token = self::connection();
+		if ( is_wp_error( $token ) ) {
+			wp_die( esc_html( $token->get_error_message() ), '', [ 'response' => 400 ] );
+		}
+		$rows = self::active_orders( $token, $id );
+		if ( is_wp_error( $rows ) ) {
+			wp_die( esc_html( $rows->get_error_message() ), '', [ 'response' => 502 ] );
+		}
+		$balance = self::monthly_balance( $token, $id, $month );
+		if ( is_wp_error( $balance ) ) {
+			wp_die( esc_html( $balance->get_error_message() ), '', [ 'response' => 502 ] );
+		}
+		return self::format_monthly_export( $rows, self::linked_gravity_forms( $id ), $id, $month, $balance );
+	}
+
+	private static function monthly_balance( string $token, int $id, string $month ) {
+		$fingerprint = hash( 'sha256', (string) get_option( self::CONNECTION, '' ) );
+		$data = get_transient( self::BALANCE_CACHE );
+		if ( ! is_array( $data ) || ( $data['connection'] ?? '' ) !== $fingerprint || ( $data['id'] ?? null ) !== $id ) {
+			$projects = self::fetch_all( $token, 'umbrellaproject', [ [ 'field' => 'umbrellaproject.id', 'operator' => 'equals', 'value' => $id ] ] );
+			if ( is_wp_error( $projects ) ) {
+				return $projects;
+			}
+			if ( 1 !== count( $projects ) || ! isset( $projects[ $id ] ) ) {
+				return new WP_Error( 'gripp_project', __( 'Gripp project not found or no longer accessible.', 'stuh' ) );
+			}
+			$raw = $projects[ $id ];
+			$project = [ 'budget' => null === ( $raw['budget'] ?? null ) || '' === $raw['budget'] ? null : self::money_amount( $raw['budget'], 'umbrellaproject.budget' ), 'used' => 0 ];
+			foreach ( [ 'startdate', 'deadline' ] as $field ) {
+				$project[ $field ] = self::project_date( $raw[ $field ] ?? null, $field );
+			}
+			foreach ( $project as $value ) {
+				if ( is_wp_error( $value ) ) {
+					return $value;
+				}
+			}
+			$schedule = self::budget_schedule( $project, new DateTimeImmutable( 'today', wp_timezone() ) );
+			if ( is_wp_error( $schedule ) ) {
+				return $schedule;
+			}
+			$orders = self::fetch_all( $token, 'project', [ [ 'field' => 'project.umbrellaproject', 'operator' => 'equals', 'value' => $id ] ] );
+			if ( is_wp_error( $orders ) ) {
+				return $orders;
+			}
+			foreach ( $orders as $order ) {
+				if ( self::reference_id( $order['umbrellaproject'] ?? null ) !== $id ) {
+					return new WP_Error( 'gripp_order', __( 'Gripp returned an unrelated order in the hours balance.', 'stuh' ) );
+				}
+			}
+			$breakdown = null;
+			$monthly = null;
+			$history = [];
+			$hours = self::order_hours( $token, array_keys( $orders ), $breakdown, $monthly, $history );
+			if ( is_wp_error( $hours ) ) {
+				return $hours;
+			}
+			$data = [ 'connection' => $fingerprint, 'id' => $id, 'project' => $project, 'history' => $history ];
+			if ( hash_equals( $fingerprint, hash( 'sha256', (string) get_option( self::CONNECTION, '' ) ) ) ) {
+				set_transient( self::BALANCE_CACHE, $data, 5 * MINUTE_IN_SECONDS );
+			}
+		}
+		return self::calculate_monthly_balance( $data['project'], $data['history'], $month, new DateTimeImmutable( 'today', wp_timezone() ) );
+	}
+
+	private static function calculate_monthly_balance( array $project, array $history, string $month, DateTimeImmutable $today ) {
+		$start = '' === $month ? null : new DateTimeImmutable( $month . '-01', $today->getTimezone() );
+		$end = null === $start ? $today : $start->modify( 'last day of this month' );
+		$closing = self::budget_schedule( $project, $end );
+		$opening = null === $start ? null : self::budget_schedule( $project, $start->modify( '-1 day' ) );
+		if ( is_wp_error( $closing ) || is_wp_error( $opening ) ) {
+			return is_wp_error( $closing ) ? $closing : $opening;
+		}
+		$before = 0.0;
+		$worked = 0.0;
+		$before_compensation = 0.0;
+		$worked_compensation = 0.0;
+		foreach ( $history as $date => $hours ) {
+			if ( $date > $today->format( 'Y-m-d' ) || $date > $end->format( 'Y-m-d' ) ) {
+				continue;
+			}
+			if ( null !== $start && $date < $start->format( 'Y-m-d' ) ) {
+				$error = self::add_hours( $before, $before_compensation, $hours );
+			} else {
+				$error = self::add_hours( $worked, $worked_compensation, $hours );
+			}
+			if ( $error ) {
+				return $error;
+			}
+		}
+		$opening_allowance = null === $opening ? 0 : $opening['planned'];
+		$balance = [
+			'opening' => $opening_allowance / 9000.0 - $before,
+			'allowance' => ( $closing['planned'] - $opening_allowance ) / 9000.0,
+			'worked' => $worked,
+		];
+		$balance['closing'] = $balance['opening'] + $balance['allowance'] - $worked;
+		return $balance;
+	}
+
+	private static function format_monthly_export( array $rows, array $sites, int $id, string $month, array $balance ): array {
+		$rows = self::filter_active_orders( $rows, $month );
+		$period = '' === $month ? __( 'All months', 'stuh' ) : wp_date( 'F Y', ( new DateTimeImmutable( $month . '-01', wp_timezone() ) )->getTimestamp(), wp_timezone() ) . ' (' . $month . ')';
+		$lines = [
+			__( 'FMP - Monthly reports', 'stuh' ),
+			sprintf( __( 'Umbrella project ID: %d', 'stuh' ), $id ),
+			sprintf( __( 'Calendar month: %s', 'stuh' ), $period ),
+			__( 'Uren per product voor de geselecteerde periode.', 'stuh' ),
+			'',
+			__( 'Active projects', 'stuh' ),
+		];
+		$plain = static fn( string $value ): string => str_replace( [ "\r", "\n", "\t" ], ' ', $value );
+		$font = 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;';
+		$blank_line = '<p style="' . $font . 'margin:0;line-height:1.4;"><br></p>';
+		$heading = static fn( string $value ): string => '<p style="' . $font . 'margin:20px 0 8px;color:#ff0054;"><strong>' . esc_html( $value ) . '</strong></p>';
+		$table_start = '<table style="' . $font . 'width:100%;border-collapse:collapse;border:0;" cellpadding="0" cellspacing="0"><tbody>';
+		$table_end = '</tbody></table>';
+		$html_row = static function( string $label, string $value, bool $bold = false, bool $highlight = false ) use ( $font ): string {
+			$style = $font . 'padding:4px 0;border:0;color:' . ( $highlight ? '#ff0054' : '#111111' ) . ';';
+			$label = esc_html( $label );
+			$value = esc_html( $value );
+			return '<tr><td style="' . $style . '">' . ( $bold ? '<strong>' . $label . '</strong>' : $label ) . '</td><td style="' . $style . 'text-align:right;white-space:nowrap;" align="right">' . ( $bold ? '<strong>' . $value . '</strong>' : $value ) . '</td></tr>';
+		};
+		$html = '<div style="' . $font . 'line-height:1.4;color:#111111;background:#ffffff;">';
+		$html .= '<p style="' . $font . '"><strong>' . esc_html( $lines[0] ) . '</strong><br>' . esc_html( $lines[1] ) . '<br>' . esc_html( $lines[2] ) . '</p>';
+		foreach ( $rows as $row ) {
+			$title = sprintf( __( 'Opdracht %1$s %2$s', 'stuh' ), $plain( '' === $row['number'] ? '-' : (string) $row['number'] ), $plain( $row['name'] ) );
+			$lines[] = $title;
+			$html .= $blank_line . $heading( $title ) . $table_start;
+			foreach ( $row['products'] as $product ) {
+				$label = $plain( self::product_label( $product['name'] ) );
+				$value = number_format( $product['hours'], 2, ',', '.' );
+				$lines[] = $label . "\t" . $value;
+				$html .= $html_row( $label, $value );
+			}
+			$html .= $table_end;
+			$lines[] = '';
+		}
+		if ( ! $rows ) {
+			$lines[] = '' === $month ? __( 'No active projects linked to this umbrella project.', 'stuh' ) : __( 'No active projects have recorded time in this month.', 'stuh' );
+			$html .= '<p style="' . $font . '">' . esc_html( end( $lines ) ) . '</p>';
+		}
+		$lines[] = '';
+		$html .= $blank_line . '<div style="margin-top:24px;">' . $table_start;
+		foreach ( [
+			'opening' => '' === $month ? __( 'Uren begin van de periode', 'stuh' ) : __( 'Uren begin van de maand', 'stuh' ),
+			'allowance' => __( 'Beschikbare uren in de periode', 'stuh' ),
+			'worked' => __( 'Totaal gewerkt', 'stuh' ),
+			'closing' => '' === $month ? __( 'Uren eind van de periode', 'stuh' ) : __( 'Uren eind van de maand', 'stuh' ),
+		] as $key => $label ) {
+			$value = number_format( $balance[ $key ], 2, ',', '.' );
+			$lines[] = $label . "\t" . $value;
+			$html .= $html_row( $label, $value, true, 'closing' === $key );
+		}
+		$html .= $table_end . '</div>';
+		if ( $sites ) {
+			$lines[] = '';
+			$lines[] = __( 'Gravity Forms', 'stuh' );
+			$html .= $heading( __( 'Gravity Forms', 'stuh' ) );
+			foreach ( $sites as $site ) {
+				$lines[] = '';
+				$lines[] = $plain( $site['name'] );
+				$html .= '<p style="' . $font . 'margin:16px 0 8px;"><strong>' . esc_html( $plain( $site['name'] ) ) . '</strong></p>';
+				$status = self::gravity_forms_status( $site );
+				if ( null !== $status ) {
+					$lines[] = "\t" . $status;
+					$html .= '<p style="' . $font . '">' . esc_html( $status ) . '</p>';
+					continue;
+				}
+				$lines[] = "\t" . __( 'Form', 'stuh' ) . "\t" . __( 'Entries', 'stuh' );
+				$html .= $table_start . $html_row( __( 'Form', 'stuh' ), __( 'Entries', 'stuh' ), true );
+				foreach ( $site['report']['forms'] as $form ) {
+					$label = $plain( $form['form_title'] );
+					$value = self::gravity_form_entries( $form, $month );
+					$lines[] = "\t" . $label . "\t" . $value;
+					$html .= $html_row( $label, $value );
+				}
+				$html .= $table_end;
+			}
+		}
+		return [
+			'filename' => 'fmp-' . $id . '-' . ( '' === $month ? 'all-months' : $month ) . '.txt',
+			'text' => implode( "\n", $lines ) . "\n",
+			'html' => $html . '</div>',
+		];
 	}
 
 	private static function form_start( string $operation ): void {
@@ -715,7 +1135,7 @@ final class STUH_Gripp {
 		self::require_admin();
 		echo '<section id="stuh-gripp-settings"><h2>' . esc_html__( 'Gripp', 'stuh' ) . '</h2>';
 		self::notice();
-		echo '<p>' . esc_html__( 'Connect a Gripp API token with read access to umbrella projects (Projecten / Retainers), linked orders (Opdrachten), hours, invoice lines and invoices. The token stays encrypted on this host and is never sent to client sites. FMP is read-only.', 'stuh' ) . '</p>';
+		echo '<p>' . esc_html__( 'Connect a Gripp API token with read access to umbrella projects (Projecten / Retainers), linked orders (Opdrachten), order lines, hours, invoice lines and invoices. The token stays encrypted on this host and is never sent to client sites. FMP is read-only.', 'stuh' ) . '</p>';
 		$connection = self::connection();
 		if ( is_wp_error( $connection ) ) {
 			echo '<p>' . esc_html( $connection->get_error_message() ) . '</p>';
@@ -881,6 +1301,7 @@ final class STUH_Gripp {
 	}
 
 	private static function render_project_details( int $id, int $offset, string $unit ): void {
+		$tab = self::project_tab( $_GET );
 		$token = self::connection();
 		$data = is_wp_error( $token ) ? $token : self::projects( $token, $offset );
 		$project = null;
@@ -914,6 +1335,18 @@ final class STUH_Gripp {
 		echo '<h1>' . esc_html( $project['name'] ) . '</h1>';
 		echo '<p><a href="' . esc_url( self::project_url( $id ) ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'Open in Gripp', 'stuh' ) . ' ' . esc_html( $project['number'] ) . '</a></p>';
 		self::notice();
+		if ( current_user_can( 'manage_options' ) ) {
+			echo '<nav class="nav-tab-wrapper" aria-label="' . esc_attr__( 'FMP project sections', 'stuh' ) . '">';
+			foreach ( [ 'overview' => __( 'Overview', 'stuh' ), 'settings' => __( 'Settings', 'stuh' ) ] as $key => $label ) {
+				echo '<a class="nav-tab' . ( $key === $tab ? ' nav-tab-active' : '' ) . '" href="' . esc_url( self::details_url( $id, $offset, $unit, $key ) ) . '"' . ( $key === $tab ? ' aria-current="page"' : '' ) . '>' . esc_html( $label ) . '</a>';
+			}
+			echo '</nav>';
+		}
+		if ( 'settings' === $tab ) {
+			self::render_project_settings( $id, $offset, $unit );
+			echo '</div>';
+			return;
+		}
 		$chart = self::budget_chart_data( $project );
 		$usage = is_wp_error( $chart ) ? null : self::usage( $token, $id );
 		if ( is_array( $usage ) ) {
@@ -939,18 +1372,118 @@ final class STUH_Gripp {
 			}
 			self::render_budget_chart( $project, $chart, $unit );
 		}
-		self::render_active_orders( $token, $id, $unit );
+		self::render_project_reports( $token, $id, $unit );
 		echo '</div>';
 	}
 
-	private static function render_active_orders( string $token, int $id, string $unit ): void {
-		echo '<h2 id="stuh-fmp-active-heading">' . esc_html__( 'Active projects', 'stuh' ) . '</h2>';
-		echo '<p>' . esc_html__( 'Non-archived projects (Opdrachten) linked to this umbrella project. Actual hours include all recorded time through today, including Concept entries and zero-value work, and always display as hours.', 'stuh' ) . '</p>';
+	private static function filter_active_orders( array $rows, string $month ): array {
+		if ( '' === $month ) {
+			return $rows;
+		}
+		$filtered = [];
+		foreach ( $rows as $row ) {
+			if ( isset( $row['months'][ $month ] ) ) {
+				$row['hours'] = $row['months'][ $month ]['hours'];
+				$row['products'] = $row['months'][ $month ]['products'];
+				$filtered[] = $row;
+			}
+		}
+		return $filtered;
+	}
+
+	private static function linked_gravity_forms( int $id ): array {
+		$ids = self::project_site_ids( $id );
+		if ( ! $ids ) {
+			return [];
+		}
+		$clients = array_column( STUH_Plugin::get_clients(), null, 'id' );
+		$telemetry = STUH_Plugin::get_telemetry();
+		$sites = [];
+		foreach ( array_unique( $ids ) as $client_id ) {
+			$client = $clients[ $client_id ] ?? null;
+			$sites[] = [
+				'name' => null === $client ? __( 'Removed client site', 'stuh' ) : ( $client['site_url'] ?? $client_id ),
+				'exists' => null !== $client,
+				'report' => null === $client ? null : ( $telemetry[ $client_id ]['gravity_forms'] ?? null ),
+			];
+		}
+		return $sites;
+	}
+
+	private static function render_project_reports( string $token, int $id, string $unit ): void {
+		$month = self::selected_hours_month( $_GET );
 		$rows = self::active_orders( $token, $id );
+		$sites = self::linked_gravity_forms( $id );
+		$months = [ ( new DateTimeImmutable( 'today', wp_timezone() ) )->format( 'Y-m' ) => true ];
+		if ( ! is_wp_error( $rows ) ) {
+			foreach ( $rows as $row ) {
+				foreach ( array_keys( $row['months'] ) as $recorded_month ) {
+					$months[ $recorded_month ] = true;
+				}
+			}
+		}
+		foreach ( $sites as $site ) {
+			foreach ( $site['report']['forms'] ?? [] as $form ) {
+				foreach ( array_keys( $form['months'] ) as $recorded_month ) {
+					$months[ $recorded_month ] = true;
+				}
+			}
+		}
+		if ( '' !== $month ) {
+			$months[ $month ] = true;
+		}
+		krsort( $months );
+		echo '<h2 id="stuh-fmp-reports-heading">' . esc_html__( 'Monthly reports', 'stuh' ) . '</h2>';
+		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php#stuh-fmp-reports-heading' ) ) . '"><p>';
+		foreach ( [ 'page' => 'stuh-fmp', 'project_id' => $id, 'offset' => self::offset( $_GET ), 'unit' => $unit ] as $key => $value ) {
+			echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
+		}
+		echo '<label for="stuh-fmp-hours-month">' . esc_html__( 'Calendar month', 'stuh' ) . '</label> <select id="stuh-fmp-hours-month" name="hours_month"><option value=""' . ( '' === $month ? ' selected' : '' ) . '>' . esc_html__( 'All months', 'stuh' ) . '</option>';
+		foreach ( array_keys( $months ) as $option ) {
+			$date = new DateTimeImmutable( $option . '-01', wp_timezone() );
+			echo '<option value="' . esc_attr( $option ) . '"' . ( $option === $month ? ' selected' : '' ) . '>' . esc_html( wp_date( 'F Y', $date->getTimestamp(), wp_timezone() ) ) . '</option>';
+		}
+		echo '</select> <button class="button" type="submit">' . esc_html__( 'Filter', 'stuh' ) . '</button></p></form>';
+		echo '<p>' . esc_html__( 'The calendar month filters active-project hours and Gravity Forms entries together. Projects without time entries in the selected month are hidden; order values and the budget chart remain unchanged.', 'stuh' ) . '</p>';
+		echo '<h2 id="stuh-fmp-active-heading">' . esc_html__( 'Active projects', 'stuh' ) . '</h2>';
+		echo '<p>' . esc_html__( 'Non-archived projects (Opdrachten) linked to this umbrella project. Actual hours include all recorded time through today, including Concept entries and zero-value work, and always display as hours. Sub-rows summarize hours per Gripp product, combining all order lines for the same product. Time without a product is listed separately.', 'stuh' ) . '</p>';
 		if ( is_wp_error( $rows ) ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $rows->get_error_message() ) . '</p></div>';
-			return;
+		} else {
+			self::render_active_orders( $rows, $unit, $month );
 		}
+		if ( $sites ) {
+			self::render_gravity_forms( $sites, $month );
+		}
+		if ( ! is_wp_error( $rows ) ) {
+			$balance = self::monthly_balance( $token, $id, $month );
+			if ( is_wp_error( $balance ) ) {
+				echo '<div class="notice notice-error inline"><p>' . esc_html( $balance->get_error_message() ) . '</p></div>';
+				return;
+			}
+			$export = self::format_monthly_export( $rows, $sites, $id, $month, $balance );
+			echo '<h2>' . esc_html__( 'Export preview', 'stuh' ) . '</h2>';
+			echo '<p>' . esc_html__( 'Copy the formatted report into Word and choose Keep Source Formatting when pasting. If needed, select and copy the formatted preview manually. TXT remains plain text.', 'stuh' ) . '</p>';
+			echo '<div class="stuh-fmp-word-preview" data-stuh-fmp-word-preview tabindex="0" role="region" aria-label="' . esc_attr__( 'Formatted report for Word', 'stuh' ) . '">' . $export['html'] . '</div>';
+			echo '<p><button class="button button-primary" type="button" data-stuh-fmp-copy-word hidden>' . esc_html__( 'Copy for Word', 'stuh' ) . '</button> <span role="status" aria-live="polite" data-stuh-fmp-copy-status data-success="' . esc_attr__( 'Copied with formatting. Paste into Word using Keep Source Formatting.', 'stuh' ) . '" data-failure="' . esc_attr__( 'Automatic copying failed. The formatted report is selected; press Ctrl+C or Command+C, then paste into Word using Keep Source Formatting.', 'stuh' ) . '"></span></p>';
+			echo '<p id="stuh-fmp-export-help">' . esc_html__( 'Preview of the current TXT export: active orders with product hours, site-grouped Gravity Forms counts and an hours balance including archived orders. Hours use decimal commas. This preview is read-only.', 'stuh' ) . '</p>';
+			echo '<p><label for="stuh-fmp-export-preview">' . esc_html( $export['filename'] ) . '</label></p>';
+			echo '<textarea id="stuh-fmp-export-preview" class="large-text code" rows="16" readonly spellcheck="false" aria-describedby="stuh-fmp-export-help">' . esc_textarea( $export['text'] ) . '</textarea>';
+			echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><p>';
+			wp_nonce_field( 'stuh_gripp' );
+			foreach ( [ 'action' => 'stuh_gripp_export', 'project_id' => $id, 'hours_month' => $month, 'unit' => $unit ] as $key => $value ) {
+				echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
+			}
+			echo '<button class="button" type="submit">' . esc_html__( 'Export TXT', 'stuh' ) . '</button></p></form>';
+		}
+	}
+
+	private static function product_label( string $name ): string {
+		return preg_replace( '/\s*\([0-9]+\)\s*\z/', '', $name );
+	}
+
+	private static function render_active_orders( array $rows, string $unit, string $month ): void {
+		$rows = self::filter_active_orders( $rows, $month );
 		echo '<div class="stuh-analytics-line-scroll" role="region" tabindex="0" aria-labelledby="stuh-fmp-active-heading"><table id="stuh-fmp-active-projects" class="widefat striped" aria-labelledby="stuh-fmp-active-heading"><thead><tr>';
 		foreach ( [ __( 'Number', 'stuh' ), __( 'Project', 'stuh' ), __( 'Actual hours', 'stuh' ), __( 'Order value (excl. VAT)', 'stuh' ) ] as $heading ) {
 			echo '<th scope="col">' . esc_html( $heading ) . '</th>';
@@ -958,14 +1491,62 @@ final class STUH_Gripp {
 		echo '</tr></thead><tbody>';
 		foreach ( $rows as $row ) {
 			$number = '' === $row['number'] ? '-' : '<a href="' . esc_url( self::order_url( $row['id'] ) ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $row['number'] ) . '</a>';
-			echo '<tr><td>' . $number . '</td>';
-			foreach ( [ $row['name'], sprintf( __( '%s h', 'stuh' ), number_format_i18n( $row['hours'], 2 ) ), self::display_amount( $row['value'], $unit ) ] as $value ) {
+			echo '<tr class="stuh-fmp-order-total"><td>' . $number . '</td><th scope="row" id="stuh-fmp-order-' . esc_attr( (string) $row['id'] ) . '">' . esc_html( $row['name'] ) . '</th>';
+			foreach ( [ sprintf( __( '%s h', 'stuh' ), number_format_i18n( $row['hours'], 2 ) ), self::display_amount( $row['value'], $unit ) ] as $value ) {
 				echo '<td>' . esc_html( $value ) . '</td>';
 			}
 			echo '</tr>';
+			foreach ( $row['products'] as $product ) {
+				echo '<tr class="stuh-fmp-order-line"><td></td><th scope="row" headers="stuh-fmp-order-' . esc_attr( (string) $row['id'] ) . '">' . esc_html( self::product_label( $product['name'] ) ) . '</th><td>' . esc_html( sprintf( __( '%s h', 'stuh' ), number_format_i18n( $product['hours'], 2 ) ) ) . '</td><td></td></tr>';
+			}
 		}
 		if ( ! $rows ) {
-			echo '<tr><td colspan="4">' . esc_html__( 'No active projects linked to this umbrella project.', 'stuh' ) . '</td></tr>';
+			echo '<tr><td colspan="4">' . esc_html( '' === $month ? __( 'No active projects linked to this umbrella project.', 'stuh' ) : __( 'No active projects have recorded time in this month.', 'stuh' ) ) . '</td></tr>';
+		}
+		echo '</tbody></table></div>';
+	}
+
+	private static function gravity_forms_status( array $site ): ?string {
+		if ( ! $site['exists'] ) {
+			return __( 'Client site no longer exists.', 'stuh' );
+		}
+		if ( null === $site['report'] ) {
+			return __( 'No Gravity Forms report received yet.', 'stuh' );
+		}
+		return ! $site['report']['forms'] ? __( 'No forms reported.', 'stuh' ) : null;
+	}
+
+	private static function gravity_form_entries( array $form, string $month ): string {
+		$count = '' === $month ? 0 : ( $form['months'][ $month ] ?? null );
+		if ( '' === $month ) {
+			foreach ( $form['months'] as $amount ) {
+				if ( ! is_int( $count + $amount ) ) {
+					return __( 'Count is too large to display.', 'stuh' );
+				}
+				$count += $amount;
+			}
+		}
+		return null === $count ? __( 'Not reported', 'stuh' ) : number_format_i18n( $count );
+	}
+
+	private static function render_gravity_forms( array $sites, string $month ): void {
+		echo '<h2 id="stuh-fmp-forms-heading">' . esc_html__( 'Gravity Forms', 'stuh' ) . '</h2>';
+		echo '<p>' . esc_html__( 'Entry counts reported by linked client sites. All months sums each form\'s reported months. Missing months are shown as Not reported, not zero. Forms on different sites remain separate.', 'stuh' ) . '</p>';
+		echo '<div class="stuh-analytics-line-scroll" role="region" tabindex="0" aria-labelledby="stuh-fmp-forms-heading"><table id="stuh-fmp-gravity-forms" class="widefat striped" aria-labelledby="stuh-fmp-forms-heading"><thead><tr>';
+		foreach ( [ __( 'Client site', 'stuh' ), __( 'Form', 'stuh' ), __( 'Entries', 'stuh' ) ] as $heading ) {
+			echo '<th scope="col">' . esc_html( $heading ) . '</th>';
+		}
+		echo '</tr></thead><tbody>';
+		foreach ( $sites as $site ) {
+			$status = self::gravity_forms_status( $site );
+			if ( null !== $status ) {
+				echo '<tr><th scope="row">' . esc_html( $site['name'] ) . '</th><td colspan="2">' . esc_html( $status ) . '</td></tr>';
+				continue;
+			}
+			foreach ( $site['report']['forms'] as $form ) {
+				$value = self::gravity_form_entries( $form, $month );
+				echo '<tr><td>' . esc_html( $site['name'] ) . '</td><th scope="row">' . esc_html( $form['form_title'] ) . '</th><td>' . esc_html( $value ) . '</td></tr>';
+			}
 		}
 		echo '</tbody></table></div>';
 	}

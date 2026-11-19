@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.9.8
+ * Version: 0.9.9
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -917,8 +917,8 @@ class STUH_Plugin {
 		return (array) get_option( STUH_OPTION_TELEMETRY, [] );
 	}
 
-	private static function save_telemetry( array $telemetry ): void {
-		update_option( STUH_OPTION_TELEMETRY, $telemetry, false );
+	private static function save_telemetry( array $telemetry ): bool {
+		return get_option( STUH_OPTION_TELEMETRY, [] ) === $telemetry || update_option( STUH_OPTION_TELEMETRY, $telemetry, false );
 	}
 
 	/**
@@ -1186,16 +1186,63 @@ class STUH_Plugin {
 			return;
 		}
 
-		$telemetry               = self::get_telemetry();
+		$telemetry = self::get_telemetry();
+		$gravity_forms = $telemetry[ $client_id ]['gravity_forms'] ?? null;
+		if ( array_key_exists( 'gravity_forms', $data ) ) {
+			$forms = self::validate_gravity_forms( json_decode( $json )->gravity_forms );
+			if ( is_wp_error( $forms ) ) {
+				error_log( sprintf( '[STUH telemetry] Invalid gravity_forms report for client %s: %s', $client_id, $forms->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			} else {
+				$saved_forms = array_column( $gravity_forms['forms'] ?? [], null, 'form_id' );
+				foreach ( $forms as $form ) {
+					$months = $saved_forms[ $form['form_id'] ]['months'] ?? [];
+					foreach ( $form['months'] as $month => $count ) {
+						$months[ $month ] = max( $months[ $month ] ?? 0, $count );
+					}
+					$form['months'] = $months;
+					$saved_forms[ $form['form_id'] ] = $form;
+				}
+				$gravity_forms = [ 'received_at' => time(), 'forms' => array_values( $saved_forms ) ];
+			}
+			unset( $data['gravity_forms'] );
+		}
 		$telemetry[ $client_id ] = [
 			'version'      => 1,
 			'request_type' => sanitize_key( $req->get_header( 'X-STU-Request-Type' ) ),
 			'received_at'  => time(),
 			'data'         => $data,
 		];
-		self::save_telemetry( $telemetry );
+		if ( null !== $gravity_forms ) {
+			$telemetry[ $client_id ]['gravity_forms'] = $gravity_forms;
+		}
+		if ( ! self::save_telemetry( $telemetry ) ) {
+			error_log( sprintf( '[STUH telemetry] Could not save telemetry for client %s', $client_id ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
 		STUH_Analytics::queue_discovery( $client );
 		self::check_client_homepage( $client, $data );
+	}
+
+	private static function validate_gravity_forms( $forms ) {
+		if ( ! is_array( $forms ) ) {
+			return new WP_Error( 'invalid_gravity_forms', 'Expected an array of form reports.' );
+		}
+		$normalized = [];
+		$ids = [];
+		foreach ( $forms as $form ) {
+			if ( ! $form instanceof stdClass || ! isset( $form->form_id, $form->form_title, $form->months ) || ! is_int( $form->form_id ) || $form->form_id < 1 || isset( $ids[ $form->form_id ] ) || ! is_string( $form->form_title ) || ! $form->months instanceof stdClass ) {
+				return new WP_Error( 'invalid_gravity_forms', 'Each form needs a unique positive integer form_id, a string form_title and a months object.' );
+			}
+			$months = [];
+			foreach ( get_object_vars( $form->months ) as $month => $count ) {
+				if ( ! preg_match( '/\A(?!0000)[0-9]{4}-(0[1-9]|1[0-2])\z/', (string) $month ) || ! is_int( $count ) || $count < 0 ) {
+					return new WP_Error( 'invalid_gravity_forms', 'Month keys must use YYYY-MM and counts must be non-negative integers.' );
+				}
+				$months[ $month ] = $count;
+			}
+			$ids[ $form->form_id ] = true;
+			$normalized[] = [ 'form_id' => $form->form_id, 'form_title' => $form->form_title, 'months' => $months ];
+		}
+		return $normalized;
 	}
 
 	/**
