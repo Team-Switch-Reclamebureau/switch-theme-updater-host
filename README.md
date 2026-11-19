@@ -56,7 +56,7 @@ zero-value orders), Concept entries and time corrections through today, excludin
 future-dated time and products whose names contain **(ND / intern)**. The marker
 is matched case-insensitively with optional spacing around the slash. Those hours
 (including corrections) are ignored throughout FMP: dashboard spent hours, charts,
-active-project/product totals, monthly carry-over, and TXT/Word exports. A month
+active-project/product totals, monthly carry-over, and Word reports. A month
 with only these hours does not keep an active project visible. Order values and
 invoices are unchanged. Positive balances are green, negative red, and zero neutral.
 Missing budget/schedule dates show Unavailable. This column respects Screen
@@ -70,8 +70,8 @@ Each umbrella project / retainer has an administrator-only **Settings** tab.
 The tabs are **Overview**, **Monthly reports**, then **Settings**. Administrators
 and editors can open Overview and Monthly reports; Settings remains admin-only.
 Overview contains the budget chart and cards. Monthly reports contains the
-shared month filter, active projects, Gravity Forms, export previews and copy/download
-buttons. Applying the filter stays on Monthly reports.
+shared month filter, active projects, Gravity Forms, formatted preview and
+Copy for Word button. Applying the filter stays on Monthly reports.
 Select one or more registered client sites and choose **Save linked sites**;
 unchecking all sites removes the links. The selection is stored per Gripp
 umbrella project ID on this host, not in Gripp, and survives dashboard refreshes.
@@ -150,7 +150,7 @@ Webdevelopment, Art Direction or Project Management), using the product's label.
 All order lines (regels) referencing the same product ID are combined within
 each project. Different product IDs remain separate even if their labels match.
 Trailing numeric references such as `(8026)` are hidden from product labels in
-the table, TXT preview and download; descriptive parentheses are kept.
+the table and Word report; descriptive parentheses are kept.
 Time without an order line or product appears under **No product**, so it still reconciles to
 the project total. Projects without time have zero hours and no breakdown.
 The shared **Calendar month** dropdown filters this table and Gravity Forms, showing
@@ -160,30 +160,41 @@ Options include months with recorded time, linked form reports and the current m
 remain included, including months whose entries cancel to zero. Order values,
 the budget chart and summary cards do not change. Monthly breakdowns share the
 same cache, so changing the filter does not reload Gripp data while it is fresh.
-At the bottom of Monthly reports, a read-only textarea previews the current
-TXT content. **Export TXT**, below the preview, downloads the currently applied
-filter as a UTF-8 text document. Each active order is a heading
-(`Opdracht <number> <title>`) followed by product names and actual hours, separated
-by tabs, with decimal commas and two decimals. Order values and duplicate
-project totals are omitted; the export always uses actual hours regardless of
-the Euros / Hours preference. TXT remains plain text.
+At the bottom of Monthly reports, the **Word preview** and **Copy for Word**
+button provide the formatted report. There is no TXT preview or download endpoint.
+Each active order is a heading (`Opdracht <number> <title>`) followed by product
+names and actual hours, with decimal commas and two decimals. Order values and
+duplicate project totals are omitted; the report always uses actual hours
+regardless of the Euros / Hours preference.
 
-The **formatted preview** and **Copy for Word** button provide a rich-text
-version of the same filtered report in **Montserrat 10 pt**, with blank lines
+The report uses **Montserrat 10 pt**, with blank lines
 before each order heading and the summary. Order headings are bold pink, the hours
 summary is bold, the closing balance is pink, and numbers are right-aligned in
-borderless tables. Gravity Forms stays grouped by site. Pasting into Word with
+borderless tables. Gravity Forms stays grouped by site and uses a matrix in the
+Word content: forms as columns, reported months newest first, a **Totaal** column,
+and pink annual subtotal rows. The selected report month's entire row is bold;
+**All months** does not highlight an individual month.
+It includes every calendar month from the earliest report through the selected
+month, including empty months (**All months** spans the earliest to latest report).
+If no earlier reports exist, the selected month still appears with `-` counts.
+Annual subtotals
+sum only the included months. Missing counts appear as `-`, distinct from zero;
+totals sum available reported counts, with an explicit overflow status if needed.
+Teal column headers, alternating row shading and Montserrat 10 pt are applied
+inline for Word. Dashboard form tables retain their existing month filter.
+Pasting into Word with
 **Keep Source Formatting** preserves this styling (exact fonts/layout depend on
 Word's paste settings). Montserrat must be installed on the computer running
-Word; otherwise Word substitutes an available font. Clipboard data includes both HTML and the TXT content.
+Word; otherwise Word substitutes an available font. Clipboard data includes HTML
+and a plain-text alternative for applications that do not support rich text.
 If automatic rich-text copying is unavailable or denied, the report is selected
 and an explicit message explains how to copy it manually with Ctrl+C / Command+C.
-Without JavaScript, the formatted preview remains selectable and TXT still works.
+Without JavaScript, the formatted preview remains selectable for manual copying.
 Run `node --test tests/fmp-export.js` for clipboard success/failure checks.
 
-The order breakdown is followed by filtered Gravity Forms counts grouped
-by client site. Each site's URL appears once as a heading above its form titles
-and counts; missing-report and missing-month statuses match the on-screen table.
+The order breakdown is followed by Gravity Forms matrices grouped by client
+site. Each site's URL appears once as a heading. Missing reports have explicit
+status messages, and missing month counts are shown as `-`, never invented zeros.
 Between the order breakdown and Gravity Forms, an hours summary shows **Uren begin van de maand**,
 **Beschikbare uren in de periode**, **Totaal gewerkt**, and
 **Uren eind van de maand** (using "periode" for All months):
@@ -210,9 +221,8 @@ Calculations use unrounded logged hours; rounding is only for display. Summary
 data is cached per umbrella project and connection for five minutes and cleared
 on refresh/reconnect/disconnect. Missing budgets/dates or API failures show an
 explicit error instead of offering a misleading export or preview.
-The filename includes the umbrella project ID and
-selected month (or `all-months`). Administrators and editors can export; the
-download uses the same permissions, cached data and month filter as the preview.
+Administrators and editors can view and copy the formatted report, using the
+same permissions, cached data and month filter as Monthly reports.
 Sub-rows include only recorded time through today, keep corrections, and always
 display hours; each displayed value is rounded independently to two decimals.
 All FMP spent-hour calculations require read access to `offerprojectline`.

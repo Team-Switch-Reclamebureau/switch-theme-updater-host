@@ -1146,16 +1146,37 @@ foreach ( [ '2000-13', '2000-1', '0000-01', '2000-01-01', [ '2000-01' ] ] as $in
 expect_gripp( ! array_filter( $GLOBALS['entity_responses'] ), 'Consume all expected monthly responses' );
 unset( $GLOBALS['entity_responses'] );
 $export_document = static function( array $fields = [] ): array {
-	$_POST = array_merge( [ '_wpnonce' => 'valid', 'project_id' => '1', 'hours_month' => '2000-01', 'unit' => 'eur' ], $fields );
+	$_GET = array_merge( [ 'project_id' => '1', 'project_tab' => 'reports', 'hours_month' => '2000-01', 'unit' => 'eur' ], $fields );
+	ob_start();
 	try {
-		return invoke_gripp( 'active_orders_export', $_POST );
+		invoke_gripp( 'require_viewer' );
+		$id = invoke_gripp( 'selected_project', $_GET );
+		$unit = invoke_gripp( 'display_unit', $_GET );
+		invoke_gripp( 'render_project_reports', 'test-token', $id, $unit );
+		$html = ob_get_contents();
 	} finally {
-		$_POST = [];
+		ob_end_clean();
+		$_GET = [];
 	}
+	$document = new DOMDocument();
+	$previous = libxml_use_internal_errors( true );
+	$document->loadHTML( '<?xml encoding="UTF-8">' . $html );
+	libxml_clear_errors();
+	libxml_use_internal_errors( $previous );
+	$xpath = new DOMXPath( $document );
+	$preview = $xpath->query( '//*[@data-stuh-fmp-word-preview]' )->item( 0 );
+	if ( null === $preview ) {
+		throw new RuntimeException( $xpath->query( '//*[contains(@class,"notice-error")]' )->item( 0 )?->textContent ?? 'Word preview unavailable' );
+	}
+	$formatted = '';
+	foreach ( $preview->childNodes as $child ) {
+		$formatted .= $document->saveHTML( $child );
+	}
+	return [ 'text' => $preview->getAttribute( 'data-stuh-fmp-copy-text' ), 'html' => $formatted ];
 };
 $GLOBALS['capabilities'] = [ 'read', 'edit_posts', 'edit_others_posts' ];
 $january_export = $export_document();
-// Compare the decoded textarea value, not its HTML-escaped representation.
+// Compare the decoded clipboard alternative, not its HTML-escaped attribute.
 $preview_value = static function( string $html ): string {
 	$document = new DOMDocument();
 	$previous = libxml_use_internal_errors( true );
@@ -1163,17 +1184,17 @@ $preview_value = static function( string $html ): string {
 	libxml_clear_errors();
 	libxml_use_internal_errors( $previous );
 	$xpath = new DOMXPath( $document );
-	$preview = $xpath->query( '//textarea[@id="stuh-fmp-export-preview" and @readonly]' );
-	expect_gripp( 1 === $preview->length && '16' === $preview->item( 0 )->getAttribute( 'rows' ), 'Show exactly one labelled, read-only multiline export preview' );
-	return $preview->item( 0 )->textContent;
+	$preview = $xpath->query( '//*[@data-stuh-fmp-word-preview and @data-stuh-fmp-copy-text]' );
+	expect_gripp( 1 === $preview->length, 'Show one formatted preview with its plain-text clipboard alternative' );
+	return $preview->item( 0 )->getAttribute( 'data-stuh-fmp-copy-text' );
 };
-expect_gripp( $january_export['text'] === $preview_value( $january_html ) && strpos( $january_html, 'id="stuh-fmp-active-projects"' ) < strpos( $january_html, 'id="stuh-fmp-export-preview"' ) && strpos( $january_html, 'id="stuh-fmp-export-preview"' ) < strpos( $january_html, '>Export TXT</button>' ), 'The preview exactly matches the current filtered download, with the textarea and export button placed after the monthly reports table' );
-expect_gripp( 'fmp-1-2000-01.txt' === $january_export['filename'] && str_contains( $january_export['text'], 'January 2000 (2000-01)' ) && str_contains( $january_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t1,63\nNo product\t0,25\n" ) && str_contains( $january_export['text'], "Opdracht 2026001 Corrected project\nWebdevelopment\t0,00" ) && ! str_contains( $january_export['text'], 'February only' ) && ! str_contains( $january_export['text'], 'Project Management' ) && ! str_contains( $january_export['text'], 'No recorded time' ) && ! str_contains( $january_export['text'], '€' ), 'Editors export order headings and decimal-comma product hours without order values or duplicate project totals' );
-expect_gripp( str_contains( $january_html, 'name="action" value="stuh_gripp_export"' ) && str_contains( $january_html, 'name="hours_month" value="2000-01"' ) && str_contains( $january_html, 'name="_wpnonce" value="valid"' ) && str_contains( $january_html, '>Export TXT</button>' ), 'Render a nonce-protected export button carrying the applied month and project' );
+expect_gripp( $january_export['text'] === $preview_value( $january_html ) && strpos( $january_html, 'id="stuh-fmp-active-projects"' ) < strpos( $january_html, 'data-stuh-fmp-word-preview' ), 'The formatted report and its clipboard alternative follow the monthly reports table' );
+expect_gripp( str_contains( $january_export['text'], 'January 2000 (2000-01)' ) && str_contains( $january_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t1,63\nNo product\t0,25\n" ) && str_contains( $january_export['text'], "Opdracht 2026001 Corrected project\nWebdevelopment\t0,00" ) && ! str_contains( $january_export['text'], 'February only' ) && ! str_contains( $january_export['text'], 'Project Management' ) && ! str_contains( $january_export['text'], 'No recorded time' ) && ! str_contains( $january_export['text'], '€' ), 'Editors copy order headings and decimal-comma product hours without order values or duplicate project totals' );
+expect_gripp( ! str_contains( $january_html, 'stuh_gripp_export' ) && ! str_contains( $january_html, 'stuh-fmp-export-preview' ) && ! str_contains( $january_html, 'Export TXT' ) && str_contains( $january_html, 'data-stuh-fmp-copy-word' ) && ! in_array( [ 'admin_post_stuh_gripp_export', [ STUH_Gripp::class, 'handle_export' ] ], $GLOBALS['hooks'], true ), 'Remove the TXT preview, download form and endpoint while preserving Copy for Word' );
 $GLOBALS['capabilities'] = [ 'manage_options' ];
 $all_export = $export_document( [ 'hours_month' => '', 'unit' => 'hours' ] );
 expect_gripp( $all_export['text'] === $preview_value( $render_monthly( '', 'hours' ) ), 'All-month previews use exactly the same unit formatting and content as the download' );
-expect_gripp( 'fmp-1-all-months.txt' === $all_export['filename'] && str_contains( $all_export['text'], 'All months' ) && str_contains( $all_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t11,63\nProject Management\t2,00\nNo product\t0,25" ) && str_contains( $all_export['text'], 'February only' ) && str_contains( $all_export['text'], 'No recorded time' ) && $monthly_request_count === count( $GLOBALS['requests'] ), 'Administrators export All months as actual hours regardless of budget-unit preference without extra requests' );
+expect_gripp( str_contains( $all_export['text'], 'All months' ) && str_contains( $all_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t11,63\nProject Management\t2,00\nNo product\t0,25" ) && str_contains( $all_export['text'], 'February only' ) && str_contains( $all_export['text'], 'No recorded time' ) && $monthly_request_count === count( $GLOBALS['requests'] ), 'Administrators copy All months as actual hours regardless of budget-unit preference without extra requests' );
 $empty_export = $export_document( [ 'hours_month' => '2000-03' ] );
 expect_gripp( $empty_export['text'] === $preview_value( $empty_month_html ), 'Empty-period previews match the exported empty-state message' );
 expect_gripp( str_contains( $empty_export['text'], 'No active projects have recorded time in this month.' ) && ! str_contains( $empty_export['text'], 'Multi-month project' ), 'Export an explicit empty-period message instead of falling back to unfiltered data' );
@@ -1205,8 +1226,6 @@ foreach ( [ [ 'read' ], [ 'read', 'edit_posts' ] ] as $capabilities ) {
 }
 $GLOBALS['capabilities'] = [ 'edit_others_posts' ];
 foreach ( [
-	[ [ '_wpnonce' => 'invalid' ], 'Invalid nonce' ],
-	[ [ 'project_id' => null ], 'Select a Gripp umbrella project' ],
 	[ [ 'project_id' => '-1' ], 'Invalid Gripp project ID' ],
 	[ [ 'hours_month' => '2000-13' ], 'Invalid recorded-hours month' ],
 	[ [ 'unit' => 'invalid' ], 'Invalid budget display unit' ],
@@ -1325,7 +1344,7 @@ foreach ( $tab_xpath->query( '//nav/a' ) as $tab_link ) {
 	$tab_labels[] = $tab_link->textContent;
 }
 expect_gripp( [ 'Overview', 'Monthly reports', 'Settings' ] === $tab_labels && 'Monthly reports' === $tab_xpath->query( '//nav/a[@aria-current="page"]' )->item( 0 )->textContent && 1 === $tab_xpath->query( '//form[@method="get"]//input[@name="project_tab" and @value="reports"]' )->length, 'Order administrator tabs as Overview, Monthly reports, Settings, mark the selected tab, and keep calendar-month submissions on Reports' );
-expect_gripp( ! str_contains( $admin_project_html, 'class="stuh-fmp-summary"' ) && ! str_contains( $admin_project_html, 'data-stuh-fmp-chart=' ) && str_contains( $admin_project_html, 'id="stuh-fmp-export-preview"' ), 'Monthly reports contains its export and filters, not duplicate Overview budget cards or charts' );
+expect_gripp( ! str_contains( $admin_project_html, 'class="stuh-fmp-summary"' ) && ! str_contains( $admin_project_html, 'data-stuh-fmp-chart=' ) && str_contains( $admin_project_html, 'data-stuh-fmp-word-preview' ), 'Monthly reports contains its Word preview and filters, not duplicate Overview budget cards or charts' );
 $_GET = [ 'project_id' => '1', 'project_tab' => 'settings' ];
 $settings_script_count = count( $GLOBALS['enqueued_scripts'] );
 STUH_Gripp::enqueue_assets( 'updater-host_page_stuh-fmp' );
@@ -1375,7 +1394,7 @@ $chart_document->loadHTML( $forms_january_html );
 libxml_clear_errors();
 libxml_use_internal_errors( $xml_errors );
 $forms_xpath = new DOMXPath( $chart_document );
-expect_gripp( 1 === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/following::textarea[@id="stuh-fmp-export-preview"]' )->length && 1 === $forms_xpath->query( '//textarea[@id="stuh-fmp-export-preview"]/following::form[.//input[@name="action" and @value="stuh_gripp_export"]]' )->length, 'When linked forms are shown, both the preview and export button sit below the Gravity Forms table at the bottom of monthly reports' );
+expect_gripp( 1 === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/following::div[@data-stuh-fmp-word-preview]' )->length && 1 === $forms_xpath->query( '//div[@data-stuh-fmp-word-preview]/following::button[@data-stuh-fmp-copy-word]' )->length, 'Keep the formatted preview and Copy for Word button below the Gravity Forms table' );
 expect_gripp( 1 === $forms_xpath->query( '//select[@name="hours_month"]' )->length && 1 === $forms_xpath->query( '//select[@name="hours_month"]/option[@value="1999-12"]' )->length && 0 === $forms_xpath->query( '//select[@name="hours_month"]/option[@value="1998-06" or @value="1997-01"]' )->length && str_contains( $forms_january_html, '>Calendar month</label>' ), 'One shared calendar-month filter includes months reported only by linked forms, excluding unlinked and removed-site months' );
 expect_gripp( '12' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[1]/td[last()]' )->item( 0 )->textContent && '0' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[2]/td[last()]' )->item( 0 )->textContent && 'Not reported' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[3]/td[last()]' )->item( 0 )->textContent && '3' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[4]/td[last()]' )->item( 0 )->textContent, 'Monthly form counts distinguish explicit zero from missing data and keep identical form titles/IDs separate per client site' );
 expect_gripp( str_contains( $forms_january_html, '&lt;script&gt;' ) && ! str_contains( $forms_january_html, '<script>' ) && ! str_contains( $forms_january_html, 'Unlinked private form' ) && ! str_contains( $forms_january_html, 'Removed private form' ) && str_contains( $forms_january_html, 'No Gravity Forms report received yet.' ) && str_contains( $forms_january_html, 'No forms reported.' ) && str_contains( $forms_january_html, 'Client site no longer exists.' ), 'Escape site names and form titles, isolate linked-site reports, and explicitly distinguish waiting, empty and removed sites' );
@@ -1394,6 +1413,70 @@ expect_gripp( 1 === substr_count( $grouped_forms_export['text'], 'https://one.ex
 expect_gripp( str_contains( $grouped_forms_export['text'], "https://waiting.example\n\tNo Gravity Forms report received yet." ) && str_contains( $grouped_forms_export['text'], "https://empty.example\n\tNo forms reported." ) && str_contains( $grouped_forms_export['text'], "Removed client site\n\tClient site no longer exists." ), 'Grouped exports retain explicit waiting, empty and removed-site statuses instead of fabricating entry counts' );
 $grouped_forms_february = $export_document( [ 'hours_month' => '2000-02' ] );
 expect_gripp( $grouped_forms_february['text'] === $preview_value( $forms_february_html ) && str_contains( $grouped_forms_february['text'], "\tContact <script>\t8\n" ) && str_contains( $grouped_forms_february['text'], "\tContact <script>\t4\n" ) && str_contains( $grouped_forms_february['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t3,00\nProject Management\t2,00" ), 'Changing the shared month filters both exported hours and grouped form counts exactly as previewed' );
+$matrix_document = new DOMDocument();
+$xml_errors = libxml_use_internal_errors( true );
+$matrix_document->loadHTML( $grouped_forms_february['html'] );
+libxml_clear_errors();
+libxml_use_internal_errors( $xml_errors );
+$matrix_xpath = new DOMXPath( $matrix_document );
+$matrix_table = $matrix_xpath->query( '//table[thead/tr/th="Contact <script>"]' )->item( 0 );
+$matrix_headers = [];
+foreach ( $matrix_xpath->query( 'thead/tr/th', $matrix_table ) as $cell ) {
+	$matrix_headers[] = $cell->textContent;
+}
+$matrix_rows = [];
+foreach ( $matrix_xpath->query( 'tbody/tr', $matrix_table ) as $row ) {
+	$cells = [];
+	foreach ( $matrix_xpath->query( 'th|td', $row ) as $cell ) {
+		$cells[] = $cell->textContent;
+	}
+	$matrix_rows[] = $cells;
+}
+expect_gripp( [ 'Maand', 'Contact <script>', 'Zero entries', 'New form', 'Totaal' ] === $matrix_headers && [
+	[ '2000', '20', '0', '-', '20' ],
+	[ 'FEB', '8', '-', '-', '8' ],
+	[ 'JAN', '12', '0', '-', '12' ],
+	[ '1999', '2', '-', '-', '2' ],
+	[ 'DEC', '2', '-', '-', '2' ],
+] === $matrix_rows, 'Word form matrices have one column per form, descending historical months, yearly subtotals and row totals, distinguishing missing data from explicit zero' );
+expect_gripp( 5 === $matrix_xpath->query( 'tbody/tr[th/strong="FEB"]/*/strong', $matrix_table )->length && 0 === $matrix_xpath->query( 'tbody/tr[th="JAN"]/*/strong', $matrix_table )->length, 'Bold the selected report month label, all form counts including missing values, and total without bolding other months' );
+$all_months_matrix = invoke_gripp( 'gravity_forms_word_matrix', [
+	[ 'form_id' => 1, 'form_title' => 'Contact', 'months' => [ '2000-01' => 0, '2000-02' => 8, '1999-02' => 2 ] ],
+], '', 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;' );
+expect_gripp( ! str_contains( $all_months_matrix, '<strong>FEB</strong>' ) && ! str_contains( $all_months_matrix, '<strong>JAN</strong>' ), 'All months has no highlighted month, while annual subtotals keep their existing bold styling' );
+expect_gripp( 2 === $matrix_xpath->query( '//table[thead/tr/th="Contact <script>"]' )->length && 2 === $matrix_xpath->query( 'tbody/tr/th[contains(@style,"color:#ff0054")]/strong', $matrix_table )->length && 3 === $matrix_xpath->query( 'tbody/tr/th[contains(@style,"background-color:#f2f2f2")]', $matrix_table )->length && 0 === $matrix_xpath->query( '//table[thead]//*[self::td or self::th][not(contains(@style,"font-family:Montserrat,Arial,sans-serif;")) or not(contains(@style,"font-size:10pt;"))]' )->length, 'Keep matrices separate by site with pink annual subtotals, alternating shading and Montserrat 10 pt on every Word table cell' );
+$january_matrix_html = $grouped_forms_export['html'];
+expect_gripp( ! str_contains( $january_matrix_html, '>FEB<' ) && str_contains( $january_matrix_html, '>DEC<' ) && ! str_contains( $january_matrix_html, 'Unlinked private form' ), 'Selected-month Word history excludes later months but retains previous years and does not include unlinked sites' );
+$empty_matrix_html = invoke_gripp( 'gravity_forms_word_matrix', [ [ 'form_id' => 1, 'form_title' => 'Future only', 'months' => [ '2001-01' => 5 ] ] ], '2000-12', 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;' );
+expect_gripp( str_contains( $empty_matrix_html, '<strong>DEC</strong>' ) && ! str_contains( $empty_matrix_html, '>5<' ) && 4 === substr_count( $empty_matrix_html, '<strong>-</strong>' ), 'Show the selected month even without earlier reports, using missing counts rather than future data or invented zeros' );
+$gap_matrix_html = invoke_gripp( 'gravity_forms_word_matrix', [
+	[ 'form_id' => 1, 'form_title' => 'Contact', 'months' => [ '2025-11' => 2, '2026-02' => 0, '2026-03' => 3, '2026-06' => 9 ] ],
+], '2026-05', 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;' );
+$gap_document = new DOMDocument();
+$gap_document->loadHTML( $gap_matrix_html );
+$gap_xpath = new DOMXPath( $gap_document );
+$gap_rows = [];
+foreach ( $gap_xpath->query( '//tbody/tr' ) as $row ) {
+	$cells = [];
+	foreach ( $gap_xpath->query( 'th|td', $row ) as $cell ) {
+		$cells[] = $cell->textContent;
+	}
+	$gap_rows[] = $cells;
+}
+expect_gripp( [
+	[ '2026', '3', '3' ], [ 'MEI', '-', '-' ], [ 'APR', '-', '-' ],
+	[ 'MRT', '3', '3' ], [ 'FEB', '0', '0' ], [ 'JAN', '-', '-' ],
+	[ '2025', '2', '2' ], [ 'DEC', '-', '-' ], [ 'NOV', '2', '2' ],
+] === $gap_rows && 3 === $gap_xpath->query( '//tr[th/strong="MEI"]/*/strong' )->length, 'Fill every missing month across year boundaries through the selected month, preserve reported zero and annual totals, and bold the empty selected month' );
+$all_gaps_html = invoke_gripp( 'gravity_forms_word_matrix', [
+	[ 'form_id' => 1, 'form_title' => 'Contact', 'months' => [ '2026-01' => 1, '2026-03' => 2 ] ],
+], '', 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;' );
+expect_gripp( str_contains( $all_gaps_html, '>FEB<' ) && ! str_contains( $all_gaps_html, '>APR<' ), 'All months fills gaps between earliest and latest reported months without extending beyond the reported history' );
+$overflow_matrix_html = invoke_gripp( 'gravity_forms_word_matrix', [
+	[ 'form_id' => 1, 'form_title' => 'Same title', 'months' => [ '2000-01' => PHP_INT_MAX, '2000-02' => 1 ] ],
+	[ 'form_id' => 2, 'form_title' => 'Same title', 'months' => [ '2000-01' => 1 ] ],
+], '', 'font-family:Montserrat,Arial,sans-serif;font-size:10pt;' );
+expect_gripp( 2 === substr_count( $overflow_matrix_html, '<strong>Same title</strong>' ) && 3 === substr_count( $overflow_matrix_html, 'Count is too large to display.' ), 'Same-title forms stay separate columns and monthly and annual overflow remain explicit rather than rounding or wrapping' );
 $grouped_forms_all = $export_document( [ 'hours_month' => '' ] );
 expect_gripp( $grouped_forms_all['text'] === $preview_value( $forms_all_html ) && str_contains( $grouped_forms_all['text'], "\tContact <script>\t22\n" ) && str_contains( $grouped_forms_all['text'], "\tContact <script>\t7\n" ), 'All months exports each form full reported total under its own site heading' );
 $grouped_forms_only = $export_document( [ 'hours_month' => '1999-12' ] );

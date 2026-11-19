@@ -18,7 +18,6 @@ final class STUH_Gripp {
 	public static function init(): void {
 		add_action( 'admin_menu', [ self::class, 'register_menu' ], 20 );
 		add_action( 'admin_post_stuh_gripp_action', [ self::class, 'handle_action' ] );
-		add_action( 'admin_post_stuh_gripp_export', [ self::class, 'handle_export' ] );
 		add_action( 'admin_enqueue_scripts', [ self::class, 'enqueue_assets' ] );
 		add_filter( 'set_screen_option_' . self::UNIT_OPTION, [ self::class, 'save_display_unit' ], 10, 3 );
 	}
@@ -946,40 +945,6 @@ final class STUH_Gripp {
 		echo '</form>';
 	}
 
-	public static function handle_export(): void {
-		$export = self::active_orders_export( $_POST );
-		nocache_headers();
-		header( 'Content-Type: text/plain; charset=UTF-8' );
-		header( 'Content-Disposition: attachment; filename="' . $export['filename'] . '"' );
-		header( 'X-Content-Type-Options: nosniff' );
-		echo $export['text'];
-		exit;
-	}
-
-	private static function active_orders_export( array $source ): array {
-		self::require_viewer();
-		check_admin_referer( 'stuh_gripp' );
-		$id = self::selected_project( $source );
-		if ( null === $id ) {
-			wp_die( esc_html__( 'Select a Gripp umbrella project to export.', 'stuh' ), '', [ 'response' => 400 ] );
-		}
-		$month = self::selected_hours_month( $source );
-		$unit = self::display_unit( $source );
-		$token = self::connection();
-		if ( is_wp_error( $token ) ) {
-			wp_die( esc_html( $token->get_error_message() ), '', [ 'response' => 400 ] );
-		}
-		$rows = self::active_orders( $token, $id );
-		if ( is_wp_error( $rows ) ) {
-			wp_die( esc_html( $rows->get_error_message() ), '', [ 'response' => 502 ] );
-		}
-		$balance = self::monthly_balance( $token, $id, $month );
-		if ( is_wp_error( $balance ) ) {
-			wp_die( esc_html( $balance->get_error_message() ), '', [ 'response' => 502 ] );
-		}
-		return self::format_monthly_export( $rows, self::linked_gravity_forms( $id ), $id, $month, $balance );
-	}
-
 	private static function monthly_balance( string $token, int $id, string $month ) {
 		$fingerprint = hash( 'sha256', (string) get_option( self::CONNECTION, '' ) );
 		$data = get_transient( self::BALANCE_CACHE );
@@ -1135,18 +1100,15 @@ final class STUH_Gripp {
 					continue;
 				}
 				$lines[] = "\t" . __( 'Form', 'stuh' ) . "\t" . __( 'Entries', 'stuh' );
-				$html .= $table_start . $html_row( __( 'Form', 'stuh' ), __( 'Entries', 'stuh' ), true );
+				$html .= self::gravity_forms_word_matrix( $site['report']['forms'], $month, $font );
 				foreach ( $site['report']['forms'] as $form ) {
 					$label = $plain( $form['form_title'] );
 					$value = self::gravity_form_entries( $form, $month );
 					$lines[] = "\t" . $label . "\t" . $value;
-					$html .= $html_row( $label, $value );
 				}
-				$html .= $table_end;
 			}
 		}
 		return [
-			'filename' => 'fmp-' . $id . '-' . ( '' === $month ? 'all-months' : $month ) . '.txt',
 			'text' => implode( "\n", $lines ) . "\n",
 			'html' => $html . '</div>',
 		];
@@ -1510,19 +1472,10 @@ final class STUH_Gripp {
 				return;
 			}
 			$export = self::format_monthly_export( $rows, $sites, $id, $month, $balance );
-			echo '<h2>' . esc_html__( 'Export preview', 'stuh' ) . '</h2>';
-			echo '<p>' . esc_html__( 'Copy the formatted report into Word and choose Keep Source Formatting when pasting. If needed, select and copy the formatted preview manually. TXT remains plain text.', 'stuh' ) . '</p>';
-			echo '<div class="stuh-fmp-word-preview" data-stuh-fmp-word-preview tabindex="0" role="region" aria-label="' . esc_attr__( 'Formatted report for Word', 'stuh' ) . '">' . $export['html'] . '</div>';
+			echo '<h2>' . esc_html__( 'Word preview', 'stuh' ) . '</h2>';
+			echo '<p>' . esc_html__( 'Copy the formatted report into Word and choose Keep Source Formatting when pasting. If needed, select and copy the formatted preview manually.', 'stuh' ) . '</p>';
+			echo '<div class="stuh-fmp-word-preview" data-stuh-fmp-word-preview data-stuh-fmp-copy-text="' . esc_attr( $export['text'] ) . '" tabindex="0" role="region" aria-label="' . esc_attr__( 'Formatted report for Word', 'stuh' ) . '">' . $export['html'] . '</div>';
 			echo '<p><button class="button button-primary" type="button" data-stuh-fmp-copy-word hidden>' . esc_html__( 'Copy for Word', 'stuh' ) . '</button> <span role="status" aria-live="polite" data-stuh-fmp-copy-status data-success="' . esc_attr__( 'Copied with formatting. Paste into Word using Keep Source Formatting.', 'stuh' ) . '" data-failure="' . esc_attr__( 'Automatic copying failed. The formatted report is selected; press Ctrl+C or Command+C, then paste into Word using Keep Source Formatting.', 'stuh' ) . '"></span></p>';
-			echo '<p id="stuh-fmp-export-help">' . esc_html__( 'Preview of the current TXT export: active orders with product hours, site-grouped Gravity Forms counts and an hours balance including archived orders. Hours use decimal commas. This preview is read-only.', 'stuh' ) . '</p>';
-			echo '<p><label for="stuh-fmp-export-preview">' . esc_html( $export['filename'] ) . '</label></p>';
-			echo '<textarea id="stuh-fmp-export-preview" class="large-text code" rows="16" readonly spellcheck="false" aria-describedby="stuh-fmp-export-help">' . esc_textarea( $export['text'] ) . '</textarea>';
-			echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><p>';
-			wp_nonce_field( 'stuh_gripp' );
-			foreach ( [ 'action' => 'stuh_gripp_export', 'project_id' => $id, 'hours_month' => $month, 'unit' => $unit ] as $key => $value ) {
-				echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
-			}
-			echo '<button class="button" type="submit">' . esc_html__( 'Export TXT', 'stuh' ) . '</button></p></form>';
 		}
 	}
 
@@ -1575,6 +1528,71 @@ final class STUH_Gripp {
 			}
 		}
 		return null === $count ? __( 'Not reported', 'stuh' ) : number_format_i18n( $count );
+	}
+
+	private static function gravity_forms_word_matrix( array $forms, string $month, string $font ): string {
+		$first = null;
+		$last = '' === $month ? null : $month;
+		foreach ( $forms as $form ) {
+			foreach ( $form['months'] as $period => $count ) {
+				if ( '' === $month || $period <= $month ) {
+					$first = null === $first ? $period : min( $first, $period );
+					$last = null === $last ? $period : max( $last, $period );
+				}
+			}
+		}
+		if ( null === $last ) {
+			return '<p style="' . $font . '">' . esc_html__( 'No form entries reported for months up to this period.', 'stuh' ) . '</p>';
+		}
+		$years = [];
+		$cursor = new DateTimeImmutable( ( $first ?? $last ) . '-01', wp_timezone() );
+		while ( $cursor->format( 'Y-m' ) <= $last ) {
+			$years[ $cursor->format( 'Y' ) ][ $cursor->format( 'Y-m' ) ] = true;
+			$cursor = $cursor->modify( '+1 month' );
+		}
+		krsort( $years, SORT_STRING );
+		$cell = $font . 'padding:6px 8px;border:0;border-left:1px solid #b7b7b7;text-align:center;';
+		$html = '<p style="' . $font . '">' . esc_html__( 'Maanden tot en met de geselecteerde periode. Jaarregels en totalen tellen alleen gerapporteerde aantallen op; - betekent niet gerapporteerd.', 'stuh' ) . '</p>';
+		$html .= '<table style="' . $font . 'width:100%;border-collapse:collapse;table-layout:fixed;" cellpadding="0" cellspacing="0"><thead><tr>';
+		$html .= '<th scope="col" style="' . $font . 'padding:6px 8px;text-align:left;border-bottom:1px solid #b7b7b7;">' . esc_html__( 'Maand', 'stuh' ) . '</th>';
+		foreach ( array_merge( array_column( $forms, 'form_title' ), [ __( 'Totaal', 'stuh' ) ] ) as $title ) {
+			$html .= '<th scope="col" style="' . $cell . 'border-bottom:1px solid #b7b7b7;color:#13969c;word-wrap:break-word;"><strong>' . esc_html( $title ) . '</strong></th>';
+		}
+		$html .= '</tr></thead><tbody>';
+		$count_label = static fn( array $counts ): string => $counts ? self::gravity_form_entries( [ 'months' => $counts ], '' ) : '-';
+		$row_index = 0;
+		$render_row = static function( string $label, array $counts_by_form, bool $annual, bool $selected = false ) use ( $font, $cell, $count_label, &$row_index ): string {
+			$background = 0 === $row_index++ % 2 ? '#f2f2f2' : '#ffffff';
+			$style = 'background-color:' . $background . ';color:' . ( $annual ? '#ff0054' : '#111111' ) . ';';
+			$wrap = static fn( string $value ): string => $annual || $selected ? '<strong>' . esc_html( $value ) . '</strong>' : esc_html( $value );
+			$html = '<tr style="page-break-inside:avoid;"><th scope="row" style="' . $font . $style . 'padding:6px 8px;text-align:left;font-weight:normal;border:0;">' . $wrap( $label ) . '</th>';
+			$total = [];
+			foreach ( $counts_by_form as $counts ) {
+				$html .= '<td align="center" style="' . $cell . $style . '">' . $wrap( $count_label( $counts ) ) . '</td>';
+				foreach ( $counts as $count ) {
+					$total[] = $count;
+				}
+			}
+			$html .= '<td align="center" style="' . $cell . $style . '">' . $wrap( $count_label( $total ) ) . '</td></tr>';
+			return $html;
+		};
+		$month_labels = [ 'JAN', 'FEB', 'MRT', 'APR', 'MEI', 'JUNI', 'JULI', 'AUG', 'SEP', 'OKT', 'NOV', 'DEC' ];
+		foreach ( $years as $year => $periods ) {
+			krsort( $periods, SORT_STRING );
+			$annual_counts = [];
+			foreach ( $forms as $form ) {
+				$annual_counts[] = array_intersect_key( $form['months'], $periods );
+			}
+			$html .= $render_row( (string) $year, $annual_counts, true );
+			foreach ( $periods as $period => $reported ) {
+				$counts = [];
+				foreach ( $forms as $form ) {
+					$counts[] = isset( $form['months'][ $period ] ) ? [ $form['months'][ $period ] ] : [];
+				}
+				$html .= $render_row( $month_labels[ (int) substr( $period, 5, 2 ) - 1 ], $counts, false, $period === $month );
+			}
+		}
+		return $html . '</tbody></table>';
 	}
 
 	private static function render_gravity_forms( array $sites, string $month ): void {

@@ -3,9 +3,8 @@
 
 	var button = document.querySelector('[data-stuh-fmp-copy-word]');
 	var preview = document.querySelector('[data-stuh-fmp-word-preview]');
-	var text = document.getElementById('stuh-fmp-export-preview');
 	var status = document.querySelector('[data-stuh-fmp-copy-status]');
-	if (!button || !preview || !text || !status) {
+	if (!button || !preview || !status) {
 		return;
 	}
 
@@ -30,7 +29,7 @@
 		try {
 			await navigator.clipboard.write([new window.ClipboardItem({
 				'text/html': new Blob([preview.innerHTML], { type: 'text/html' }),
-				'text/plain': new Blob([text.value], { type: 'text/plain' })
+				'text/plain': new Blob([preview.dataset.stuhFmpCopyText], { type: 'text/plain' })
 			})]);
 			status.textContent = status.dataset.success;
 		} catch (error) {

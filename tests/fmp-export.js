@@ -18,9 +18,9 @@ function reportCopy(write, supportsHtml = true) {
 	};
 	const preview = {
 		innerHTML: '<p style="color:#ff0054"><strong>Opdracht 16780</strong></p>',
+		dataset: { stuhFmpCopyText: 'Opdracht 16780\nWebdevelopment\t1,00\n' },
 		focus() { focused = true; }
 	};
-	const text = { value: 'Opdracht 16780\nWebdevelopment\t1,00\n' };
 	const status = { textContent: '', dataset: { success: 'Copied with formatting', failure: 'Copy failed; report selected for manual copy' } };
 	const nodes = {
 		'[data-stuh-fmp-copy-word]': button,
@@ -30,7 +30,6 @@ function reportCopy(write, supportsHtml = true) {
 	vm.runInNewContext(source, {
 		document: {
 			querySelector: selector => nodes[selector],
-			getElementById: () => text,
 			createRange: () => ({ selectNodeContents(node) { assert.equal(node, preview); } })
 		},
 		window: {
@@ -40,10 +39,10 @@ function reportCopy(write, supportsHtml = true) {
 		navigator: { clipboard: write ? { write } : undefined },
 		Blob
 	});
-	return { button, preview, text, status, click: () => click(), selected: () => selected, focused: () => focused };
+	return { button, preview, status, click: () => click(), selected: () => selected, focused: () => focused };
 }
 
-test('copy sends HTML with inline styling and the exact TXT alternative', async () => {
+test('copy sends HTML and a plain-text clipboard alternative without a TXT preview', async () => {
 	let items;
 	let finish;
 	const report = reportCopy(payload => {
@@ -57,7 +56,7 @@ test('copy sends HTML with inline styling and the exact TXT alternative', async 
 	assert.equal(items.length, 1);
 	assert.equal(await items[0].data['text/html'].text(), report.preview.innerHTML);
 	assert.equal(items[0].data['text/html'].type, 'text/html');
-	assert.equal(await items[0].data['text/plain'].text(), report.text.value);
+	assert.equal(await items[0].data['text/plain'].text(), report.preview.dataset.stuhFmpCopyText);
 	finish();
 	await pending;
 	assert.equal(report.button.disabled, false);
