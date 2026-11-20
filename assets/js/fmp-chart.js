@@ -112,6 +112,7 @@
 			}));
 			series.push({
 				label: item.label,
+				show: item.show !== false,
 				scale: secondary ? 'secondary' : 'y',
 				stroke: item.stroke,
 				dash: item.dash,
@@ -132,7 +133,15 @@
 			label: config.xLabel,
 			space: 100,
 			splits: function (chart, index, min, max) {
-				return timestamps.filter(function (timestamp) { return timestamp >= min && timestamp <= max; });
+				var spacing = (max - min) * 100 / Math.max(1, chart.bbox.width / window.uPlot.pxRatio);
+				var previous = -Infinity;
+				return timestamps.filter(function (timestamp) {
+					if (timestamp < min || timestamp > max || timestamp - previous < spacing) {
+						return false;
+					}
+					previous = timestamp;
+					return true;
+				});
 			},
 			values: function (chart, ticks) {
 				return ticks.map(function (tick) { return months.format(new Date(tick * 1000)); });
@@ -177,6 +186,44 @@
 			axes: axes,
 			cursor: { drag: { x: true, y: false, setScale: true, dist: 10 } },
 			hooks: {
+				draw: [function (chart) {
+					config.series.forEach(function (item, index) {
+						if (!item.releases || !chart.series[index + 1].show) {
+							return;
+						}
+						var ctx = chart.ctx;
+						var size = 8 * window.uPlot.pxRatio;
+						ctx.save();
+						ctx.beginPath();
+						ctx.rect(chart.bbox.left, chart.bbox.top, chart.bbox.width, chart.bbox.height);
+						ctx.clip();
+						ctx.fillStyle = item.stroke;
+						ctx.strokeStyle = '#fff';
+						ctx.lineWidth = window.uPlot.pxRatio;
+						item.releases.forEach(function (release) {
+							var x = chart.valToPos(release.timestamp, 'x', true);
+							var y = chart.valToPos(release.value / divisor, 'y', true);
+							ctx.fillRect(x - size / 2, y - size / 2, size, size);
+							ctx.strokeRect(x - size / 2, y - size / 2, size, size);
+						});
+						ctx.restore();
+					});
+				}],
+				setCursor: [function (chart) {
+					var labels = [];
+					config.series.forEach(function (item, index) {
+						if (!item.releases || !chart.series[index + 1].show) {
+							return;
+						}
+						item.releases.forEach(function (release) {
+							if (Math.abs(chart.valToPos(release.timestamp, 'x') - chart.cursor.left) <= 8 &&
+								Math.abs(chart.valToPos(release.value / divisor, 'y') - chart.cursor.top) <= 8) {
+								labels.push(release.label);
+							}
+						});
+					});
+					chart.over.title = labels.join('\n');
+				}],
 				drawAxes: [function (chart) {
 					if (!config.variance || !chart.series[2].show || !chart.series[3].show) {
 						return;
@@ -229,11 +276,21 @@
 						return;
 					}
 					reset.disabled = Math.abs(chart.scales.x.min - fullMin) < 1 && Math.abs(chart.scales.x.max - fullMax) < 1;
+					reset.hidden = reset.disabled;
 					range.textContent = months.format(new Date(chart.scales.x.min * 1000)) + ' - ' + months.format(new Date(chart.scales.x.max * 1000));
 				}]
 			}
 		}, data, host);
+		if (config.releaseLabel) {
+			var releaseKey = document.createElement('tr');
+			releaseKey.className = 'stuh-fmp-legend-releases';
+			var releaseLabel = document.createElement('th');
+			releaseLabel.textContent = config.releaseLabel;
+			releaseKey.appendChild(releaseLabel);
+			host.querySelector('.u-legend tbody').appendChild(releaseKey);
+		}
 		figure.querySelector('[data-stuh-fmp-static]').hidden = true;
+		figure.querySelector('[data-stuh-fmp-static-legend]').hidden = true;
 		reset.addEventListener('click', function () {
 			plot.setScale('x', { min: fullMin, max: fullMax });
 		});

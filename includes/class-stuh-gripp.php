@@ -1462,7 +1462,7 @@ final class STUH_Gripp {
 			if ( is_wp_error( $usage ) ) {
 				echo '<div class="notice notice-error inline"><p>' . esc_html( $usage->get_error_message() ) . '</p></div>';
 			}
-			self::render_budget_chart( $project, $chart, $unit, self::chart_overlay( $id ) );
+			self::render_budget_chart( $project, $chart, $unit, self::chart_overlay( $id ), isset( $chart['usage'] ) ? self::chart_releases( $id ) : [] );
 		}
 		echo '</div>';
 	}
@@ -1848,7 +1848,29 @@ final class STUH_Gripp {
 		return $result;
 	}
 
-	private static function render_budget_chart( array $project, array $chart, string $unit, ?array $overlay = null ): void {
+	private static function chart_releases( int $id ): array {
+		$clients = array_column( STUH_Plugin::get_clients(), null, 'id' );
+		$telemetry = STUH_Plugin::get_telemetry();
+		$repos = [];
+		foreach ( self::project_site_ids( $id ) as $client_id ) {
+			$repo = $telemetry[ $client_id ]['data']['active_theme']['github_repo'] ?? '';
+			if ( isset( $clients[ $client_id ] ) && is_string( $repo ) && '' !== trim( $repo ) ) {
+				$repos[ strtolower( trim( $repo ) ) ] = true;
+			}
+		}
+		$result = [ 'releases' => [], 'warnings' => [] ];
+		foreach ( array_keys( $repos ) as $repo ) {
+			$history = STUH_Plugin::theme_release_history( $repo );
+			if ( is_wp_error( $history ) ) {
+				$result['warnings'][] = $repo . ': ' . $history->get_error_message();
+			} else {
+				$result['releases'] = array_merge( $result['releases'], $history );
+			}
+		}
+		return $result;
+	}
+
+	private static function render_budget_chart( array $project, array $chart, string $unit, ?array $overlay = null, array $release_history = [] ): void {
 		$title = __( 'Budget over time', 'stuh' );
 		$axis = $chart['axis'] ?? array_slice( $chart['points'], 1 );
 		$secondary = null;
@@ -1857,7 +1879,7 @@ final class STUH_Gripp {
 		if ( null !== $overlay && '' !== $overlay['selected'] ) {
 			$cursor = new DateTimeImmutable( substr( $chart['usage'][0]['date'] ?? $project['startdate'], 0, 7 ) . '-01', new DateTimeZone( 'UTC' ) );
 			$last = min( substr( $axis[ count( $axis ) - 1 ]['date'], 0, 7 ), wp_date( 'Y-m', time() ) );
-			$secondary = [ 'label' => $overlay['label'], 'scale' => 'secondary', 'stroke' => '#8c45a8', 'dash' => [], 'points' => [] ];
+			$secondary = [ 'label' => $secondary_label, 'scale' => 'secondary', 'stroke' => '#8c45a8', 'dash' => [], 'points' => [] ];
 			while ( $cursor->format( 'Y-m' ) <= $last ) {
 				$value = $overlay['months'][ $cursor->format( 'Y-m' ) ] ?? null;
 				$secondary['points'][] = [ $cursor->getTimestamp(), $value ];
@@ -1904,19 +1926,19 @@ final class STUH_Gripp {
 			'yLabel' => 'hours' === $unit ? __( 'Budget (hours)', 'stuh' ) : __( 'Budget (EUR)', 'stuh' ),
 			'dateLabel' => __( 'Month', 'stuh' ),
 			'series' => [
-				[ 'label' => __( 'Total project budget', 'stuh' ), 'stroke' => '#646970', 'dash' => [ 6, 4 ], 'points' => [ [ $timestamp( $start_date, false ), $project['budget'] ], [ $timestamp( $end_date, true ), $project['budget'] ] ] ],
-				[ 'label' => __( 'Accumulated monthly allowance', 'stuh' ), 'stroke' => '#2271b1', 'dash' => [], 'points' => $coordinates( $chart['points'], 'cumulative' ) ],
+				[ 'label' => __( 'Total budget', 'stuh' ), 'show' => false, 'stroke' => '#646970', 'dash' => [ 6, 4 ], 'points' => [ [ $timestamp( $start_date, false ), $project['budget'] ], [ $timestamp( $end_date, true ), $project['budget'] ] ] ],
+				[ 'label' => __( 'Allowance', 'stuh' ), 'stroke' => '#2271b1', 'dash' => [], 'points' => $coordinates( $chart['points'], 'cumulative' ) ],
 			],
 		];
 		if ( isset( $chart['usage'] ) ) {
-			$interactive['series'][] = [ 'label' => __( 'Actual recorded time', 'stuh' ), 'stroke' => '#d63638', 'dash' => [], 'points' => $coordinates( $chart['usage'], 'actual' ) ];
+			$interactive['series'][] = [ 'label' => __( 'Recorded time', 'stuh' ), 'stroke' => '#d63638', 'dash' => [], 'points' => $coordinates( $chart['usage'], 'actual' ) ];
 			$last_usage = $chart['usage'] ? $chart['usage'][ count( $chart['usage'] ) - 1 ] : null;
 			$provisional = null !== $last_usage && substr( $last_usage['date'], 0, 7 ) === $chart['current_month'] && count( $chart['usage'] ) > 1;
 			if ( $provisional ) {
 				$interactive['series'][2]['provisional'] = true;
 			}
-			$interactive['series'][] = [ 'label' => __( 'Invoiced value', 'stuh' ), 'stroke' => '#008a20', 'dash' => [ 8, 4 ], 'points' => $coordinates( $chart['usage'], 'invoiced' ) ];
-			$bars = [ 'label' => __( 'Actual hours this month', 'stuh' ), 'type' => 'bars', 'stroke' => '#b38600', 'fill' => 'rgba(219,166,23,0.35)', 'points' => [], 'periods' => [] ];
+			$interactive['series'][] = [ 'label' => __( 'Invoiced', 'stuh' ), 'show' => false, 'stroke' => '#008a20', 'dash' => [ 8, 4 ], 'points' => $coordinates( $chart['usage'], 'invoiced' ) ];
+			$bars = [ 'label' => __( 'Monthly hours', 'stuh' ), 'type' => 'bars', 'stroke' => '#b38600', 'fill' => 'rgba(219,166,23,0.35)', 'points' => [], 'periods' => [] ];
 			foreach ( $chart['monthly_usage'] as $point ) {
 				$center = $timestamp( $point['date'], true );
 				$period = [ $center - 12 * 86400, $center + 12 * 86400 ];
@@ -1925,26 +1947,46 @@ final class STUH_Gripp {
 			}
 			$interactive['series'][] = $bars;
 			$interactive['variance'] = self::budget_variance_regions( $interactive['series'][1]['points'], $interactive['series'][2]['points'] );
+			$interactive['series'][2]['releases'] = [];
+			foreach ( $release_history['releases'] ?? [] as $release ) {
+				$points = $interactive['series'][2]['points'];
+				for ( $index = 1; $index < count( $points ); $index++ ) {
+					[ $start, $from ] = $points[ $index - 1 ];
+					[ $end, $to ] = $points[ $index ];
+					if ( $release['timestamp'] >= $start && $release['timestamp'] <= $end && $end > $start ) {
+						$release['value'] = $from + ( $to - $from ) * ( $release['timestamp'] - $start ) / ( $end - $start );
+						$interactive['series'][2]['releases'][] = $release;
+						break;
+					}
+				}
+			}
 		}
 		if ( null !== $secondary ) {
 			$interactive['secondaryLabel'] = $secondary_label;
 			$interactive['series'][] = $secondary;
 		}
+		$releases = $interactive['series'][2]['releases'] ?? [];
+		if ( $releases ) {
+			$interactive['releaseLabel'] = __( 'Theme releases', 'stuh' );
+		}
 		echo '<figure class="stuh-analytics-chart stuh-analytics-history stuh-fmp-budget-chart" data-stuh-fmp-chart="' . esc_attr( wp_json_encode( $interactive ) ) . '"><figcaption><h2>' . esc_html( $title ) . '</h2></figcaption>';
-		echo '<ul class="stuh-analytics-legend"><li class="stuh-analytics-legend--previous">' . esc_html__( 'Total project budget', 'stuh' ) . '</li><li>' . esc_html__( 'Accumulated monthly allowance', 'stuh' ) . '</li>';
+		echo '<ul class="stuh-analytics-legend" data-stuh-fmp-static-legend><li class="stuh-analytics-legend--previous">' . esc_html__( 'Total project budget', 'stuh' ) . '</li><li>' . esc_html__( 'Accumulated monthly allowance', 'stuh' ) . '</li>';
 		if ( isset( $chart['usage'] ) ) {
 			echo '<li class="stuh-fmp-legend-actual">' . esc_html__( 'Actual recorded time', 'stuh' ) . '</li><li class="stuh-fmp-legend-invoiced">' . esc_html__( 'Invoiced value', 'stuh' ) . '</li><li class="stuh-fmp-legend-monthly">' . esc_html__( 'Actual hours this month', 'stuh' ) . '</li>';
 		}
 		if ( null !== $secondary ) {
 			echo '<li class="stuh-fmp-legend-secondary">' . esc_html( $secondary['label'] ) . '</li>';
 		}
+		if ( $releases ) {
+			echo '<li class="stuh-fmp-legend-releases">' . esc_html( $interactive['releaseLabel'] ) . '</li>';
+		}
 		echo '</ul>';
 		if ( ! isset( $chart['usage'] ) ) {
 			echo '<p>' . esc_html__( 'Recorded time and invoiced usage are unavailable; only planned budget lines are shown.', 'stuh' ) . '</p>';
 		}
 		echo '<p class="notice notice-warning inline" data-stuh-fmp-chart-error hidden>' . esc_html__( 'The interactive chart could not load. The static chart and data tables remain available.', 'stuh' ) . '</p>';
-		echo '<div data-stuh-fmp-interactive hidden><p id="stuh-fmp-zoom-help">' . esc_html__( 'Drag horizontally across a period to zoom in. Use Reset zoom to restore the full period.', 'stuh' ) . '</p>';
-		echo '<p><button type="button" class="button" data-stuh-fmp-reset disabled>' . esc_html__( 'Reset zoom', 'stuh' ) . '</button> <span data-stuh-fmp-range role="status" aria-live="polite"></span></p>';
+		echo '<div data-stuh-fmp-interactive hidden><div class="stuh-fmp-chart-toolbar"><span data-stuh-fmp-range role="status" aria-live="polite"></span>';
+		echo '<button type="button" class="button-link" data-stuh-fmp-reset disabled hidden>' . esc_html__( 'Reset zoom', 'stuh' ) . '</button><span id="stuh-fmp-zoom-help" class="stuh-fmp-zoom-hint">' . esc_html__( 'Drag to zoom', 'stuh' ) . '</span></div>';
 		echo '<div class="stuh-fmp-interactive-plot" data-stuh-fmp-plot role="region" tabindex="0" aria-label="' . esc_attr( $title ) . '" aria-describedby="stuh-fmp-zoom-help"></div></div>';
 		echo '<div class="stuh-analytics-line-scroll" data-stuh-fmp-static tabindex="0" role="region" aria-label="' . esc_attr( $title ) . '"><svg class="stuh-analytics-line-chart stuh-fmp-budget-svg" viewBox="0 0 ' . esc_attr( (string) $width ) . ' 380" style="min-width:' . esc_attr( (string) $width ) . 'px" role="img" aria-labelledby="stuh-fmp-chart-title stuh-fmp-chart-desc">';
 		echo '<title id="stuh-fmp-chart-title">' . esc_html( $title ) . '</title><desc id="stuh-fmp-chart-desc">' . esc_html__( 'Dashed grey: total budget. Blue: accumulated monthly allowance. When available, red: recorded time; dashed green: invoiced value; gold bars: actual hours per month. Exact figures are available in the tables below.', 'stuh' ) . '</desc>';
@@ -1994,14 +2036,17 @@ final class STUH_Gripp {
 			$dots .= '<circle cx="' . esc_attr( $x ) . '" cy="' . esc_attr( $y ) . '" r="4"><title>' . esc_html( substr( $point['date'], 0, 7 ) . ': ' . self::display_amount( $point['cumulative'], $unit ) ) . '</title></circle>';
 		}
 		$band_y = static fn( float $value ): string => number_format( 300 - ( $value - $minimum ) / ( $maximum - $minimum ) * 240, 2, '.', '' );
+		$time_x = static function( int|float $time ) use ( $x_position, $month_number, $first_month ): string {
+			$date = new DateTimeImmutable( '@' . (int) floor( $time ) );
+			$month_start = $date->modify( 'first day of this month' )->setTime( 0, 0 );
+			$next_month = $month_start->modify( '+1 month' );
+			$fraction = ( $time - $month_start->getTimestamp() ) / ( $next_month->getTimestamp() - $month_start->getTimestamp() );
+			return $x_position( $month_number( $date->format( 'Y-m-d' ) ) - $first_month + 0.5 + $fraction );
+		};
 		foreach ( $interactive['variance'] ?? [] as $region ) {
 			$polygon = [];
 			foreach ( $region['points'] as [ $time, $value ] ) {
-				$date = new DateTimeImmutable( '@' . (int) floor( $time ) );
-				$month_start = $date->modify( 'first day of this month' )->setTime( 0, 0 );
-				$next_month = $month_start->modify( '+1 month' );
-				$fraction = ( $time - $month_start->getTimestamp() ) / ( $next_month->getTimestamp() - $month_start->getTimestamp() );
-				$polygon[] = $x_position( $month_number( $date->format( 'Y-m-d' ) ) - $first_month + 0.5 + $fraction ) . ',' . $band_y( $value );
+				$polygon[] = $time_x( $time ) . ',' . $band_y( $value );
 			}
 			echo '<polygon class="stuh-fmp-variance-' . ( $region['over'] ? 'over' : 'under' ) . '" points="' . esc_attr( implode( ' ', $polygon ) ) . '"/>';
 		}
@@ -2036,9 +2081,15 @@ final class STUH_Gripp {
 				echo '<g class="stuh-analytics-series stuh-fmp-series-' . esc_attr( $field ) . '"><polyline points="' . esc_attr( implode( ' ', $points ) ) . '"/>' . $dotted . $dots . '</g>';
 			}
 		}
+		foreach ( $releases as $release ) {
+			echo '<a href="' . esc_url( $release['url'] ) . '" target="_blank" rel="noopener noreferrer"><rect x="' . esc_attr( (string) ( (float) $time_x( $release['timestamp'] ) - 4 ) ) . '" y="' . esc_attr( (string) ( (float) $band_y( $release['value'] ) - 4 ) ) . '" width="8" height="8" fill="#d63638" stroke="#fff"><title>' . esc_html( $release['label'] ) . '</title></rect></a>';
+		}
 		echo '</svg></div>';
+		foreach ( $release_history['warnings'] ?? [] as $warning ) {
+			echo '<p role="alert">' . esc_html( __( 'Theme releases', 'stuh' ) . ' - ' . $warning ) . '</p>';
+		}
 		if ( null !== $overlay ) {
-			echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '"><p>';
+			echo '<form class="stuh-fmp-chart-overlay" method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '"><p>';
 			foreach ( [ 'page' => 'stuh-fmp', 'project_id' => $project['id'], 'offset' => self::offset( $_GET ), 'unit' => $unit ] as $key => $value ) {
 				echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
 			}

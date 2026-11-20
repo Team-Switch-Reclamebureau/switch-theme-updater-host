@@ -2485,6 +2485,26 @@ class STUH_Plugin {
 		return (bool) preg_match( '/^[a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+$/', $repo );
 	}
 
+	/** @return array|WP_Error Published releases, cached per repository and connection. */
+	public static function theme_release_history( string $repo ): array|WP_Error {
+		if ( ! current_user_can( 'manage_options' ) && ! current_user_can( 'edit_others_posts' ) ) {
+			return new WP_Error( 'forbidden', __( 'Insufficient permissions', 'stuh' ) );
+		}
+		if ( ! self::valid_repo( $repo ) ) {
+			return new WP_Error( 'invalid_repo', __( 'Invalid theme repository.', 'stuh' ) );
+		}
+		$settings = self::get_settings();
+		$token = defined( 'STUH_TOKEN' ) ? STUH_TOKEN : ( $settings['token'] ?? '' );
+		$key = 'stuh_theme_releases_' . hash( 'sha256', strtolower( $repo ) . ':' . $token );
+		$cached = get_transient( $key );
+		if ( false !== $cached ) {
+			return $cached;
+		}
+		$history = ( new STUH_GitHubClient( $token, 'https://api.github.com' ) )->get_published_releases( $repo );
+		set_transient( $key, $history, is_wp_error( $history ) ? 5 * MINUTE_IN_SECONDS : HOUR_IN_SECONDS );
+		return $history;
+	}
+
 	private function github(): STUH_GitHubClient {
 		static $gh = null;
 		if ( $gh ) {
@@ -6332,6 +6352,42 @@ class STUH_GitHubClient {
 			}
 		}
 		return $out;
+	}
+
+	/** @return array|WP_Error */
+	public function get_published_releases( string $repo ): array|WP_Error {
+		$out = [];
+		for ( $page = 1; ; $page++ ) {
+			$data = $this->request( 'GET', $this->api . '/repos/' . $repo . '/releases?per_page=100&page=' . $page );
+			if ( is_wp_error( $data ) ) {
+				return $data;
+			}
+			if ( ! is_array( $data ) || ! array_is_list( $data ) ) {
+				return new WP_Error( 'invalid_releases', __( 'Invalid GitHub release history response.', 'stuh' ) );
+			}
+			foreach ( $data as $release ) {
+				if ( ! is_array( $release ) ) {
+					return new WP_Error( 'invalid_releases', __( 'Invalid GitHub release history response.', 'stuh' ) );
+				}
+				if ( ! empty( $release['draft'] ) ) {
+					continue;
+				}
+				$date = $release['published_at'] ?? '';
+				$tag = $release['tag_name'] ?? '';
+				$time = is_string( $date ) ? strtotime( $date ) : false;
+				if ( false === $time || gmdate( 'Y-m-d\TH:i:s\Z', $time ) !== $date || ! is_string( $tag ) || '' === $tag ) {
+					return new WP_Error( 'invalid_releases', __( 'Invalid GitHub release date or tag.', 'stuh' ) );
+				}
+				$out[] = [
+					'timestamp' => $time,
+					'label' => $repo . ' ' . $tag . ' - ' . substr( $date, 0, 10 ) . ' UTC',
+					'url' => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode( $tag ),
+				];
+			}
+			if ( count( $data ) < 100 ) {
+				return $out;
+			}
+		}
 	}
 
 	/**

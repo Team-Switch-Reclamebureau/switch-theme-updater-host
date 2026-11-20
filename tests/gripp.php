@@ -12,6 +12,10 @@ class WP_Error {
 }
 class GrippRedirect extends RuntimeException {}
 class STUH_Plugin {
+	public static function theme_release_history( string $repo ): array|WP_Error {
+		$GLOBALS['release_requests'][] = $repo;
+		return $GLOBALS['release_history'][ $repo ] ?? [];
+	}
 	public static function get_clients(): array { return $GLOBALS['clients'] ?? []; }
 	public static function get_telemetry(): array { return $GLOBALS['telemetry'] ?? []; }
 	public static function get_gravity_forms_report( string $client_id ): ?array { return self::get_telemetry()[ $client_id ]['gravity_forms'] ?? null; }
@@ -542,6 +546,8 @@ libxml_use_internal_errors( $xml_errors );
 $chart_xpath = new DOMXPath( $chart_document );
 $interactive_data = json_decode( $chart_xpath->query( '//figure[@data-stuh-fmp-chart]' )->item( 0 )->getAttribute( 'data-stuh-fmp-chart' ), true, 512, JSON_THROW_ON_ERROR );
 expect_gripp( 5 === count( $interactive_data['series'] ) && 'bars' === $interactive_data['series'][4]['type'] && 13 === count( $interactive_data['series'][1]['points'] ) && [ 0, 54000, 648000 ] === [ $interactive_data['series'][1]['points'][0][1], $interactive_data['series'][1]['points'][1][1], $interactive_data['series'][1]['points'][12][1] ], 'Interactive series preserve exact accumulated allowances and all four existing lines alongside the monthly bars' );
+expect_gripp( [ false, true, true, false, true ] === array_map( static fn( array $series ): bool => $series['show'] ?? true, $interactive_data['series'] ), 'Default interactive view shows allowance, actual time and monthly hours while retaining budget and invoice series as optional' );
+expect_gripp( 1 === $chart_xpath->query( '//div[contains(@class,"stuh-fmp-chart-toolbar")]//button[@data-stuh-fmp-reset and @hidden]' )->length && 1 === $chart_xpath->query( '//ul[@data-stuh-fmp-static-legend and not(@hidden)]' )->length && ! str_contains( $detail_html, 'Drag horizontally across a period to zoom in.' ), 'Use compact zoom controls while preserving the visible static legend until JavaScript loads' );
 expect_gripp( '2025-12-01 00:00:00' === gmdate( 'Y-m-d H:i:s', $interactive_data['series'][1]['points'][0][0] ) && '2026-12-01 00:00:00' === gmdate( 'Y-m-d H:i:s', $interactive_data['series'][1]['points'][12][0] ) && str_contains( $detail_html, 'data-stuh-fmp-reset disabled' ) && str_contains( $detail_html, 'data-stuh-fmp-static' ), 'Monthly points use canonical UTC months with a separate preceding baseline, offer reset, and retain the static fallback' );
 $budget_line = $chart_xpath->query( '//line[@class="stuh-fmp-budget-limit"]' )->item( 0 );
 $allowance_line = $chart_xpath->query( '//polyline[@class="stuh-fmp-budget-cumulative"]' )->item( 0 );
@@ -1740,4 +1746,35 @@ foreach ( [ 'form:unlinked:1', [ 'forms' ] ] as $invalid_overlay ) {
 }
 $_GET = [];
 expect_gripp( count( $GLOBALS['requests'] ) === $overlay_requests, 'Overlay selection never makes Gripp or client-site requests' );
+$GLOBALS['telemetry']['overlay-one']['data']['active_theme'] = [ 'github_repo' => 'Owner/Theme', 'parent_theme' => [ 'github_repo' => 'owner/parent' ] ];
+$GLOBALS['telemetry']['overlay-two']['data']['active_theme'] = [ 'github_repo' => 'owner/theme' ];
+$release_time = strtotime( '2000-01-16T12:00:00Z' );
+$GLOBALS['release_history']['owner/theme'] = [
+	[ 'timestamp' => $release_time, 'label' => 'Theme v1 <script>', 'url' => 'https://github.com/owner/theme/releases/tag/v1' ],
+	[ 'timestamp' => strtotime( '1990-01-01' ), 'label' => 'Old', 'url' => 'https://github.com/owner/theme/releases/tag/old' ],
+	[ 'timestamp' => strtotime( '2099-01-01' ), 'label' => 'Future', 'url' => 'https://github.com/owner/theme/releases/tag/future' ],
+];
+$history = invoke_gripp( 'chart_releases', 99 );
+expect_gripp( [ 'owner/theme' ] === $GLOBALS['release_requests'] && 3 === count( $history['releases'] ), 'Deduplicate active repositories across linked sites without including parent themes' );
+ob_start();
+invoke_gripp( 'render_budget_chart', $usage_project, $current_usage, 'hours', null, $history );
+$release_html = ob_get_clean();
+$xml_errors = libxml_use_internal_errors( true );
+$chart_document->loadHTML( $release_html );
+libxml_clear_errors();
+libxml_use_internal_errors( $xml_errors );
+$release_xpath = new DOMXPath( $chart_document );
+$payload = json_decode( $release_xpath->query( '//figure[@data-stuh-fmp-chart]' )->item( 0 )->getAttribute( 'data-stuh-fmp-chart' ), true );
+$markers = $payload['series'][2]['releases'];
+expect_gripp( 1 === count( $markers ) && $release_time === $markers[0]['timestamp'], 'Only place releases within recorded-time bounds, never extrapolate' );
+$actual_points = $payload['series'][2]['points'];
+$january = array_values( array_filter( $actual_points, static fn( array $point ): bool => $point[0] === strtotime( '2000-01-01T00:00:00Z' ) ) )[0];
+$february = array_values( array_filter( $actual_points, static fn( array $point ): bool => $point[0] === strtotime( '2000-02-01T00:00:00Z' ) ) )[0];
+$expected_value = $january[1] + ( $february[1] - $january[1] ) / 2;
+expect_gripp( abs( $markers[0]['value'] - $expected_value ) < 0.001, 'Release squares interpolate the recorded line at the exact UTC publication time' );
+expect_gripp( 1 === $release_xpath->query( '//svg//a/rect[@width="8" and @height="8"]' )->length && str_contains( $release_html, 'Theme v1 &lt;script&gt;' ) && ! str_contains( $release_html, '<script>' ), 'Static squares and accessible release links escape release labels' );
+expect_gripp( 'Theme releases' === $payload['releaseLabel'] && 1 === $release_xpath->query( '//ul[@data-stuh-fmp-static-legend]/li[@class="stuh-fmp-legend-releases"]' )->length && 0 === $release_xpath->query( '//details[summary="Theme releases"]' )->length, 'Identify release squares in both legends without a raw release list toggle' );
+$GLOBALS['release_history']['owner/theme'] = new WP_Error( 'failed', 'GitHub unavailable' );
+$history = invoke_gripp( 'chart_releases', 99 );
+expect_gripp( [] === $history['releases'] && str_contains( $history['warnings'][0], 'GitHub unavailable' ), 'Report release failures rather than silently presenting empty history' );
 echo "Gripp regression checks passed.\n";

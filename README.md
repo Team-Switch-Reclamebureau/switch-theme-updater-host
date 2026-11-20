@@ -295,20 +295,34 @@ chart plots budget on the Y axis and months (with years) on the X axis:
 the dashed horizontal line is the total budget, and the blue diagonal accumulates
 the monthly allowance from zero at the start to the full budget at the deadline.
 Partial months use the same daily proration as the dashboard.
+The default interactive view shows accumulated allowance, actual recorded time
+and monthly hours. Total budget and invoiced value remain available through the
+single interactive legend; selecting an overlay also shows that dataset.
 **Drag horizontally across a period to zoom directly into it.** The selected
-period is highlighted while dragging; **Reset zoom** restores the full period.
+period is highlighted while dragging; **Reset zoom** appears in the compact
+date toolbar only when zoomed and restores the full period.
 The Y axis automatically fits the visible portions of enabled series, with
 padding instead of fixed zero/full-project limits. This also works between
 monthly points; hiding a series removes it from the automatic Y range.
-The date range is announced beside the button. All four series and the
+The date range is announced in the toolbar. Series visibility and the
 Euros / Hours preference are preserved when zooming. Calendar dates are plotted
-in UTC to prevent browser timezone shifts.
+in UTC to prevent browser timezone shifts. Month labels adapt to the available
+width without removing data points; zooming reveals more detailed labels.
+Published GitHub releases from linked sites' active themes appear as red squares
+on the recorded-time line, interpolated at their UTC publication dates within
+that line's bounds. Shared repositories are counted once; parent themes and
+drafts are excluded. The legend identifies the release squares; hover for
+version/date details. Markers follow recorded-time visibility and zoom, including the
+provisional segment, and appear in the static fallback. Release history uses
+the host's GitHub credentials, loads all pages, and is cached for one hour
+(failures for five minutes); API errors are shown below the chart.
 Charts use locally bundled **uPlot 1.6.32** (MIT license, included under
 `assets/vendor/uplot/`), sourced from the published npm package
 <https://www.npmjs.com/package/uplot/v/1.6.32>. No CDN requests or external
 transmission of project data are needed. Its assets load only on FMP details.
 Without JavaScript, the existing scrollable SVG and accessible data tables
-remain available; a failed library load also displays a warning.
+remain available with the full-series static legend; a failed library load
+also displays a warning.
 Below the chart, use **Secondary dataset → Apply overlay** to overlay **Form entries - all forms**,
 one form identified by its client site and form ID, or **Analytics - monthly
 active users**. **None** restores the budget-only chart. Monthly counts use a

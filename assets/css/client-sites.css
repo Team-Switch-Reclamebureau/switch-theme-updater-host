@@ -31,6 +31,42 @@
 	margin-top: 4px;
 }
 
+.stuh-fmp-budget-chart [hidden] {
+	display: none;
+}
+
+.stuh-fmp-chart-toolbar {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px 16px;
+	margin: 12px 0 4px;
+	font-size: 12px;
+}
+
+.stuh-fmp-zoom-hint {
+	margin-left: auto;
+	color: #646970;
+}
+
+.stuh-fmp-chart-overlay {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid #f0f0f1;
+}
+
+.stuh-fmp-chart-overlay > p {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 0;
+}
+
+.stuh-fmp-chart-overlay select {
+	max-width: min(100%, 520px);
+}
+
 .stuh-fmp-word-preview {
 	max-width: 800px;
 	margin: 16px 0;
@@ -63,6 +99,28 @@
 .stuh-fmp-interactive-plot .u-legend {
 	white-space: normal;
 	font-size: 12px;
+	text-align: left;
+}
+
+.stuh-fmp-interactive-plot .u-legend th {
+	font-weight: 400;
+}
+
+.stuh-fmp-budget-chart li.stuh-fmp-legend-releases::before,
+.stuh-fmp-interactive-plot .stuh-fmp-legend-releases th::before {
+	content: "";
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	margin-right: 4px;
+	background: #d63638;
+	border: 0;
+	border-radius: 0;
+	vertical-align: middle;
+}
+
+.stuh-fmp-interactive-plot .stuh-fmp-legend-releases th::after {
+	content: none;
 }
 
 .stuh-fmp-interactive-plot .u-select {
