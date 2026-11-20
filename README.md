@@ -86,6 +86,10 @@ Editors can still view the overview but cannot open or change these settings.
 Removed client sites are flagged in settings and their links are cleared on save.
 Linked sites' reported Gravity Forms counts appear in Monthly reports; saving
 links does not request new reports or start additional data collection.
+Administrators can select **Hide from Word** beside individual forms and save
+the selection to omit them from the formatted Word preview and copy. Hidden
+forms remain visible in the Monthly reports table; settings are per linked
+client site and FMP project.
 
 ### Gravity Forms reports from client sites
 

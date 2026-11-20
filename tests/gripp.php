@@ -1397,7 +1397,7 @@ libxml_use_internal_errors( $xml_errors );
 $forms_xpath = new DOMXPath( $chart_document );
 expect_gripp( 1 === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/following::div[@data-stuh-fmp-word-preview]' )->length && 1 === $forms_xpath->query( '//div[@data-stuh-fmp-word-preview]/following::button[@data-stuh-fmp-copy-word]' )->length, 'Keep the formatted preview and Copy for Word button below the Gravity Forms table' );
 expect_gripp( 1 === $forms_xpath->query( '//select[@name="hours_month"]' )->length && 1 === $forms_xpath->query( '//select[@name="hours_month"]/option[@value="1999-12"]' )->length && 0 === $forms_xpath->query( '//select[@name="hours_month"]/option[@value="1998-06" or @value="1997-01"]' )->length && str_contains( $forms_january_html, '>Calendar month</label>' ), 'One shared calendar-month filter includes months reported only by linked forms, excluding unlinked and removed-site months' );
-expect_gripp( '12' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[1]/td[last()]' )->item( 0 )->textContent && '0' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[2]/td[last()]' )->item( 0 )->textContent && 'Not reported' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[3]/td[last()]' )->item( 0 )->textContent && '3' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[4]/td[last()]' )->item( 0 )->textContent, 'Monthly form counts distinguish explicit zero from missing data and keep identical form titles/IDs separate per client site' );
+expect_gripp( '12' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[1]/td[2]' )->item( 0 )->textContent && '0' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[2]/td[2]' )->item( 0 )->textContent && 'Not reported' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[3]/td[2]' )->item( 0 )->textContent && '3' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[4]/td[2]' )->item( 0 )->textContent, 'Monthly form counts distinguish explicit zero from missing data and keep identical form titles/IDs separate per client site' );
 expect_gripp( str_contains( $forms_january_html, '&lt;script&gt;' ) && ! str_contains( $forms_january_html, '<script>' ) && ! str_contains( $forms_january_html, 'Unlinked private form' ) && ! str_contains( $forms_january_html, 'Removed private form' ) && str_contains( $forms_january_html, 'No Gravity Forms report received yet.' ) && str_contains( $forms_january_html, 'No forms reported.' ) && str_contains( $forms_january_html, 'Client site no longer exists.' ), 'Escape site names and form titles, isolate linked-site reports, and explicitly distinguish waiting, empty and removed sites' );
 expect_gripp( str_contains( $forms_january_html, 'Multi-month project' ) && str_contains( $forms_january_html, '1.88 h' ) && ! str_contains( $forms_january_html, 'February only' ), 'The same month selection filters active-project rows and totals alongside form counts' );
 $forms_february_html = $render_monthly( '2000-02' );
@@ -1412,6 +1412,50 @@ expect_gripp( strpos( $grouped_forms_export['text'], 'Active projects' ) < strpo
 expect_gripp( $grouped_forms_export['text'] === $preview_value( $forms_january_html ) && str_contains( $grouped_forms_export['text'], "\nGravity Forms\n\nhttps://one.example/?x=<script>\n\tForm\tEntries\n\tContact <script>\t12\n\tZero entries\t0\n\tNew form\tNot reported\n" ) && str_contains( $grouped_forms_export['text'], "\nhttps://two.example\n\tForm\tEntries\n\tContact <script>\t3\n" ), 'The preview and download include month-filtered form counts grouped by site, keeping same-title forms separate and distinguishing zeros from unreported months' );
 expect_gripp( 1 === substr_count( $grouped_forms_export['text'], 'https://one.example/' ) && 1 === substr_count( $grouped_forms_export['text'], 'https://two.example' ) && ! str_contains( $grouped_forms_export['text'], 'Unlinked private form' ) && ! str_contains( $grouped_forms_export['text'], 'Removed private form' ) && ! str_contains( $grouped_forms_export['text'], 'https://unlinked.example' ), 'Export each linked site URL once as a heading, not on every form row, without including unlinked or removed-site data' );
 expect_gripp( str_contains( $grouped_forms_export['text'], "https://waiting.example\n\tNo Gravity Forms report received yet." ) && str_contains( $grouped_forms_export['text'], "https://empty.example\n\tNo forms reported." ) && str_contains( $grouped_forms_export['text'], "Removed client site\n\tClient site no longer exists." ), 'Grouped exports retain explicit waiting, empty and removed-site statuses instead of fabricating entry counts' );
+$hide_forms_source = [ 'project_id' => '1', 'offset' => '250', 'unit' => 'eur', 'hours_month' => '2000-01', 'hidden_forms' => [ 'site-one' => [ '2' ] ] ];
+try {
+	invoke_gripp( 'save_hidden_forms', $hide_forms_source );
+	throw new RuntimeException( 'Saving hidden Gravity Forms did not redirect' );
+} catch ( GrippRedirect $redirect ) {
+	expect_gripp( str_contains( $redirect->getMessage(), 'project_tab=reports' ) && str_contains( $redirect->getMessage(), 'hours_month=2000-01' ), 'Saving hidden forms returns to the current project and month' );
+}
+$hidden_forms_html = $render_monthly( '2000-01' );
+$hidden_forms_export = $export_document();
+expect_gripp( str_contains( $hidden_forms_html, 'name="hidden_forms[site-one][]" value="2" checked' ) && str_contains( $hidden_forms_html, 'Zero entries' ) && ! str_contains( $hidden_forms_export['text'], 'Zero entries' ) && ! str_contains( $hidden_forms_export['html'], 'Zero entries' ) && str_contains( $hidden_forms_export['text'], "\tContact <script>\t12\n" ), 'Saved per-site form visibility hides a selected form only from both Word formats, not the counts table' );
+$GLOBALS['capabilities'] = [ 'edit_others_posts' ];
+$editor_hidden_html = $render_monthly( '2000-01' );
+$editor_hidden_export = $export_document();
+$editor_save_error = null;
+$_POST = [ '_wpnonce' => 'valid', 'operation' => 'save_hidden_forms', 'project_id' => '1' ];
+try {
+	STUH_Gripp::handle_action();
+} catch ( RuntimeException $error ) {
+	$editor_save_error = $error->getMessage();
+} finally {
+	$_POST = [];
+}
+$GLOBALS['capabilities'] = [ 'manage_options' ];
+expect_gripp( ! str_contains( $editor_hidden_html, 'name="hidden_forms[' ) && ! str_contains( $editor_hidden_export['text'], 'Zero entries' ) && 'Insufficient permissions' === $editor_save_error, 'Editors receive filtered Word output but cannot change administrator-managed visibility' );
+$hide_forms_source['hidden_forms'] = [ 'site-one' => [ '1', '2', '3' ] ];
+try {
+	invoke_gripp( 'save_hidden_forms', $hide_forms_source );
+	throw new RuntimeException( 'Saving hidden Gravity Forms did not redirect' );
+} catch ( GrippRedirect $redirect ) {
+	$all_site_one_hidden = $export_document();
+	expect_gripp( ! str_contains( $all_site_one_hidden['text'], 'https://one.example/' ) && str_contains( $all_site_one_hidden['text'], "\nhttps://two.example\n\tForm\tEntries\n\tContact <script>\t3\n" ), 'Hiding every form omits that site from Word while the same form ID on another site remains visible' );
+}
+try {
+	invoke_gripp( 'save_hidden_forms', array_merge( $hide_forms_source, [ 'hidden_forms' => [ 'site-one' => [ '999' ] ] ] ) );
+	throw new RuntimeException( 'An unavailable form was accepted' );
+} catch ( RuntimeException $error ) {
+	expect_gripp( str_contains( $error->getMessage(), 'Gravity Form is no longer available' ), 'Reject attempts to hide forms outside the linked reports' );
+}
+try {
+	invoke_gripp( 'save_hidden_forms', array_merge( $hide_forms_source, [ 'hidden_forms' => [] ] ) );
+	throw new RuntimeException( 'Saving hidden Gravity Forms did not redirect' );
+} catch ( GrippRedirect $redirect ) {
+	expect_gripp( [] === get_option( 'stuh_fmp_hidden_forms_1', [] ), 'Saving with all forms visible clears the project hide settings' );
+}
 $grouped_forms_february = $export_document( [ 'hours_month' => '2000-02' ] );
 expect_gripp( $grouped_forms_february['text'] === $preview_value( $forms_february_html ) && str_contains( $grouped_forms_february['text'], "\tContact <script>\t8\n" ) && str_contains( $grouped_forms_february['text'], "\tContact <script>\t4\n" ) && str_contains( $grouped_forms_february['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t3,00\nProject Management\t2,00" ), 'Changing the shared month filters both exported hours and grouped form counts exactly as previewed' );
 $matrix_document = new DOMDocument();

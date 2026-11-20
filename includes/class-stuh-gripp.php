@@ -14,6 +14,7 @@ final class STUH_Gripp {
 	private const PAGE_SIZE = 250;
 	private const UNIT_OPTION = 'stuh_fmp_unit';
 	private const PROJECT_SITES_PREFIX = 'stuh_fmp_project_sites_';
+	private const HIDDEN_FORMS_PREFIX = 'stuh_fmp_hidden_forms_';
 
 	public static function init(): void {
 		add_action( 'admin_menu', [ self::class, 'register_menu' ], 20 );
@@ -825,6 +826,9 @@ final class STUH_Gripp {
 			case 'save_project_sites':
 				self::save_project_sites( $_POST );
 				break;
+			case 'save_hidden_forms':
+				self::save_hidden_forms( $_POST );
+				break;
 			case 'connect':
 				$token = self::input( $_POST, 'api_token' );
 				if ( '' === $token || preg_match( '/[\x00-\x20\x7f]/', $token ) ) {
@@ -916,6 +920,67 @@ final class STUH_Gripp {
 		}
 		set_transient( 'stuh_gripp_notice_' . get_current_user_id(), [ 'message' => __( 'Linked client sites saved.', 'stuh' ), 'error' => false ], 5 * MINUTE_IN_SECONDS );
 		wp_safe_redirect( self::details_url( $id, $offset, $unit, 'settings' ) );
+		exit;
+	}
+
+	private static function hidden_forms( int $id ): array {
+		$hidden = get_option( self::HIDDEN_FORMS_PREFIX . $id, [] );
+		if ( ! is_array( $hidden ) ) {
+			wp_die( esc_html__( 'Stored FMP hidden-form settings are invalid.', 'stuh' ), '', [ 'response' => 500 ] );
+		}
+		foreach ( $hidden as $client_id => $form_ids ) {
+			if ( ( ! is_string( $client_id ) && ! is_int( $client_id ) ) || ! is_array( $form_ids ) ) {
+				wp_die( esc_html__( 'Stored FMP hidden-form settings are invalid.', 'stuh' ), '', [ 'response' => 500 ] );
+			}
+			foreach ( $form_ids as $form_id ) {
+				if ( ! is_int( $form_id ) || $form_id < 1 ) {
+					wp_die( esc_html__( 'Stored FMP hidden-form settings are invalid.', 'stuh' ), '', [ 'response' => 500 ] );
+				}
+			}
+		}
+		return $hidden;
+	}
+
+	private static function save_hidden_forms( array $source ): void {
+		$id = self::selected_project( $source );
+		if ( null === $id ) {
+			wp_die( esc_html__( 'Select a Gripp umbrella project to configure.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		$offset = self::offset( $source );
+		$unit = self::display_unit( $source );
+		$month = self::selected_hours_month( $source );
+		$submitted = $source['hidden_forms'] ?? [];
+		if ( ! is_array( $submitted ) ) {
+			wp_die( esc_html__( 'Invalid hidden Gravity Forms selection.', 'stuh' ), '', [ 'response' => 400 ] );
+		}
+		$available = [];
+		foreach ( self::linked_gravity_forms( $id ) as $site ) {
+			if ( ! $site['exists'] || null === $site['report'] ) {
+				continue;
+			}
+			$available[ $site['id'] ] = array_column( $site['report']['forms'], 'form_id' );
+		}
+		$hidden = [];
+		foreach ( $submitted as $client_id => $form_ids ) {
+			$client_id = wp_unslash( (string) $client_id );
+			if ( ! isset( $available[ $client_id ] ) || ! is_array( $form_ids ) ) {
+				wp_die( esc_html__( 'A selected Gravity Forms report is no longer available. Reload the page and try again.', 'stuh' ), '', [ 'response' => 400 ] );
+			}
+			foreach ( $form_ids as $form_id ) {
+				if ( ! is_string( $form_id ) || ! ctype_digit( $form_id ) || (int) $form_id < 1 || ! in_array( (int) $form_id, $available[ $client_id ], true ) ) {
+					wp_die( esc_html__( 'A selected Gravity Form is no longer available. Reload the page and try again.', 'stuh' ), '', [ 'response' => 400 ] );
+				}
+				$hidden[ $client_id ][] = (int) $form_id;
+			}
+			$hidden[ $client_id ] = array_values( array_unique( $hidden[ $client_id ] ?? [] ) );
+		}
+		$key = self::HIDDEN_FORMS_PREFIX . $id;
+		if ( get_option( $key, [] ) !== $hidden && ! update_option( $key, $hidden, false ) ) {
+			wp_die( esc_html__( 'Could not save hidden Gravity Forms settings. Retry.', 'stuh' ), '', [ 'response' => 500 ] );
+		}
+		set_transient( 'stuh_gripp_notice_' . get_current_user_id(), [ 'message' => __( 'Word export form visibility saved.', 'stuh' ), 'error' => false ], 5 * MINUTE_IN_SECONDS );
+		$url = self::details_url( $id, $offset, $unit, 'reports' );
+		wp_safe_redirect( '' === $month ? $url : add_query_arg( [ 'hours_month' => $month ], $url ) );
 		exit;
 	}
 
@@ -1086,25 +1151,41 @@ final class STUH_Gripp {
 		}
 		$html .= $table_end . '</div>';
 		if ( $sites ) {
-			$lines[] = '';
-			$lines[] = __( 'Gravity Forms', 'stuh' );
-			$html .= $heading( __( 'Gravity Forms', 'stuh' ) );
+			$hidden_forms = self::hidden_forms( $id );
+			$export_sites = [];
 			foreach ( $sites as $site ) {
-				$lines[] = '';
-				$lines[] = $plain( $site['name'] );
-				$html .= '<p style="' . $font . 'margin:16px 0 8px;"><strong>' . esc_html( $plain( $site['name'] ) ) . '</strong></p>';
-				$status = self::gravity_forms_status( $site );
-				if ( null !== $status ) {
-					$lines[] = "\t" . $status;
-					$html .= '<p style="' . $font . '">' . esc_html( $status ) . '</p>';
-					continue;
+				if ( null === self::gravity_forms_status( $site ) ) {
+					$site['report']['forms'] = array_values( array_filter(
+						$site['report']['forms'],
+						static fn( array $form ): bool => ! in_array( $form['form_id'], $hidden_forms[ $site['id'] ] ?? [], true )
+					) );
+					if ( ! $site['report']['forms'] ) {
+						continue;
+					}
 				}
-				$lines[] = "\t" . __( 'Form', 'stuh' ) . "\t" . __( 'Entries', 'stuh' );
-				$html .= self::gravity_forms_word_matrix( $site['report']['forms'], $month, $font );
-				foreach ( $site['report']['forms'] as $form ) {
-					$label = $plain( $form['form_title'] );
-					$value = self::gravity_form_entries( $form, $month );
-					$lines[] = "\t" . $label . "\t" . $value;
+				$export_sites[] = $site;
+			}
+			if ( $export_sites ) {
+				$lines[] = '';
+				$lines[] = __( 'Gravity Forms', 'stuh' );
+				$html .= $heading( __( 'Gravity Forms', 'stuh' ) );
+				foreach ( $export_sites as $site ) {
+					$lines[] = '';
+					$lines[] = $plain( $site['name'] );
+					$html .= '<p style="' . $font . 'margin:16px 0 8px;"><strong>' . esc_html( $plain( $site['name'] ) ) . '</strong></p>';
+					$status = self::gravity_forms_status( $site );
+					if ( null !== $status ) {
+						$lines[] = "\t" . $status;
+						$html .= '<p style="' . $font . '">' . esc_html( $status ) . '</p>';
+						continue;
+					}
+					$lines[] = "\t" . __( 'Form', 'stuh' ) . "\t" . __( 'Entries', 'stuh' );
+					$html .= self::gravity_forms_word_matrix( $site['report']['forms'], $month, $font );
+					foreach ( $site['report']['forms'] as $form ) {
+						$label = $plain( $form['form_title'] );
+						$value = self::gravity_form_entries( $form, $month );
+						$lines[] = "\t" . $label . "\t" . $value;
+					}
 				}
 			}
 		}
@@ -1411,6 +1492,7 @@ final class STUH_Gripp {
 		foreach ( array_unique( $ids ) as $client_id ) {
 			$client = $clients[ $client_id ] ?? null;
 			$sites[] = [
+				'id' => $client_id,
 				'name' => null === $client ? __( 'Removed client site', 'stuh' ) : ( $client['site_url'] ?? $client_id ),
 				'exists' => null !== $client,
 				'report' => null === $client ? null : STUH_Plugin::get_gravity_forms_report( $client_id ),
@@ -1462,7 +1544,7 @@ final class STUH_Gripp {
 			self::render_active_orders( $rows, $unit, $month );
 		}
 		if ( $sites ) {
-			self::render_gravity_forms( $sites, $month );
+			self::render_gravity_forms( $sites, $month, $id );
 		}
 		if ( ! is_wp_error( $rows ) ) {
 			$balance = self::monthly_balance( $token, $id, $month );
@@ -1594,26 +1676,50 @@ final class STUH_Gripp {
 		return $html . '</tbody></table>';
 	}
 
-	private static function render_gravity_forms( array $sites, string $month ): void {
+	private static function render_gravity_forms( array $sites, string $month, int $id ): void {
 		echo '<h2 id="stuh-fmp-forms-heading">' . esc_html__( 'Gravity Forms', 'stuh' ) . '</h2>';
-		echo '<p>' . esc_html__( 'Entry counts reported by linked client sites. All months sums each form\'s reported months. Missing months are shown as Not reported, not zero. Forms on different sites remain separate.', 'stuh' ) . '</p>';
+		$can_edit = current_user_can( 'manage_options' );
+		echo '<p>' . esc_html__( 'Entry counts reported by linked client sites. All months sums each form\'s reported months. Missing months are shown as Not reported, not zero. Forms on different sites remain separate.', 'stuh' );
+		if ( $can_edit ) {
+			echo ' ' . esc_html__( 'Use Hide from Word to omit a form from the formatted export without hiding it from this table.', 'stuh' );
+		}
+		echo '</p>';
+		if ( $can_edit ) {
+			self::form_start( 'save_hidden_forms' );
+			foreach ( [ 'project_id' => $id, 'offset' => self::offset( $_GET ), 'unit' => self::display_unit( $_GET ), 'hours_month' => $month ] as $key => $value ) {
+				echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
+			}
+		}
 		echo '<div class="stuh-analytics-line-scroll" role="region" tabindex="0" aria-labelledby="stuh-fmp-forms-heading"><table id="stuh-fmp-gravity-forms" class="widefat striped" aria-labelledby="stuh-fmp-forms-heading"><thead><tr>';
-		foreach ( [ __( 'Client site', 'stuh' ), __( 'Form', 'stuh' ), __( 'Entries', 'stuh' ) ] as $heading ) {
+		$headings = [ __( 'Client site', 'stuh' ), __( 'Form', 'stuh' ), __( 'Entries', 'stuh' ) ];
+		if ( $can_edit ) {
+			$headings[] = __( 'Hide from Word', 'stuh' );
+		}
+		foreach ( $headings as $heading ) {
 			echo '<th scope="col">' . esc_html( $heading ) . '</th>';
 		}
 		echo '</tr></thead><tbody>';
+		$hidden_forms = $can_edit ? self::hidden_forms( $id ) : [];
 		foreach ( $sites as $site ) {
 			$status = self::gravity_forms_status( $site );
 			if ( null !== $status ) {
-				echo '<tr><th scope="row">' . esc_html( $site['name'] ) . '</th><td colspan="2">' . esc_html( $status ) . '</td></tr>';
+				echo '<tr><th scope="row">' . esc_html( $site['name'] ) . '</th><td colspan="' . ( $can_edit ? '3' : '2' ) . '">' . esc_html( $status ) . '</td></tr>';
 				continue;
 			}
 			foreach ( $site['report']['forms'] as $form ) {
 				$value = self::gravity_form_entries( $form, $month );
-				echo '<tr><td>' . esc_html( $site['name'] ) . '</td><th scope="row">' . esc_html( $form['form_title'] ) . '</th><td>' . esc_html( $value ) . '</td></tr>';
+				echo '<tr><td>' . esc_html( $site['name'] ) . '</td><th scope="row">' . esc_html( $form['form_title'] ) . '</th><td>' . esc_html( $value ) . '</td>';
+				if ( $can_edit ) {
+					$checked = in_array( $form['form_id'], $hidden_forms[ $site['id'] ] ?? [], true ) ? ' checked' : '';
+					echo '<td><label><input type="checkbox" name="hidden_forms[' . esc_attr( $site['id'] ) . '][]" value="' . esc_attr( (string) $form['form_id'] ) . '"' . $checked . '> ' . esc_html__( 'Hide from Word', 'stuh' ) . '</label></td>';
+				}
+				echo '</tr>';
 			}
 		}
 		echo '</tbody></table></div>';
+		if ( $can_edit ) {
+			echo '<p><button class="button" type="submit">' . esc_html__( 'Save Word export visibility', 'stuh' ) . '</button></p></form>';
+		}
 	}
 
 	private static function budget_variance_regions( array $allowance, array $actual ): array {
