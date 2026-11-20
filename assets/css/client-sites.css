@@ -233,6 +233,10 @@
 	border-color: #d63638;
 }
 
+.stuh-analytics-legend .stuh-fmp-legend-secondary::before {
+	border-color: #8c45a8;
+}
+
 .stuh-analytics-legend .stuh-fmp-legend-invoiced::before {
 	border-color: #008a20;
 	border-top-style: dashed;

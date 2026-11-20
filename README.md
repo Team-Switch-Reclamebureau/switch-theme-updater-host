@@ -309,6 +309,28 @@ Charts use locally bundled **uPlot 1.6.32** (MIT license, included under
 transmission of project data are needed. Its assets load only on FMP details.
 Without JavaScript, the existing scrollable SVG and accessible data tables
 remain available; a failed library load also displays a warning.
+Below the chart, use **Secondary dataset → Apply overlay** to overlay **Form entries - all forms**,
+one form identified by its client site and form ID, or **Analytics - monthly
+active users**. **None** restores the budget-only chart. Monthly counts use a
+separate **right-hand Y axis**, independent of Euros / Hours and the budget
+scale; both axes fit the visible period when zooming. The overlay also appears
+in the static SVG and monthly values table.
+
+All-forms entries and Analytics users are summed across the FMP's linked sites.
+Analytics totals are site counts, not deduplicated visitors across sites.
+**All forms** sums available reported counts per month, even when forms have
+different histories. Forms without data for a month are excluded from that
+month's sum; months without any reports remain gaps, not zeros. Unavailable
+sites are flagged but do not suppress other sites' form counts.
+Analytics totals still require data from every linked site; missing months
+remain gaps and unavailable site reports prevent a partial Analytics total.
+Forms hidden from Word remain available for chart overlays.
+Only months within the existing budget/usage chart period through the current
+month are included. Analytics uses saved monthly history (including preceding
+complete months), not rolling 28-day totals, with an explicitly partial ongoing
+month in each property's timezone. Stale reports and Google reporting
+limitations are surfaced. Overlays do not fetch or refresh client or Google
+data; refresh Analytics through its existing report screen when needed.
 The red usage line shows **all recorded hours**, including Concept entries and
 hours on fixed-price or zero-value orders, valued at **EUR 90 per hour**,
 excluding products marked **(ND / intern)**.

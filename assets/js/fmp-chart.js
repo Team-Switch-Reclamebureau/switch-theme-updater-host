@@ -22,6 +22,7 @@
 			currency: 'EUR'
 		});
 		var hours = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+		var counts = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
 		var months = new Intl.DateTimeFormat(locale, { month: 'short', year: 'numeric', timeZone: 'UTC' });
 		var formatValue = function (value) {
 			return value == null ? '-' : numbers.format(value) + (config.unit === 'hours' ? ' h' : '');
@@ -33,18 +34,23 @@
 		var fullMax = timestamps[timestamps.length - 1];
 		var visibleMin = fullMin;
 		var visibleMax = fullMax;
-		var yRange = function (chart) {
+		var yRange = function (chart, scale) {
+			scale = scale || 'y';
 			var minimum = Infinity;
 			var maximum = -Infinity;
 			var include = function (value) {
-				minimum = Math.min(minimum, value / divisor);
-				maximum = Math.max(maximum, value / divisor);
+				var displayed = value / (scale === 'secondary' ? 1 : divisor);
+				minimum = Math.min(minimum, displayed);
+				maximum = Math.max(maximum, displayed);
 			};
 			config.series.forEach(function (item, index) {
-				if (!chart.series[index + 1].show) {
+				if ((item.scale || 'y') !== scale || !chart.series[index + 1].show) {
 					return;
 				}
 				item.points.forEach(function (point, pointIndex) {
+					if (point[1] == null) {
+						return;
+					}
 					if (item.type === 'bars') {
 						var period = item.periods[pointIndex];
 						if (period[1] >= visibleMin && period[0] <= visibleMax) {
@@ -62,7 +68,7 @@
 					var previous = item.points[pointIndex - 1];
 					var start = Math.max(previous[0], visibleMin);
 					var end = Math.min(point[0], visibleMax);
-					if (start <= end && point[0] > previous[0]) {
+					if (previous[1] != null && start <= end && point[0] > previous[0]) {
 						// Include the visible line even when zoomed between monthly points.
 						var slope = (point[1] - previous[1]) / (point[0] - previous[0]);
 						include(previous[1] + slope * (start - previous[0]));
@@ -72,6 +78,9 @@
 			});
 			if (minimum === Infinity) {
 				return [null, null];
+			}
+			if (scale === 'secondary') {
+				return [0, Math.max(1, maximum * 1.05)];
 			}
 			var padding = maximum === minimum ? Math.max(Math.abs(maximum) * 0.01, 1) : Math.max((maximum - minimum) * 0.05, 0.01);
 			return [minimum - padding, maximum + padding];
@@ -83,6 +92,7 @@
 		}];
 		config.series.forEach(function (item, index) {
 			var bar = item.type === 'bars';
+			var secondary = item.scale === 'secondary';
 			var paths;
 			if (item.provisional) {
 				var linear = window.uPlot.paths.linear();
@@ -97,53 +107,74 @@
 				if (index === 0) {
 					return item.points[0][1] / divisor;
 				}
-				return values.has(timestamp) ? values.get(timestamp) / divisor : (bar ? undefined : null);
+				var value = values.get(timestamp);
+				return values.has(timestamp) ? (value == null ? null : value / (secondary ? 1 : divisor)) : (bar ? undefined : null);
 			}));
 			series.push({
 				label: item.label,
+				scale: secondary ? 'secondary' : 'y',
 				stroke: item.stroke,
 				dash: item.dash,
 				width: bar ? 1 : 2,
 				fill: bar ? item.fill : undefined,
 				paths: bar ? window.uPlot.paths.bars({ size: [0.65, 40] }) : paths,
-				spanGaps: !bar,
-				points: { show: false },
+				spanGaps: !bar && !secondary,
+				points: { show: secondary, size: 5 },
 				value: function (plot, value) {
+					if (secondary) {
+						return value == null ? '-' : counts.format(value);
+					}
 					return formatValue(value) + (bar && config.unit !== 'hours' && value != null ? ' (' + hours.format(value / 90) + ' h)' : '');
 				}
 			});
 		});
+		var axes = [{
+			label: config.xLabel,
+			space: 100,
+			splits: function (chart, index, min, max) {
+				return timestamps.filter(function (timestamp) { return timestamp >= min && timestamp <= max; });
+			},
+			values: function (chart, ticks) {
+				return ticks.map(function (tick) { return months.format(new Date(tick * 1000)); });
+			}
+		}, {
+			label: config.yLabel,
+			size: 100,
+			values: function (chart, ticks) { return ticks.map(formatValue); }
+		}];
+		var scales = {
+			x: {
+				time: true,
+				range: function (chart, min, max) {
+					visibleMin = min;
+					visibleMax = max;
+					return [min, max];
+				}
+			},
+			y: { range: function (chart) { return yRange(chart, 'y'); } }
+		};
+		if (config.secondaryLabel) {
+			scales.secondary = { range: function (chart) { return yRange(chart, 'secondary'); } };
+			axes.push({
+				scale: 'secondary',
+				side: 1,
+				label: config.secondaryLabel,
+				size: 80,
+				grid: { show: false },
+				incrs: Array.from({ length: 17 }, function (_, exponent) {
+					return [1, 2, 5].map(function (value) { return value * Math.pow(10, exponent); });
+				}).flat(),
+				values: function (chart, ticks) { return ticks.map(function (value) { return counts.format(value); }); }
+			});
+		}
 		interactive.hidden = false;
 		var plot = new window.uPlot({
 			width: host.clientWidth,
 			height: 420,
 			series: series,
 			tzDate: function (timestamp) { return window.uPlot.tzDate(new Date(timestamp * 1000), 'Etc/UTC'); },
-			scales: {
-				x: {
-					time: true,
-					range: function (chart, min, max) {
-						visibleMin = min;
-						visibleMax = max;
-						return [min, max];
-					}
-				},
-				y: { range: yRange }
-			},
-			axes: [{
-				label: config.xLabel,
-				space: 100,
-				splits: function (chart, index, min, max) {
-					return timestamps.filter(function (timestamp) { return timestamp >= min && timestamp <= max; });
-				},
-				values: function (chart, ticks) {
-					return ticks.map(function (tick) { return months.format(new Date(tick * 1000)); });
-				}
-			}, {
-				label: config.yLabel,
-				size: 100,
-				values: function (chart, ticks) { return ticks.map(formatValue); }
-			}],
+			scales: scales,
+			axes: axes,
 			cursor: { drag: { x: true, y: false, setScale: true, dist: 10 } },
 			hooks: {
 				drawAxes: [function (chart) {

@@ -1159,6 +1159,45 @@ final class STUH_Analytics {
 		return is_array( $record ) && ( $record['fingerprint'] ?? '' ) === self::fingerprint( $mapping ) ? $record : [];
 	}
 
+	public static function monthly_active_users( string $client_id ) {
+		self::require_viewer();
+		$mapping = self::mappings()[ $client_id ] ?? null;
+		if ( ! $mapping ) {
+			return new WP_Error( 'google_mapping', __( 'No Analytics property is connected to this site.', 'stuh' ) );
+		}
+		$connection = self::connection();
+		if ( is_wp_error( $connection ) ) {
+			return $connection;
+		}
+		if ( $mapping['connection_id'] !== $connection['id'] ) {
+			return new WP_Error( 'google_mapping', __( 'Google was reconnected. Confirm the property mapping for this site again.', 'stuh' ) );
+		}
+		$record = self::column_record( $client_id, $mapping );
+		if ( ! isset( $record['data']['history']['months'] ) ) {
+			return new WP_Error( 'google_history', ! empty( $record['error'] ) ? $record['error'] : __( 'Refresh Analytics to load monthly active users for this site.', 'stuh' ) );
+		}
+		$months = [];
+		foreach ( $record['data']['history']['months'] as $row ) {
+			if ( empty( $row['in_progress'] ) ) {
+				$months[ $row['previous_month'] ] = $row['previous'];
+			}
+		}
+		foreach ( $record['data']['history']['months'] as $row ) {
+			$months[ $row['month'] ] = $row['current'];
+		}
+		$warnings = [];
+		if ( ! empty( $record['error'] ) ) {
+			$warnings[] = $record['error'];
+		}
+		if ( ( $record['fetched_at'] ?? 0 ) < time() - 4 * HOUR_IN_SECONDS ) {
+			$warnings[] = __( 'Stale Analytics report; showing the last successful data.', 'stuh' );
+		}
+		if ( ! empty( $record['data']['limited'] ) ) {
+			$warnings[] = __( 'Google flagged thresholding, sampling, or other-row data loss in this report.', 'stuh' );
+		}
+		return [ 'months' => $months, 'warnings' => $warnings ];
+	}
+
 	public static function column_sort_values( array $clients ): array {
 		$mappings = self::mappings();
 		$connection = $mappings ? self::connection() : null;

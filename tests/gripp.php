@@ -16,6 +16,9 @@ class STUH_Plugin {
 	public static function get_telemetry(): array { return $GLOBALS['telemetry'] ?? []; }
 	public static function get_gravity_forms_report( string $client_id ): ?array { return self::get_telemetry()[ $client_id ]['gravity_forms'] ?? null; }
 }
+class STUH_Analytics {
+	public static function monthly_active_users( string $client_id ) { return $GLOBALS['analytics_history'][ $client_id ] ?? new WP_Error( 'missing', 'No Analytics report.' ); }
+}
 function __( $text, $domain = '' ) { return $text; }
 function esc_html( $value ) { return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $value ) { return esc_html( $value ); }
@@ -1674,4 +1677,67 @@ expect_gripp( false === get_transient( 'stuh_gripp_balance' ), 'Refresh projects
 expect_gripp( ! array_filter( $GLOBALS['entity_responses'] ), 'Consume all expected balance responses' );
 unset( $GLOBALS['entity_responses'], $GLOBALS['capabilities'] );
 expect_gripp( ! $GLOBALS['responses'] && ! $GLOBALS['order_responses'], 'All expected API responses were consumed' );
+$GLOBALS['clients'] = [
+	[ 'id' => 'overlay-one', 'site_url' => 'https://one.example' ],
+	[ 'id' => 'overlay-two', 'site_url' => 'https://two.example' ],
+];
+$GLOBALS['options']['stuh_fmp_project_sites_99'] = [ 'overlay-one', 'overlay-two' ];
+$GLOBALS['options']['stuh_fmp_hidden_forms_99'] = [ 'overlay-one' => [ 1 ] ];
+$GLOBALS['telemetry'] = [
+	'overlay-one' => [ 'gravity_forms' => [ 'forms' => [
+		[ 'form_id' => 1, 'form_title' => 'Contact <script>', 'months' => [ '2000-01' => 2, '2000-03' => 4 ] ],
+		[ 'form_id' => 2, 'form_title' => 'Other form', 'months' => [ '2000-01' => 0, '2000-02' => 1, '2000-03' => 1, '2000-04' => 0 ] ],
+		[ 'form_id' => 3, 'form_title' => 'Unreported form', 'months' => [] ],
+	] ] ],
+	'overlay-two' => [ 'gravity_forms' => [ 'forms' => [
+		[ 'form_id' => 1, 'form_title' => 'Contact', 'months' => [ '2000-01' => 3, '2000-03' => 2 ] ],
+	] ] ],
+];
+$overlay_requests = count( $GLOBALS['requests'] );
+$overlay_project = [ 'id' => 99, 'budget' => 900000, 'used' => 0, 'startdate' => '2000-01-01', 'deadline' => '2000-05-31' ];
+$overlay_plan = invoke_gripp( 'budget_chart_data', $overlay_project );
+$_GET = [ 'chart_overlay' => 'forms' ];
+$all_forms_overlay = invoke_gripp( 'chart_overlay', 99 );
+expect_gripp( [ '2000-01' => 5, '2000-03' => 7, '2000-02' => 1, '2000-04' => 0 ] === $all_forms_overlay['months'], 'All forms sum available counts across differing histories, including Word-hidden forms, without requiring overlapping months or reports from empty forms' );
+ob_start();
+invoke_gripp( 'render_budget_chart', $overlay_project, $overlay_plan, 'hours', $all_forms_overlay );
+$overlay_html = ob_get_clean();
+$xml_errors = libxml_use_internal_errors( true );
+$chart_document->loadHTML( $overlay_html );
+libxml_clear_errors();
+libxml_use_internal_errors( $xml_errors );
+$overlay_xpath = new DOMXPath( $chart_document );
+$overlay_payload = json_decode( $overlay_xpath->query( '//figure[@data-stuh-fmp-chart]' )->item( 0 )->getAttribute( 'data-stuh-fmp-chart' ), true, 512, JSON_THROW_ON_ERROR );
+expect_gripp( 'secondary' === $overlay_payload['series'][2]['scale'] && [ 5, 1, 7, 0, null ] === array_column( $overlay_payload['series'][2]['points'], 1 ) && '2000-01-01' === gmdate( 'Y-m-d', $overlay_payload['series'][2]['points'][0][0] ), 'All-forms chart includes non-overlapping reports and explicit zero while keeping months without any report as gaps' );
+expect_gripp( str_contains( $overlay_html, 'rotate(90)' ) && str_contains( $overlay_html, 'Form entries' ) && str_contains( $overlay_html, 'Not reported' ) && str_contains( $overlay_html, 'Contact &lt;script&gt;' ) && ! str_contains( $overlay_html, '<script>' ), 'Static fallback includes a right count axis, accessible monthly values, and escaped selector labels' );
+expect_gripp( 1 === $overlay_xpath->query( '//select[@name="chart_overlay"]/option[@value="forms" and @selected]' )->length && 1 === $overlay_xpath->query( '//input[@name="project_id" and @value="99"]' )->length, 'Overlay form retains the current selection and project when applying another dataset' );
+expect_gripp( 1 === $overlay_xpath->query( '//div[@data-stuh-fmp-static]/following-sibling::form//select[@name="chart_overlay"]' )->length && 1 === $overlay_xpath->query( '//div[@data-stuh-fmp-interactive]/following-sibling::form//select[@name="chart_overlay"]' )->length, 'Place the secondary dataset selector below both chart renderers' );
+$saved_overlay_site = $GLOBALS['telemetry']['overlay-two'];
+unset( $GLOBALS['telemetry']['overlay-two'] );
+$available_forms_overlay = invoke_gripp( 'chart_overlay', 99 );
+expect_gripp( 2 === $available_forms_overlay['months']['2000-01'] && 1 === $available_forms_overlay['months']['2000-02'] && $available_forms_overlay['warnings'], 'Unavailable sites do not suppress available form counts and remain explicitly flagged' );
+$GLOBALS['telemetry']['overlay-two'] = $saved_overlay_site;
+$_GET['chart_overlay'] = 'form:overlay-one:2';
+$one_form_overlay = invoke_gripp( 'chart_overlay', 99 );
+expect_gripp( [ '2000-01' => 0, '2000-02' => 1, '2000-03' => 1, '2000-04' => 0 ] === $one_form_overlay['months'], 'Selecting a single form retains zero and does not include other forms or sites' );
+$GLOBALS['analytics_history'] = [
+	'overlay-one' => [ 'months' => [ '2000-01' => 10.0, '2000-02' => null, '2000-03' => 0.0 ], 'warnings' => [ 'Stale report <script>' ] ],
+	'overlay-two' => [ 'months' => [ '2000-01' => 20.0, '2000-02' => 5.0, '2000-03' => 0.0 ], 'warnings' => [] ],
+];
+$_GET['chart_overlay'] = 'analytics';
+$analytics_overlay = invoke_gripp( 'chart_overlay', 99 );
+expect_gripp( [ '2000-01' => 30.0, '2000-02' => null, '2000-03' => 0.0 ] === $analytics_overlay['months'] && str_contains( $analytics_overlay['warnings'][0], 'Stale report' ), 'Analytics sums linked-site monthly users, not 28-day totals, while retaining missing months, zero and source warnings' );
+$GLOBALS['analytics_history']['overlay-two'] = new WP_Error( 'failed', 'Analytics mapping changed.' );
+expect_gripp( [] === invoke_gripp( 'chart_overlay', 99 )['months'], 'An unavailable Analytics site cannot produce a misleading partial linked-site total' );
+foreach ( [ 'form:unlinked:1', [ 'forms' ] ] as $invalid_overlay ) {
+	$_GET['chart_overlay'] = $invalid_overlay;
+	try {
+		invoke_gripp( 'chart_overlay', 99 );
+		throw new RuntimeException( 'Invalid chart overlay accepted' );
+	} catch ( RuntimeException $error ) {
+		expect_gripp( str_contains( $error->getMessage(), 'Invalid chart overlay' ), 'Reject invalid or unlinked dataset selections' );
+	}
+}
+$_GET = [];
+expect_gripp( count( $GLOBALS['requests'] ) === $overlay_requests, 'Overlay selection never makes Gripp or client-site requests' );
 echo "Gripp regression checks passed.\n";

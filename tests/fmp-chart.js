@@ -174,3 +174,34 @@ test('variance shading draws both colors in chart units and follows line visibil
 		}
 	}
 });
+
+test('secondary counts have a right axis independent of budget units, missing values and zoom', () => {
+	for (const unit of ['eur', 'hours']) {
+		const config = budgetConfig(unit);
+		config.secondaryLabel = 'Form entries';
+		config.series.push({
+			scale: 'secondary',
+			points: [[0, 20], [400, 0], [600, null], [1000, 9000000]]
+		});
+		const baseline = chartOptions(budgetConfig(unit));
+		const plot = chartOptions(config);
+		assert.equal(plot.options.axes[2].side, 1);
+		assert.equal(plot.options.axes[2].scale, 'secondary');
+		assert.equal(plot.options.series[5].scale, 'secondary');
+		assert.equal(plot.options.series[5].spanGaps, false, 'Do not join lines across missing reports');
+		assert.equal(plot.data[5][0], 20);
+		assert.equal(plot.data[5][1], 0);
+		assert.equal(plot.data[5][2], null, 'Missing is not coerced to zero');
+		assert.equal(plot.options.series[5].value(null, 20), '20', 'Counts are never currency or hour equivalents');
+		assert.deepEqual(Array.from(plot.range(0, 1000)), Array.from(baseline.range(0, 1000)), 'Large counts do not expand the budget scale');
+		const full = plot.options.scales.secondary.range(plot.chart);
+		plot.range(100, 200);
+		const zoomed = plot.options.scales.secondary.range(plot.chart);
+		assert.ok(zoomed[1] < full[1] / 1000, 'Secondary scale fits the zoomed month range');
+		plot.range(700, 800);
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[0], null, 'No interpolation across a missing monthly report');
+		plot.range(0, 1000);
+		plot.chart.series[5].show = false;
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[0], null, 'Legend visibility also affects the right scale');
+	}
+});

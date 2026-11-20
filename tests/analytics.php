@@ -295,6 +295,10 @@ expect_analytics( 0.75 === $good['data']['current']['engagementRate'] && $good['
 expect_analytics( 13 === count( $good['data']['history']['months'] ) && 130.0 === $good['data']['history']['months'][0]['current'] && 10.0 === $good['data']['history']['months'][0]['previous'], 'Preserve twelve complete year-over-year pairs and append the ongoing month' );
 expect_analytics( true === $good['data']['history']['months'][12]['in_progress'] && ( $has_mtd ? 125.0 : null ) === $good['data']['history']['months'][12]['current'] && ( $has_mtd ? 75.0 : null ) === $good['data']['history']['months'][12]['previous'], 'The thirteenth pair is explicitly partial and uses independent current/prior month-to-date values' );
 expect_analytics( null === $good['data']['history']['months'][6]['current'] && 0.0 === $good['data']['history']['months'][7]['current'], 'Unreported months remain null while explicit zero months remain zero' );
+$history_request_count = count( $GLOBALS['requests'] );
+$cached_history = STUH_Analytics::monthly_active_users( 'site-1' );
+expect_analytics( 130.0 === $cached_history['months'][ $good['data']['history']['months'][0]['month'] ] && null === $cached_history['months'][ $good['data']['history']['months'][6]['month'] ] && 0.0 === $cached_history['months'][ $good['data']['history']['months'][7]['month'] ], 'Chart history exposes calendar-month counts, preserves unknowns and zeros, and does not replace complete months with prior-year partial comparisons' );
+expect_analytics( 25 === count( $cached_history['months'] ) && $cached_history['warnings'] && count( $GLOBALS['requests'] ) === $history_request_count, 'Chart history includes complete prior months plus current month, surfaces report limitations, and never requests Google data' );
 $leap_history = invoke_analytics( 'monthly_history', new DateTimeImmutable( '2025-03-01', new DateTimeZone( 'Europe/Amsterdam' ) ), [
 	[ 'dimensions' => [ '202402' ], 'metrics' => [ 'activeUsers' => 42.0 ] ],
 	[ 'dimensions' => [ '202502' ], 'metrics' => [ 'activeUsers' => 84.0 ] ],
@@ -567,6 +571,7 @@ update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'Stale data' ), 'Old cached reports are explicitly stale even without a failed refresh' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ) ] );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'A connected property without data is pending, not zero' );
+expect_analytics( is_wp_error( STUH_Analytics::monthly_active_users( 'site-1' ) ), 'Chart history explicitly rejects a missing saved report rather than returning zeros' );
 expect_analytics( str_contains( render_analytics_column(), 'client_tab=analytics' ) && str_contains( render_analytics_column(), '#stuh-analytics' ), 'Pending reports open the client details Analytics tab' );
 update_option( $key, [ 'fingerprint' => invoke_analytics( 'fingerprint', $mapping ), 'error' => 'Quota exceeded' ] );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report failed' ), 'A failed first report must not appear merely pending' );
@@ -574,12 +579,14 @@ $column_record['fingerprint'] = 'obsolete-mapping';
 update_option( $key, $column_record );
 expect_analytics( str_contains( render_analytics_column(), 'Connected - report pending' ), 'Do not show user counts from a different mapping' );
 expect_analytics( [ 'site-1' => null ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ] ] ), 'Obsolete report mappings cannot contribute sort values' );
+expect_analytics( is_wp_error( STUH_Analytics::monthly_active_users( 'site-1' ) ), 'Chart overlays cannot reuse history from an obsolete mapping' );
 $original_mappings = get_option( 'stuh_google_mappings' );
 $changed_mappings = $original_mappings;
 $changed_mappings['site-1']['connection_id'] = 'old-connection';
 update_option( 'stuh_google_mappings', $changed_mappings );
 expect_analytics( str_contains( render_analytics_column(), 'Reconnect required' ), 'Reconnected accounts must not display counts from the previous connection' );
 expect_analytics( [ 'site-1' => null ] === STUH_Analytics::column_sort_values( [ [ 'id' => 'site-1' ] ] ), 'Reports from another connection cannot contribute sort values' );
+expect_analytics( is_wp_error( STUH_Analytics::monthly_active_users( 'site-1' ) ), 'Chart overlays reject a report from another Google connection' );
 update_option( 'stuh_google_mappings', [] );
 expect_analytics( str_contains( render_analytics_column(), 'Not connected' ), 'Unmapped sites explicitly show not connected' );
 expect_analytics( str_contains( render_analytics_column(), 'class="stuh-analytics-disconnected"' ), 'Disconnected link has its own light-grey style' );
