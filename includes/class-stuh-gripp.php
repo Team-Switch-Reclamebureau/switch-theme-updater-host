@@ -1777,8 +1777,7 @@ final class STUH_Gripp {
 		$options = [ '' => __( 'None', 'stuh' ) ];
 		$forms = [];
 		if ( $sites ) {
-			$options['forms'] = __( 'Form entries - all forms', 'stuh' );
-			$options['analytics'] = __( 'Analytics - monthly active users', 'stuh' );
+			$options['forms'] = __( 'All forms', 'stuh' );
 		}
 		foreach ( $sites as $site ) {
 			foreach ( $site['report']['forms'] ?? [] as $form ) {
@@ -1787,11 +1786,17 @@ final class STUH_Gripp {
 				$forms[ $key ] = $form['months'];
 			}
 		}
+		if ( $sites ) {
+			$options['analytics'] = __( 'All websites', 'stuh' );
+			foreach ( $sites as $site ) {
+				$options[ 'analytics:' . rawurlencode( $site['id'] ) ] = $site['name'];
+			}
+		}
 		$selected = self::input( $_GET, 'chart_overlay' );
 		if ( ( isset( $_GET['chart_overlay'] ) && ! is_string( $_GET['chart_overlay'] ) ) || ! array_key_exists( $selected, $options ) ) {
 			wp_die( esc_html__( 'Invalid chart overlay. Choose a dataset from the list.', 'stuh' ), '', [ 'response' => 400 ] );
 		}
-		$result = [ 'options' => $options, 'selected' => $selected, 'label' => $options[ $selected ], 'months' => [], 'warnings' => [] ];
+		$result = [ 'options' => $options, 'selected' => $selected, 'label' => $options[ $selected ], 'months' => [], 'datasets' => [], 'warnings' => [] ];
 		if ( '' === $selected ) {
 			return $result;
 		}
@@ -1801,6 +1806,11 @@ final class STUH_Gripp {
 			$sources[] = $forms[ $selected ];
 		} elseif ( 'forms' === $selected ) {
 			$sources = array_values( $forms );
+			foreach ( $forms as $key => $months ) {
+				if ( $months ) {
+					$result['datasets'][] = [ 'label' => $options[ $key ], 'months' => $months ];
+				}
+			}
 			foreach ( $sites as $site ) {
 				if ( ! $site['exists'] || null === $site['report'] ) {
 					$result['warnings'][] = $site['name'] . ': ' . self::gravity_forms_status( $site );
@@ -1808,6 +1818,9 @@ final class STUH_Gripp {
 			}
 		} else {
 			foreach ( $sites as $site ) {
+				if ( 'analytics' !== $selected && 'analytics:' . rawurlencode( $site['id'] ) !== $selected ) {
+					continue;
+				}
 				$history = ! $site['exists']
 					? new WP_Error( 'missing_site', __( 'Client site no longer exists.', 'stuh' ) )
 					: STUH_Analytics::monthly_active_users( $site['id'] );
@@ -1817,6 +1830,9 @@ final class STUH_Gripp {
 					continue;
 				}
 				$sources[] = $history['months'];
+				if ( 'analytics' === $selected ) {
+					$result['datasets'][] = [ 'label' => $site['name'], 'months' => $history['months'] ];
+				}
 				foreach ( $history['warnings'] as $warning ) {
 					$result['warnings'][] = $site['name'] . ': ' . $warning;
 				}
@@ -1873,9 +1889,12 @@ final class STUH_Gripp {
 	private static function render_budget_chart( array $project, array $chart, string $unit, ?array $overlay = null, array $release_history = [] ): void {
 		$title = __( 'Budget over time', 'stuh' );
 		$axis = $chart['axis'] ?? array_slice( $chart['points'], 1 );
+		$current_month = $chart['current_month'] ?? wp_date( 'Y-m', time() );
 		$secondary = null;
+		$secondary_series = [];
 		$secondary_values = [];
-		$secondary_label = 'analytics' === ( $overlay['selected'] ?? '' ) ? __( 'Active users', 'stuh' ) : __( 'Form entries', 'stuh' );
+		$overlay_selection = $overlay['selected'] ?? '';
+		$secondary_label = 'analytics' === $overlay_selection || str_starts_with( $overlay_selection, 'analytics:' ) ? __( 'Active users', 'stuh' ) : __( 'Form entries', 'stuh' );
 		if ( null !== $overlay && '' !== $overlay['selected'] ) {
 			$cursor = new DateTimeImmutable( substr( $chart['usage'][0]['date'] ?? $project['startdate'], 0, 7 ) . '-01', new DateTimeZone( 'UTC' ) );
 			$last = min( substr( $axis[ count( $axis ) - 1 ]['date'], 0, 7 ), wp_date( 'Y-m', time() ) );
@@ -1886,9 +1905,27 @@ final class STUH_Gripp {
 				$secondary_values[ $cursor->format( 'Y-m' ) ] = $value;
 				$cursor = $cursor->modify( '+1 month' );
 			}
+			if ( $last === $current_month && null !== ( $secondary_values[ $current_month ] ?? null ) ) {
+				$secondary['provisional'] = true;
+			}
 			if ( ! array_filter( $secondary_values, static fn( $value ): bool => null !== $value ) ) {
 				$overlay['warnings'][] = __( 'No overlay data available in this chart period. Missing reports are not zero.', 'stuh' );
 				$secondary = null;
+			}
+			if ( null !== $secondary ) {
+				foreach ( $overlay['datasets'] ?? [] as $index => $dataset ) {
+					$item = $secondary;
+					$hue = ( 275 + $index * 137 ) % 360;
+					$item['label'] = $dataset['label'];
+					$item['stroke'] = 'hsl(' . $hue . ',55%,42%)';
+					$item['fill'] = 'hsla(' . $hue . ',55%,42%,0.28)';
+					$item['stacked'] = true;
+					$item['points'] = array_map( static fn( array $point ): array => [ $point[0], $dataset['months'][ gmdate( 'Y-m', $point[0] ) ] ?? null ], $secondary['points'] );
+					$secondary_series[] = $item;
+				}
+				if ( ! $secondary_series ) {
+					$secondary_series[] = $secondary;
+				}
 			}
 		}
 		$month_number = static function( string $date ): int {
@@ -1938,12 +1975,18 @@ final class STUH_Gripp {
 				$interactive['series'][2]['provisional'] = true;
 			}
 			$interactive['series'][] = [ 'label' => __( 'Invoiced', 'stuh' ), 'show' => false, 'stroke' => '#008a20', 'dash' => [ 8, 4 ], 'points' => $coordinates( $chart['usage'], 'invoiced' ) ];
+			if ( $provisional ) {
+				$interactive['series'][3]['provisional'] = true;
+			}
 			$bars = [ 'label' => __( 'Monthly hours', 'stuh' ), 'type' => 'bars', 'stroke' => '#b38600', 'fill' => 'rgba(219,166,23,0.35)', 'points' => [], 'periods' => [] ];
 			foreach ( $chart['monthly_usage'] as $point ) {
 				$center = $timestamp( $point['date'], true );
 				$period = [ $center - 12 * 86400, $center + 12 * 86400 ];
 				$bars['points'][] = [ $center, $point['actual'] ];
 				$bars['periods'][] = $period;
+			}
+			if ( $chart['monthly_usage'] && substr( $chart['monthly_usage'][ count( $chart['monthly_usage'] ) - 1 ]['date'], 0, 7 ) === $current_month ) {
+				$bars['provisional'] = true;
 			}
 			$interactive['series'][] = $bars;
 			$interactive['variance'] = self::budget_variance_regions( $interactive['series'][1]['points'], $interactive['series'][2]['points'] );
@@ -1963,7 +2006,10 @@ final class STUH_Gripp {
 		}
 		if ( null !== $secondary ) {
 			$interactive['secondaryLabel'] = $secondary_label;
-			$interactive['series'][] = $secondary;
+			if ( ! empty( $secondary_series[0]['stacked'] ) ) {
+				$interactive['stackTotals'] = $secondary['points'];
+			}
+			$interactive['series'] = array_merge( $interactive['series'], $secondary_series );
 		}
 		$releases = $interactive['series'][2]['releases'] ?? [];
 		if ( $releases ) {
@@ -1974,8 +2020,8 @@ final class STUH_Gripp {
 		if ( isset( $chart['usage'] ) ) {
 			echo '<li class="stuh-fmp-legend-actual">' . esc_html__( 'Actual recorded time', 'stuh' ) . '</li><li class="stuh-fmp-legend-invoiced">' . esc_html__( 'Invoiced value', 'stuh' ) . '</li><li class="stuh-fmp-legend-monthly">' . esc_html__( 'Actual hours this month', 'stuh' ) . '</li>';
 		}
-		if ( null !== $secondary ) {
-			echo '<li class="stuh-fmp-legend-secondary">' . esc_html( $secondary['label'] ) . '</li>';
+		foreach ( $secondary_series as $item ) {
+			echo '<li class="stuh-fmp-legend-secondary" style="--stuh-fmp-series-color:' . esc_attr( $item['stroke'] ) . '">' . esc_html( $item['label'] ) . '</li>';
 		}
 		if ( $releases ) {
 			echo '<li class="stuh-fmp-legend-releases">' . esc_html( $interactive['releaseLabel'] ) . '</li>';
@@ -1984,12 +2030,12 @@ final class STUH_Gripp {
 		if ( ! isset( $chart['usage'] ) ) {
 			echo '<p>' . esc_html__( 'Recorded time and invoiced usage are unavailable; only planned budget lines are shown.', 'stuh' ) . '</p>';
 		}
-		echo '<p class="notice notice-warning inline" data-stuh-fmp-chart-error hidden>' . esc_html__( 'The interactive chart could not load. The static chart and data tables remain available.', 'stuh' ) . '</p>';
+		echo '<p class="notice notice-warning inline" data-stuh-fmp-chart-error hidden>' . esc_html__( 'The interactive chart could not load. The static chart remains available.', 'stuh' ) . '</p>';
 		echo '<div data-stuh-fmp-interactive hidden><div class="stuh-fmp-chart-toolbar"><span data-stuh-fmp-range role="status" aria-live="polite"></span>';
 		echo '<button type="button" class="button-link" data-stuh-fmp-reset disabled hidden>' . esc_html__( 'Reset zoom', 'stuh' ) . '</button><span id="stuh-fmp-zoom-help" class="stuh-fmp-zoom-hint">' . esc_html__( 'Drag to zoom', 'stuh' ) . '</span></div>';
 		echo '<div class="stuh-fmp-interactive-plot" data-stuh-fmp-plot role="region" tabindex="0" aria-label="' . esc_attr( $title ) . '" aria-describedby="stuh-fmp-zoom-help"></div></div>';
 		echo '<div class="stuh-analytics-line-scroll" data-stuh-fmp-static tabindex="0" role="region" aria-label="' . esc_attr( $title ) . '"><svg class="stuh-analytics-line-chart stuh-fmp-budget-svg" viewBox="0 0 ' . esc_attr( (string) $width ) . ' 380" style="min-width:' . esc_attr( (string) $width ) . 'px" role="img" aria-labelledby="stuh-fmp-chart-title stuh-fmp-chart-desc">';
-		echo '<title id="stuh-fmp-chart-title">' . esc_html( $title ) . '</title><desc id="stuh-fmp-chart-desc">' . esc_html__( 'Dashed grey: total budget. Blue: accumulated monthly allowance. When available, red: recorded time; dashed green: invoiced value; gold bars: actual hours per month. Exact figures are available in the tables below.', 'stuh' ) . '</desc>';
+		echo '<title id="stuh-fmp-chart-title">' . esc_html( $title ) . '</title><desc id="stuh-fmp-chart-desc">' . esc_html__( 'Dashed grey: total budget. Blue: accumulated monthly allowance. When available, red: recorded time; dashed green: invoiced value; gold bars: actual hours per month.', 'stuh' ) . '</desc>';
 		for ( $tick = 0; $tick <= 4; $tick++ ) {
 			$y = 300 - $tick * 60;
 			echo '<line class="stuh-analytics-gridline" x1="' . $left . '" y1="' . $y . '" x2="' . esc_attr( (string) $right ) . '" y2="' . $y . '"/><text x="100" y="' . ( $y + 4 ) . '" text-anchor="end">' . esc_html( self::display_amount( (int) round( $minimum + ( $maximum - $minimum ) * $tick / 4 ), $unit ) ) . '</text>';
@@ -2004,22 +2050,30 @@ final class STUH_Gripp {
 				echo '<text x="' . esc_attr( (string) ( $right + 10 ) ) . '" y="' . esc_attr( (string) ( 304 - $tick / $secondary_ticks * 240 ) ) . '" fill="#8c45a8">' . esc_html( number_format_i18n( $secondary_max * $tick / $secondary_ticks ) ) . '</text>';
 			}
 			echo '<text transform="translate(' . esc_attr( (string) ( $width - 20 ) ) . ' 180) rotate(90)" text-anchor="middle">' . esc_html( $secondary_label ) . '</text>';
-			$segment = [];
-			foreach ( $secondary_values as $month => $value ) {
-				if ( null === $value ) {
-					if ( $segment ) {
-						echo '<polyline fill="none" stroke="#8c45a8" stroke-width="2" points="' . esc_attr( implode( ' ', $segment ) ) . '"/>';
-						$segment = [];
+			$bases = array_fill_keys( array_keys( $secondary_values ), 0 );
+			foreach ( $secondary_series as $item ) {
+				$previous = null;
+				foreach ( $item['points'] as [ $time, $raw ] ) {
+					$month = gmdate( 'Y-m', $time );
+					$stacked = ! empty( $item['stacked'] );
+					$value = $stacked ? ( null === $secondary_values[ $month ] ? null : $bases[ $month ] + ( $raw ?? 0 ) ) : $raw;
+					if ( null === $value ) {
+						$previous = null;
+						continue;
 					}
-					continue;
+					$x = $month_x( $month . '-01' );
+					$y = $secondary_y( $value );
+					$bottom = $secondary_y( $bases[ $month ] );
+					if ( null !== $previous ) {
+						if ( $stacked ) {
+							echo '<polygon class="stuh-fmp-stack-area" fill="' . esc_attr( $item['fill'] ) . '" points="' . esc_attr( $previous[0] . ',' . $previous[1] . ' ' . $x . ',' . $y . ' ' . $x . ',' . $bottom . ' ' . $previous[0] . ',' . $previous[2] ) . '"/>';
+						}
+						echo '<polyline fill="none" stroke="' . esc_attr( $item['stroke'] ) . '" stroke-width="2"' . ( $month === $current_month && ! empty( $item['provisional'] ) ? ' stroke-dasharray="2 4"' : '' ) . ' points="' . esc_attr( $previous[0] . ',' . $previous[1] . ' ' . $x . ',' . $y ) . '"/>';
+					}
+					echo '<circle fill="' . esc_attr( $item['stroke'] ) . '" cx="' . esc_attr( $x ) . '" cy="' . esc_attr( $y ) . '" r="3"><title>' . esc_html( $month . ' - ' . $item['label'] . ': ' . ( null === $raw ? __( 'Not reported', 'stuh' ) : number_format_i18n( $raw ) ) ) . '</title></circle>';
+					$previous = [ $x, $y, $bottom ];
+					$bases[ $month ] = $value;
 				}
-				$x = $month_x( $month . '-01' );
-				$y = $secondary_y( $value );
-				$segment[] = $x . ',' . $y;
-				echo '<circle fill="#8c45a8" cx="' . esc_attr( $x ) . '" cy="' . esc_attr( $y ) . '" r="3"><title>' . esc_html( $month . ' - ' . $secondary_label . ': ' . number_format_i18n( $value ) ) . '</title></circle>';
-			}
-			if ( $segment ) {
-				echo '<polyline fill="none" stroke="#8c45a8" stroke-width="2" points="' . esc_attr( implode( ' ', $segment ) ) . '"/>';
 			}
 		}
 		echo '<text x="' . esc_attr( (string) ( ( $left + $right ) / 2 ) ) . '" y="365" text-anchor="middle">' . esc_html__( 'Months', 'stuh' ) . '</text>';
@@ -2059,7 +2113,7 @@ final class STUH_Gripp {
 			if ( 'hours' !== $unit ) {
 				$bar_title .= ' (' . self::display_amount( $point['actual'], $unit ) . ')';
 			}
-			echo '<rect class="stuh-fmp-monthly-bar" x="' . esc_attr( (string) ( $start_x + ( $end_x - $start_x ) * 0.175 ) ) . '" y="' . esc_attr( (string) min( (float) $zero_y, $y ) ) . '" width="' . esc_attr( (string) ( ( $end_x - $start_x ) * 0.65 ) ) . '" height="' . esc_attr( (string) abs( (float) $zero_y - $y ) ) . '"><title>' . esc_html( $bar_title ) . '</title></rect>';
+			echo '<rect class="stuh-fmp-monthly-bar"' . ( substr( $point['date'], 0, 7 ) === $current_month ? ' stroke-dasharray="2 4"' : '' ) . ' x="' . esc_attr( (string) ( $start_x + ( $end_x - $start_x ) * 0.175 ) ) . '" y="' . esc_attr( (string) min( (float) $zero_y, $y ) ) . '" width="' . esc_attr( (string) ( ( $end_x - $start_x ) * 0.65 ) ) . '" height="' . esc_attr( (string) abs( (float) $zero_y - $y ) ) . '"><title>' . esc_html( $bar_title ) . '</title></rect>';
 		}
 		echo '<line class="stuh-fmp-budget-limit" x1="' . $left . '" y1="' . esc_attr( $budget_y ) . '" x2="' . esc_attr( (string) $right ) . '" y2="' . esc_attr( $budget_y ) . '"/>';
 		echo '<g class="stuh-analytics-series"><polyline class="stuh-fmp-budget-cumulative" points="' . esc_attr( implode( ' ', $points ) ) . '"/>' . $dots . '</g>';
@@ -2074,9 +2128,9 @@ final class STUH_Gripp {
 			}
 			if ( $points ) {
 				$dotted = '';
-				if ( 'actual' === $field && $provisional ) {
+				if ( $provisional ) {
 					$last = array_pop( $points );
-					$dotted = '<polyline stroke-dasharray="2 4" points="' . esc_attr( end( $points ) . ' ' . $last ) . '"/>';
+					$dotted = '<polyline stroke-dasharray="2 4" style="stroke-dasharray:2 4" points="' . esc_attr( end( $points ) . ' ' . $last ) . '"/>';
 				}
 				echo '<g class="stuh-analytics-series stuh-fmp-series-' . esc_attr( $field ) . '"><polyline points="' . esc_attr( implode( ' ', $points ) ) . '"/>' . $dotted . $dots . '</g>';
 			}
@@ -2094,42 +2148,27 @@ final class STUH_Gripp {
 				echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( (string) $value ) . '">';
 			}
 			echo '<label for="stuh-fmp-overlay">' . esc_html__( 'Secondary dataset', 'stuh' ) . '</label> <select id="stuh-fmp-overlay" name="chart_overlay">';
-			foreach ( $overlay['options'] as $value => $label ) {
-				echo '<option value="' . esc_attr( $value ) . '"' . ( $overlay['selected'] === $value ? ' selected' : '' ) . '>' . esc_html( $label ) . '</option>';
+			if ( isset( $overlay['options'][''] ) ) {
+				echo '<option value=""' . ( '' === $overlay['selected'] ? ' selected' : '' ) . '>' . esc_html( $overlay['options'][''] ) . '</option>';
+			}
+			foreach ( [ 'forms' => __( 'Forms', 'stuh' ), 'analytics' => __( 'Analytics', 'stuh' ) ] as $group => $group_label ) {
+				$prefix = 'forms' === $group ? 'form:' : 'analytics:';
+				$options = array_filter( $overlay['options'], static fn( string $value ): bool => $value === $group || str_starts_with( $value, $prefix ), ARRAY_FILTER_USE_KEY );
+				if ( ! $options ) {
+					continue;
+				}
+				echo '<optgroup label="' . esc_attr( $group_label ) . '">';
+				foreach ( $options as $value => $label ) {
+					echo '<option value="' . esc_attr( $value ) . '"' . ( $overlay['selected'] === $value ? ' selected' : '' ) . '>' . esc_html( $label ) . '</option>';
+				}
+				echo '</optgroup>';
 			}
 			echo '</select> <button type="submit" class="button">' . esc_html__( 'Apply overlay', 'stuh' ) . '</button></p></form>';
 			foreach ( array_unique( $overlay['warnings'] ) as $warning ) {
 				echo '<p role="alert">' . esc_html( $warning ) . '</p>';
 			}
 		}
-		echo '<details class="stuh-analytics-monthly-data"><summary>' . esc_html__( 'View monthly values', 'stuh' ) . '</summary><table class="widefat striped"><thead><tr>';
-		foreach ( [ __( 'Through date', 'stuh' ), __( 'Monthly allowance', 'stuh' ), __( 'Accumulated allowance', 'stuh' ) ] as $heading ) {
-			echo '<th scope="col">' . esc_html( $heading ) . '</th>';
-		}
-		echo '</tr></thead><tbody>';
-		foreach ( $chart['points'] as $index => $point ) {
-			echo '<tr><th scope="row">' . esc_html( $point['date'] . ( 0 === $index ? ' (' . __( 'Start', 'stuh' ) . ')' : '' ) ) . '</th><td>' . esc_html( self::display_amount( $point['allocated'], $unit ) ) . '</td><td>' . esc_html( self::display_amount( $point['cumulative'], $unit ) ) . '</td></tr>';
-		}
-		echo '</tbody></table>';
-		if ( isset( $chart['usage'] ) ) {
-			echo '<h3>' . esc_html__( 'Recorded and invoiced usage', 'stuh' ) . '</h3><table class="widefat striped"><thead><tr>';
-			foreach ( [ __( 'Through date', 'stuh' ), __( 'Actual recorded time', 'stuh' ), __( 'Invoiced value', 'stuh' ), __( 'Actual hours this month', 'stuh' ) ] as $heading ) {
-				echo '<th scope="col">' . esc_html( $heading ) . '</th>';
-			}
-			echo '</tr></thead><tbody>';
-			foreach ( $chart['usage'] as $index => $point ) {
-				echo '<tr><th scope="row">' . esc_html( $point['date'] . ( 0 === $index ? ' (' . __( 'Start; before usage', 'stuh' ) . ')' : '' ) ) . '</th><td>' . esc_html( self::display_amount( $point['actual'], $unit ) ) . '</td><td>' . esc_html( self::display_amount( $point['invoiced'], $unit ) ) . '</td><td>' . esc_html( 0 === $index ? '-' : self::display_amount( $chart['monthly_usage'][ $index - 1 ]['actual'], 'hours' ) ) . '</td></tr>';
-			}
-			echo '</tbody></table>';
-		}
-		if ( null !== $secondary ) {
-			echo '<h3>' . esc_html( $secondary['label'] ) . '</h3><table class="widefat striped"><thead><tr><th scope="col">' . esc_html__( 'Month', 'stuh' ) . '</th><th scope="col">' . esc_html( $secondary_label ) . '</th></tr></thead><tbody>';
-			foreach ( $secondary_values as $month => $value ) {
-				echo '<tr><th scope="row">' . esc_html( $month ) . '</th><td>' . esc_html( null === $value ? __( 'Not reported', 'stuh' ) : number_format_i18n( $value ) ) . '</td></tr>';
-			}
-			echo '</tbody></table>';
-		}
-		echo '</details></figure>';
+		echo '</figure>';
 	}
 
 	public static function render_dashboard(): void {

@@ -34,10 +34,42 @@
 		var fullMax = timestamps[timestamps.length - 1];
 		var visibleMin = fullMin;
 		var visibleMax = fullMax;
+		var stackTotals = new Map(config.stackTotals || []);
+		var stackedSeries = function (chart) {
+			var items = config.series.map(function (item, index) {
+				return { item: item, index: index };
+			}).filter(function (entry) {
+				return entry.item.stacked && chart.series[entry.index + 1].show;
+			});
+			var available = new Set();
+			items.forEach(function (entry) {
+				entry.item.points.forEach(function (point) {
+					if (point[1] != null && stackTotals.get(point[0]) != null) {
+						available.add(point[0]);
+					}
+				});
+			});
+			var bases = new Map();
+			return items.map(function (entry) {
+				entry.points = entry.item.points.map(function (point) {
+					if (!available.has(point[0])) {
+						return [point[0], null, null];
+					}
+					var bottom = bases.get(point[0]) || 0;
+					var top = bottom + (point[1] == null ? 0 : point[1]);
+					bases.set(point[0], top);
+					return [point[0], top, bottom];
+				});
+				return entry;
+			});
+		};
 		var yRange = function (chart, scale) {
 			scale = scale || 'y';
 			var minimum = Infinity;
 			var maximum = -Infinity;
+			var stacks = new Map((scale === 'secondary' ? stackedSeries(chart) : []).map(function (entry) {
+				return [entry.index, entry.points];
+			}));
 			var include = function (value) {
 				var displayed = value / (scale === 'secondary' ? 1 : divisor);
 				minimum = Math.min(minimum, displayed);
@@ -47,7 +79,8 @@
 				if ((item.scale || 'y') !== scale || !chart.series[index + 1].show) {
 					return;
 				}
-				item.points.forEach(function (point, pointIndex) {
+				var points = item.stacked ? stacks.get(index) : item.points;
+				points.forEach(function (point, pointIndex) {
 					if (point[1] == null) {
 						return;
 					}
@@ -65,7 +98,7 @@
 					if (pointIndex === 0) {
 						return;
 					}
-					var previous = item.points[pointIndex - 1];
+					var previous = points[pointIndex - 1];
 					var start = Math.max(previous[0], visibleMin);
 					var end = Math.min(point[0], visibleMax);
 					if (previous[1] != null && start <= end && point[0] > previous[0]) {
@@ -86,6 +119,7 @@
 			return [minimum - padding, maximum + padding];
 		};
 		var data = [timestamps];
+		var provisionalBars = {};
 		var series = [{
 			label: config.dateLabel,
 			value: function (plot, value) { return value == null ? '-' : months.format(new Date(value * 1000)); }
@@ -94,7 +128,24 @@
 			var bar = item.type === 'bars';
 			var secondary = item.scale === 'secondary';
 			var paths;
-			if (item.provisional) {
+			if (item.stacked) {
+				paths = function () { return null; };
+			} else if (bar) {
+				paths = window.uPlot.paths.bars({ size: [0.65, 40] });
+				if (item.provisional) {
+					var bars = paths;
+					var lastBar = timestamps.indexOf(item.points[item.points.length - 1][0]);
+					paths = function (chart, seriesIndex, start, end) {
+						var result = bars(chart, seriesIndex, start, end);
+						delete provisionalBars[seriesIndex];
+						if (start <= lastBar && end >= lastBar) {
+							provisionalBars[seriesIndex] = bars(chart, seriesIndex, lastBar, lastBar).stroke;
+							result.stroke = start < lastBar ? bars(chart, seriesIndex, start, lastBar - 1).stroke : null;
+						}
+						return result;
+					};
+				}
+			} else if (item.provisional && item.points.length > 1) {
 				var linear = window.uPlot.paths.linear();
 				var previousTime = item.points[item.points.length - 2][0];
 				paths = function (chart, seriesIndex, start, end) {
@@ -108,19 +159,23 @@
 					return item.points[0][1] / divisor;
 				}
 				var value = values.get(timestamp);
+				if (item.stacked && stackTotals.get(timestamp) == null) {
+					return null;
+				}
 				return values.has(timestamp) ? (value == null ? null : value / (secondary ? 1 : divisor)) : (bar ? undefined : null);
 			}));
 			series.push({
 				label: item.label,
+				class: item.stacked ? 'stuh-fmp-stacked-series' : undefined,
 				show: item.show !== false,
 				scale: secondary ? 'secondary' : 'y',
 				stroke: item.stroke,
 				dash: item.dash,
 				width: bar ? 1 : 2,
-				fill: bar ? item.fill : undefined,
-				paths: bar ? window.uPlot.paths.bars({ size: [0.65, 40] }) : paths,
+				fill: bar || item.stacked ? item.fill : undefined,
+				paths: paths,
 				spanGaps: !bar && !secondary,
-				points: { show: secondary, size: 5 },
+				points: { show: secondary && !item.stacked, size: 5 },
 				value: function (plot, value) {
 					if (secondary) {
 						return value == null ? '-' : counts.format(value);
@@ -209,21 +264,6 @@
 						ctx.restore();
 					});
 				}],
-				setCursor: [function (chart) {
-					var labels = [];
-					config.series.forEach(function (item, index) {
-						if (!item.releases || !chart.series[index + 1].show) {
-							return;
-						}
-						item.releases.forEach(function (release) {
-							if (Math.abs(chart.valToPos(release.timestamp, 'x') - chart.cursor.left) <= 8 &&
-								Math.abs(chart.valToPos(release.value / divisor, 'y') - chart.cursor.top) <= 8) {
-								labels.push(release.label);
-							}
-						});
-					});
-					chart.over.title = labels.join('\n');
-				}],
 				drawAxes: [function (chart) {
 					if (!config.variance || !chart.series[2].show || !chart.series[3].show) {
 						return;
@@ -249,13 +289,78 @@
 						ctx.fill();
 					});
 					ctx.restore();
+				}, function (chart) {
+					var stacks = stackedSeries(chart);
+					if (!stacks.length) {
+						return;
+					}
+					var ctx = chart.ctx;
+					var ratio = window.uPlot.pxRatio;
+					ctx.save();
+					ctx.beginPath();
+					ctx.rect(chart.bbox.left, chart.bbox.top, chart.bbox.width, chart.bbox.height);
+					ctx.clip();
+					stacks.forEach(function (entry) {
+						ctx.fillStyle = entry.item.fill;
+						ctx.strokeStyle = entry.item.stroke;
+						ctx.lineWidth = 2 * ratio;
+						entry.points.forEach(function (point, index) {
+							if (point[1] == null) {
+								return;
+							}
+							var x = chart.valToPos(point[0], 'x', true);
+							var y = chart.valToPos(point[1], 'secondary', true);
+							var previous = entry.points[index - 1];
+							if (previous && previous[1] != null) {
+								var previousX = chart.valToPos(previous[0], 'x', true);
+								var previousY = chart.valToPos(previous[1], 'secondary', true);
+								ctx.beginPath();
+								ctx.moveTo(previousX, previousY);
+								ctx.lineTo(x, y);
+								ctx.lineTo(x, chart.valToPos(point[2], 'secondary', true));
+								ctx.lineTo(previousX, chart.valToPos(previous[2], 'secondary', true));
+								ctx.closePath();
+								ctx.fill();
+								ctx.beginPath();
+								ctx.setLineDash(entry.item.provisional && index === entry.points.length - 1 ? [2 * ratio, 4 * ratio] : []);
+								ctx.moveTo(previousX, previousY);
+								ctx.lineTo(x, y);
+								ctx.stroke();
+							} else if ((!entry.points[index + 1] || entry.points[index + 1][1] == null) && entry.item.points[index][1] != null) {
+								ctx.beginPath();
+								ctx.arc(x, y, 2.5 * ratio, 0, 2 * Math.PI);
+								ctx.fill();
+							}
+						});
+					});
+					ctx.restore();
+				}],
+				setCursor: [function (chart) {
+					var labels = [];
+					config.series.forEach(function (item, index) {
+						if (!item.releases || !chart.series[index + 1].show) {
+							return;
+						}
+						item.releases.forEach(function (release) {
+							if (Math.abs(chart.valToPos(release.timestamp, 'x') - chart.cursor.left) <= 8 &&
+								Math.abs(chart.valToPos(release.value / divisor, 'y') - chart.cursor.top) <= 8) {
+								labels.push(release.label);
+							}
+						});
+					});
+					chart.over.title = labels.join('\n');
 				}],
 				drawSeries: [function (chart, seriesIndex) {
 					var item = config.series[seriesIndex - 1];
-					if (!item || !item.provisional || !chart.series[seriesIndex].show) {
+					if (!item || !item.provisional || item.stacked || !chart.series[seriesIndex].show) {
 						return;
 					}
 					var points = item.points.slice(-2);
+					var bar = item.type === 'bars';
+					var secondary = item.scale === 'secondary';
+					if (bar ? !provisionalBars[seriesIndex] : points.length < 2 || points.some(function (point) { return point[1] == null; })) {
+						return;
+					}
 					var ctx = chart.ctx;
 					var ratio = window.uPlot.pxRatio;
 					ctx.save();
@@ -264,11 +369,17 @@
 					ctx.clip();
 					ctx.beginPath();
 					ctx.strokeStyle = item.stroke;
-					ctx.lineWidth = 2 * ratio;
+					ctx.lineWidth = (bar ? 1 : 2) * ratio;
 					ctx.setLineDash([2 * ratio, 4 * ratio]);
-					ctx.moveTo(chart.valToPos(points[0][0], 'x', true), chart.valToPos(points[0][1] / divisor, 'y', true));
-					ctx.lineTo(chart.valToPos(points[1][0], 'x', true), chart.valToPos(points[1][1] / divisor, 'y', true));
-					ctx.stroke();
+					if (bar) {
+						ctx.stroke(provisionalBars[seriesIndex]);
+					} else {
+						var scale = secondary ? 'secondary' : 'y';
+						var factor = secondary ? 1 : divisor;
+						ctx.moveTo(chart.valToPos(points[0][0], 'x', true), chart.valToPos(points[0][1] / factor, scale, true));
+						ctx.lineTo(chart.valToPos(points[1][0], 'x', true), chart.valToPos(points[1][1] / factor, scale, true));
+						ctx.stroke();
+					}
 					ctx.restore();
 				}],
 				setScale: [function (chart, key) {

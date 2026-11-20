@@ -292,7 +292,11 @@
 }
 
 .stuh-analytics-legend .stuh-fmp-legend-secondary::before {
-	border-color: #8c45a8;
+	border-color: var(--stuh-fmp-series-color, #8c45a8);
+}
+
+.stuh-fmp-interactive-plot .u-cursor-pt.stuh-fmp-stacked-series {
+	display: none;
 }
 
 .stuh-analytics-legend .stuh-fmp-legend-invoiced::before {

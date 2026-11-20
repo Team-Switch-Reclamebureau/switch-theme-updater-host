@@ -320,24 +320,33 @@ Charts use locally bundled **uPlot 1.6.32** (MIT license, included under
 `assets/vendor/uplot/`), sourced from the published npm package
 <https://www.npmjs.com/package/uplot/v/1.6.32>. No CDN requests or external
 transmission of project data are needed. Its assets load only on FMP details.
-Without JavaScript, the existing scrollable SVG and accessible data tables
-remain available with the full-series static legend; a failed library load
+Without JavaScript, the scrollable SVG remains available with the full-series
+static legend; a failed library load
 also displays a warning.
-Below the chart, use **Secondary dataset → Apply overlay** to overlay **Form entries - all forms**,
-one form identified by its client site and form ID, or **Analytics - monthly
-active users**. **None** restores the budget-only chart. Monthly counts use a
+Below the chart, use **Secondary dataset → Apply overlay**. The **Forms** group
+offers **All forms** or one form identified by its client site and form ID.
+The **Analytics** group offers monthly active users for **All websites** or
+one linked website. **None** restores the budget-only chart. Monthly counts use a
 separate **right-hand Y axis**, independent of Euros / Hours and the budget
 scale; both axes fit the visible period when zooming. The overlay also appears
-in the static SVG and monthly values table.
+in the static SVG. Exact values remain available by hovering the chart;
+there is no monthly-values disclosure or raw-data table beneath it.
 
-All-forms entries and Analytics users are summed across the FMP's linked sites.
+All-forms entries and all-websites Analytics users are summed across the FMP's linked sites.
+These two options display stacked areas: one colored layer per form or website,
+with matching legend entries. The top boundary is the total, while hover values
+show each source's own count. Toggle a source in the
+legend to restack the remaining layers; zoom and the right-hand scale follow
+the visible total. Areas stay behind the budget lines, and current-month
+boundaries remain dotted. Single-form and single-website selections stay as lines.
 Analytics totals are site counts, not deduplicated visitors across sites.
 **All forms** sums available reported counts per month, even when forms have
 different histories. Forms without data for a month are excluded from that
 month's sum; months without any reports remain gaps, not zeros. Unavailable
 sites are flagged but do not suppress other sites' form counts.
-Analytics totals still require data from every linked site; missing months
-remain gaps and unavailable site reports prevent a partial Analytics total.
+All-websites Analytics totals still require data from every linked site; missing
+months remain gaps and unavailable site reports prevent a partial Analytics total.
+Selecting one website uses only its history and warnings, independently of other sites.
 Forms hidden from Word remain available for chart overlays.
 Only months within the existing budget/usage chart period through the current
 month are included. Analytics uses saved monthly history (including preceding
@@ -352,13 +361,15 @@ Gold bars show **actual hours in each calendar month**, rather than cumulative
 hours. They include corrections (negative totals draw below zero), exclude
 **(ND / intern)** time, and show only logged time through today for the current
 month. Like the lines, bars follow the Euros / Hours setting at EUR 90/hour;
-their hover values and the accessible table also show the actual hours.
+their hover values also show the actual hours.
 The bars remain available in the static SVG when JavaScript is unavailable.
 Line points and bars share a single position per calendar month; axis and hover
 labels show the month and year rather than a day. The zero starting baseline is
-placed before the first project month. The actual recorded-time segment from the
-previous month into the current month is dotted because its total can still
-change; completed months remain solid. Exact cutoff dates remain in the tables.
+placed before the first project month. Current-month recorded time, invoiced
+values and secondary data (active users or form entries) use dotted final
+segments because their totals can still change. The current monthly-hours bar
+also has a dotted outline; completed months retain their normal strokes.
+Missing reports remain gaps.
 The gap between actual recorded time and accumulated allowance is shaded red
 above the allowance and green below it, switching color at line crossings.
 Shading stops where recorded-time data ends and is hidden when either line is

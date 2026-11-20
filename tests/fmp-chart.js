@@ -12,7 +12,7 @@ function chartOptions(config) {
 	const legend = { children: [], appendChild(child) { this.children.push(child); } };
 	let options;
 	let data;
-	const barPaths = () => {};
+	const barPaths = (chart, index, start, end) => ({ stroke: { start, end }, fill: { start, end } });
 	const uPlot = function (opts, values) { options = opts; data = values; };
 	uPlot.paths = { bars: () => barPaths, linear: () => (...args) => args.slice(2) };
 	uPlot.pxRatio = 2;
@@ -304,4 +304,125 @@ test('release legend key is descriptive rather than another series toggle', () =
 	assert.equal(plot.legend.children[0].children[0].textContent, 'Theme releases');
 	assert.equal(plot.options.series.length, 5, 'Do not add a dummy series for the release key');
 	assert.equal(chartOptions(budgetConfig()).legend.children.length, 0, 'Omit the key when there are no plotted releases');
+});
+
+test('provisional count lines draw on the right scale without joining missing months', () => {
+	for (const values of [[10, 0], [null, 20], [10, null]]) {
+		const plot = chartOptions({ unit: 'hours', secondaryLabel: 'Active users', series: [
+			{ points: [[0, 90000], [1000, 90000]] },
+			{ scale: 'secondary', provisional: true, points: [[0, values[0]], [1000, values[1]]] }
+		] });
+		const calls = [];
+		const ctx = Object.fromEntries(['save', 'beginPath', 'rect', 'clip', 'setLineDash', 'moveTo', 'lineTo', 'stroke', 'restore'].map(name => [name, (...args) => calls.push([name, ...args])]));
+		const scales = [];
+		Object.assign(plot.chart, { ctx, bbox: {}, valToPos(value, scale) { scales.push(scale); return value; } });
+		plot.options.hooks.drawSeries[0](plot.chart, 2);
+		if (values.includes(null)) {
+			assert.equal(calls.length, 0, 'Do not invent provisional lines across missing reports');
+		} else {
+			assert.deepEqual(scales, ['x', 'secondary', 'x', 'secondary']);
+			assert.deepEqual(calls.find(call => call[0] === 'lineTo'), ['lineTo', 1000, 0], 'Raw zero counts are not converted to hours');
+			assert.deepEqual(Array.from(calls.find(call => call[0] === 'setLineDash')[1]), [4, 8]);
+			plot.chart.series[2].show = false;
+			calls.length = 0;
+			plot.options.hooks.drawSeries[0](plot.chart, 2);
+			assert.equal(calls.length, 0);
+		}
+	}
+	const single = chartOptions({ unit: 'eur', series: [{ scale: 'secondary', provisional: true, points: [[0, 20]] }] });
+	single.options.hooks.drawSeries[0](single.chart, 1);
+});
+
+test('only the current monthly bar has a dotted native outline, including negative corrections', () => {
+	for (const value of [18000, -9000, 0]) {
+		const plot = chartOptions({ unit: 'hours', series: [
+			{ points: [[0, 90000], [1000, 90000]] },
+			{ type: 'bars', provisional: true, points: [[200, 9000], [700, value]], periods: [[100, 300], [600, 800]] }
+		] });
+		const paths = plot.options.series[2].paths;
+		const result = paths(plot.chart, 2, 0, 3);
+		assert.deepEqual(result.fill, { start: 0, end: 3 }, 'Keep the full native bar fill');
+		assert.deepEqual(result.stroke, { start: 0, end: 1 }, 'Exclude the current bar from the solid outlines');
+		const calls = [];
+		const ctx = Object.fromEntries(['save', 'beginPath', 'rect', 'clip', 'setLineDash', 'stroke', 'restore'].map(name => [name, (...args) => calls.push([name, ...args])]));
+		Object.assign(plot.chart, { ctx, bbox: {} });
+		plot.options.hooks.drawSeries[0](plot.chart, 2);
+		assert.deepEqual(calls.find(call => call[0] === 'stroke'), ['stroke', { start: 2, end: 2 }]);
+		assert.deepEqual(Array.from(calls.find(call => call[0] === 'setLineDash')[1]), [4, 8]);
+		assert.equal(ctx.lineWidth, 2);
+		assert.equal(paths(plot.chart, 2, 2, 2).stroke, null, 'No solid outline when only the current bar is visible');
+		paths(plot.chart, 2, 0, 1);
+		calls.length = 0;
+		plot.options.hooks.drawSeries[0](plot.chart, 2);
+		assert.equal(calls.length, 0, 'Zooming away clears the provisional outline');
+		paths(plot.chart, 2, 0, 3);
+		plot.chart.series[2].show = false;
+		plot.options.hooks.drawSeries[0](plot.chart, 2);
+		assert.equal(calls.length, 0, 'Hidden monthly hours also hide the provisional outline');
+	}
+});
+
+test('stacked secondary areas sum enabled sources while retaining raw legend values and gaps', () => {
+	for (const unit of ['eur', 'hours']) {
+		const config = budgetConfig(unit);
+		config.secondaryLabel = 'Active users';
+		config.stackTotals = [[0, 30], [400, 15], [600, null], [1000, 0]];
+		config.series.push(
+			{ stacked: true, scale: 'secondary', stroke: 'purple', fill: 'pink', points: [[0, 10], [400, null], [600, 5], [1000, 0]] },
+			{ stacked: true, scale: 'secondary', stroke: 'green', fill: 'lime', points: [[0, 20], [400, 15], [600, null], [1000, 0]] }
+		);
+		const plot = chartOptions(config);
+		const baseline = chartOptions(budgetConfig(unit));
+		assert.deepEqual(Array.from(plot.range(0, 1000)), Array.from(baseline.range(0, 1000)), 'Stacks never change the financial axis');
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[1], 31.5, 'Fit the summed stack, not the largest individual count');
+		assert.equal(plot.options.series[5].paths(), null, 'Do not also draw the raw unstacked line');
+		assert.equal(plot.options.series[5].value(null, plot.data[5][0]), '10');
+		assert.equal(plot.options.series[6].value(null, plot.data[6][0]), '20', 'Legend values are contributions, not cumulative tops');
+		assert.equal(plot.data[5][2], null, 'An unavailable all-sites month must not display partial counts in the legend');
+		plot.range(100, 200);
+		const zoomed = plot.options.scales.secondary.range(plot.chart);
+		assert.ok(zoomed[1] > 23 && zoomed[1] < 28, 'Fit interpolated cumulative boundaries when zoomed between monthly points');
+		plot.range(450, 550);
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[0], null, 'Do not interpolate across missing totals');
+		plot.range(0, 1000);
+		plot.chart.series[6].show = false;
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[1], 10.5, 'Hiding a source restacks the remaining layers');
+		plot.range(400, 400);
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[0], null, 'Hidden sources do not turn unreported visible contributions into zero');
+		plot.chart.series[5].show = false;
+		assert.equal(plot.options.scales.secondary.range(plot.chart)[0], null);
+	}
+});
+
+test('stack areas draw cumulative filled bands below primary series and keep current boundaries dotted', () => {
+	const config = budgetConfig('hours');
+	config.secondaryLabel = 'Form entries';
+	config.stackTotals = [[0, 30], [1000, 50]];
+	config.series.push(
+		{ stacked: true, provisional: true, scale: 'secondary', fill: 'pink', points: [[0, 10], [1000, 20]] },
+		{ stacked: true, provisional: true, scale: 'secondary', fill: 'lime', points: [[0, 20], [1000, 30]] }
+	);
+	const plot = chartOptions(config);
+	const fills = [];
+	const positions = [];
+	const dashes = [];
+	const ctx = {
+		save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, closePath() {}, stroke() {},
+		moveTo(x, y) { positions.push([x, y]); },
+		lineTo(x, y) { positions.push([x, y]); },
+		fill() { fills.push(this.fillStyle); },
+		setLineDash(dash) { dashes.push(Array.from(dash)); }
+	};
+	Object.assign(plot.chart, { ctx, bbox: {}, valToPos: value => value });
+	plot.options.hooks.drawAxes[1](plot.chart);
+	assert.deepEqual(fills, ['pink', 'lime']);
+	assert.deepEqual(positions.slice(6, 10), [[0, 30], [1000, 50], [1000, 20], [0, 10]], 'The upper band rests on the lower band rather than zero');
+	assert.deepEqual(dashes, [[4, 8], [4, 8]]);
+	plot.chart.series[5].show = false;
+	fills.length = positions.length = dashes.length = 0;
+	plot.options.hooks.drawAxes[1](plot.chart);
+	assert.deepEqual(fills, ['lime']);
+	assert.deepEqual(positions.slice(0, 4), [[0, 20], [1000, 30], [1000, 0], [0, 0]], 'Legend toggles also update the filled baseline');
+	plot.options.hooks.drawSeries[0](plot.chart, 6);
+	assert.deepEqual(fills, ['lime'], 'Do not duplicate the provisional raw line above the custom stack');
 });
