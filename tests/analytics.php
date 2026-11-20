@@ -121,6 +121,27 @@ function report_fixture( array $metrics, array $values, array $dimensions = [], 
 		'rowCount' => 1,
 	];
 }
+function expanded_monthly_fixture( DateTimeImmutable $today ): array {
+	$start = $today->modify( 'first day of this month' );
+	$report = report_fixture( [ 'activeUsers' ], [], [ 'yearMonth', 'dateRange' ] );
+	$report['rows'] = [];
+	$report['rowCount'] = 25;
+	for ( $offset = 24; $offset >= 0; $offset-- ) {
+		$month = $start->modify( '-' . $offset . ' months' )->format( 'Ym' );
+		foreach ( [ 'complete', 'current_mtd', 'previous_mtd' ] as $range ) {
+			$value = match ( $range ) {
+				'complete' => $offset > 0 ? ( 25 - $offset ) * 10 : 0,
+				'current_mtd' => 0 === $offset ? 125 : 0,
+				'previous_mtd' => 12 === $offset ? 75 : 0,
+			};
+			$report['rows'][] = [
+				'metricValues' => [ [ 'value' => (string) $value ] ],
+				'dimensionValues' => [ [ 'value' => $month ], [ 'value' => $range ] ],
+			];
+		}
+	}
+	return $report;
+}
 function render_analytics(): string {
 	ob_start();
 	try {
@@ -267,7 +288,20 @@ if ( $has_mtd ) {
 		$monthly_report['rows'][] = [ 'metricValues' => [ [ 'value' => $value ] ], 'dimensionValues' => [ [ 'value' => $date->format( 'Ym' ) ], [ 'value' => $range ] ] ];
 	}
 }
-$monthly_report['rowCount'] = count( $monthly_report['rows'] );
+$monthly_values = [];
+foreach ( $monthly_report['rows'] as $row ) {
+	$monthly_values[ $row['dimensionValues'][0]['value'] ][ $row['dimensionValues'][1]['value'] ?? 'complete' ] = $row['metricValues'][0]['value'];
+}
+$monthly_report['rows'] = [];
+foreach ( $monthly_values as $month => $values ) {
+	foreach ( $has_mtd ? [ 'complete', 'current_mtd', 'previous_mtd' ] : [ 'complete' ] as $range ) {
+		$monthly_report['rows'][] = [
+			'metricValues' => [ [ 'value' => $values[ $range ] ?? '0' ] ],
+			'dimensionValues' => array_merge( [ [ 'value' => (string) $month ] ], $has_mtd ? [ [ 'value' => $range ] ] : [] ),
+		];
+	}
+}
+$monthly_report['rowCount'] = count( $monthly_values );
 $reports[] = $monthly_report;
 $reports[0]['metadata'] = [ 'subjectToThresholding' => true ];
 $GLOBALS['responses'][] = google_response( [ 'reports' => $reports ] );
@@ -291,7 +325,7 @@ if ( $has_mtd ) {
 	$prior_start = $history_start->modify( '-12 months' );
 	expect_analytics( $prior_start->modify( '+' . ( min( (int) $today->format( 'j' ) - 1, (int) $prior_start->format( 't' ) ) - 1 ) . ' days' )->format( 'Y-m-d' ) === $body['requests'][4]['dateRanges'][2]['endDate'], 'Prior-year month-to-date uses matching elapsed calendar days' );
 }
-expect_analytics( 26 === $body['requests'][4]['limit'] && true === $body['requests'][4]['keepEmptyRows'], 'Allow 24 complete-month rows plus two month-to-date values and preserve reported zero counts' );
+expect_analytics( 75 === $body['requests'][4]['limit'] && true === $body['requests'][4]['keepEmptyRows'], 'Allow 25 month groups expanded across three date ranges and preserve reported zero counts' );
 $key = invoke_analytics( 'report_key', 'site-1' );
 $good = get_option( $key );
 expect_analytics( 0.75 === $good['data']['current']['engagementRate'] && $good['data']['limited'], 'Keep rates and Google reporting limitations' );
@@ -598,6 +632,58 @@ update_option( 'stuh_google_mappings', $original_mappings );
 update_option( $key, $good );
 expect_analytics( count( $GLOBALS['requests'] ) === $before, 'Column rendering must never call Google' );
 
+// Match Google's 25 month groups expanded into 75 date-range rows.
+$expanded_date = new DateTimeImmutable( '2026-11-20', new DateTimeZone( 'Europe/Amsterdam' ) );
+$expanded_report = expanded_monthly_fixture( $expanded_date );
+$expanded_rows = invoke_analytics( 'report_rows', $expanded_report, [ 'activeUsers' ], [ 'yearMonth', 'dateRange' ], 3 );
+expect_analytics( is_array( $expanded_rows ) && 75 === count( $expanded_rows ), 'Accept 75 expanded rows with rowCount 25 for a three-range request' );
+$expanded_history = invoke_analytics( 'monthly_history', $expanded_date, $expanded_rows );
+expect_analytics( ! is_wp_error( $expanded_history ) && 130.0 === $expanded_history['months'][0]['current'] && 10.0 === $expanded_history['months'][0]['previous'] && 125.0 === $expanded_history['months'][12]['current'] && 75.0 === $expanded_history['months'][12]['previous'], 'Ignore only out-of-range zero padding while keeping full-month and partial-month values separate' );
+expect_analytics( is_wp_error( invoke_analytics( 'report_rows', $expanded_report, [ 'activeUsers' ], [ 'yearMonth', 'dateRange' ] ) ), 'Do not relax single-range row-count validation' );
+foreach ( [ 'nonzero_padding', 'duplicate_padding', 'unknown_range', 'unknown_month' ] as $failure ) {
+	$invalid_rows = $expanded_rows;
+	if ( 'nonzero_padding' === $failure ) {
+		$invalid_rows[1]['metrics']['activeUsers'] = 1.0;
+	} elseif ( 'duplicate_padding' === $failure ) {
+		$invalid_rows[] = $invalid_rows[1];
+	} elseif ( 'unknown_range' === $failure ) {
+		$invalid_rows[1]['dimensions'][1] = 'unexpected';
+	} else {
+		$invalid_rows[1]['dimensions'][0] = '199901';
+	}
+	expect_analytics( is_wp_error( invoke_analytics( 'monthly_history', $expanded_date, $invalid_rows ) ), 'Reject invalid expanded monthly history: ' . $failure );
+}
+if ( $has_mtd ) {
+	$expanded_reports = $reports;
+	$expanded_reports[4] = expanded_monthly_fixture( $today );
+	$GLOBALS['responses'][] = google_response( [ 'reports' => $expanded_reports ] );
+	STUH_Analytics::refresh_report( 'site-1' );
+	$expanded_good = get_option( $key );
+	expect_analytics( '' === $expanded_good['error'] && 125.0 === $expanded_good['data']['history']['months'][12]['current'], 'A real refresh accepts grouped row counts and replaces the cache with usable monthly history' );
+	$counted_rows = $expanded_reports;
+	$counted_rows[4]['rowCount'] = 75;
+	$GLOBALS['responses'][] = google_response( [ 'reports' => $counted_rows ] );
+	STUH_Analytics::refresh_report( 'site-1' );
+	expect_analytics( '' === get_option( $key )['error'] && $expanded_good['data'] === get_option( $key )['data'], 'Also accept a complete response whose rowCount includes date-range expansion' );
+	foreach ( [ 'missing_range', 'missing_month', 'unexpected_month_count', 'truncated_to_row_count' ] as $failure ) {
+		$incomplete = $expanded_reports;
+		if ( 'missing_range' === $failure ) {
+			array_pop( $incomplete[4]['rows'] );
+		} elseif ( 'missing_month' === $failure ) {
+			array_splice( $incomplete[4]['rows'], 0, 3 );
+		} elseif ( 'truncated_to_row_count' === $failure ) {
+			$incomplete[4]['rows'] = array_slice( $incomplete[4]['rows'], 0, 25 );
+		} else {
+			$incomplete[4]['rows'][0]['dimensionValues'][0]['value'] = '199901';
+		}
+		$GLOBALS['responses'][] = google_response( [ 'reports' => $incomplete ] );
+		STUH_Analytics::refresh_report( 'site-1' );
+		$failed = get_option( $key );
+		expect_analytics( '' !== $failed['error'] && $expanded_good['data'] === $failed['data'], 'Reject truncated or inconsistent month groups and retain the successful cache: ' . $failure );
+	}
+	update_option( $key, $good );
+}
+
 // Failures retain the last successful data instead of reporting fake zero traffic.
 $GLOBALS['responses'][] = google_response( [ 'error' => [ 'status' => 'PERMISSION_DENIED' ] ], 403 );
 STUH_Analytics::refresh_report( 'site-1' );
@@ -644,7 +730,7 @@ $invalid_history[4]['rows'][] = $invalid_history[4]['rows'][0];
 $invalid_history[4]['rowCount']++;
 $GLOBALS['responses'][] = google_response( [ 'reports' => $invalid_history ] );
 STUH_Analytics::refresh_report( 'site-1' );
-expect_analytics( str_contains( get_option( $key )['error'], 'duplicate monthly' ) && $good['data'] === get_option( $key )['data'], 'Duplicate months must fail explicitly and preserve the complete last successful report' );
+expect_analytics( '' !== get_option( $key )['error'] && $good['data'] === get_option( $key )['data'], 'Duplicate months must fail explicitly and preserve the complete last successful report' );
 $invalid_history = $reports;
 $invalid_history[4]['rows'][0]['dimensionValues'][0]['value'] = $history_start->format( 'Ym' );
 $GLOBALS['responses'][] = google_response( [ 'reports' => $invalid_history ] );

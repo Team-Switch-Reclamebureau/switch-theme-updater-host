@@ -560,6 +560,10 @@ month, both partial points remain unavailable until a complete day exists.
 All boundaries use the mapped property's timezone. The fifth report in the
 existing Google batch requests `activeUsers` by `yearMonth`, with a named
 24-month complete range and two separate named month-to-date ranges.
+Multi-range responses are validated as complete month/range groups, including
+Google's expanded rows with a pre-expansion `rowCount`. Zero-filled rows outside
+their named range are ignored; nonzero out-of-range values, duplicates and
+incomplete groups fail the refresh without replacing the last successful report.
 These are monthly unique-user counts, not sums of daily users or yearly totals.
 
 Both lines share a zero-based vertical scale. The latest period is solid blue

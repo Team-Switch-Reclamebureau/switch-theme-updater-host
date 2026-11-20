@@ -783,12 +783,12 @@ final class STUH_Analytics {
 		self::finish( is_wp_error( $result ) ? $result->get_error_message() : __( 'Analytics refresh queued. Reload after WP-Cron runs.', 'stuh' ), is_wp_error( $result ), $client_id );
 	}
 
-	private static function report_rows( array $report, array $metrics, array $dimensions = [] ) {
+	private static function report_rows( array $report, array $metrics, array $dimensions = [], int $range_count = 1 ) {
 		if ( ! is_array( $report['metricHeaders'] ?? null ) || ! is_array( $report['dimensionHeaders'] ?? [] ) || array_column( $report['metricHeaders'], 'name' ) !== $metrics || array_column( $report['dimensionHeaders'] ?? [], 'name' ) !== $dimensions ) {
 			return new WP_Error( 'google_report_shape', __( 'Google returned unexpected report columns.', 'stuh' ) );
 		}
 		$rows = $report['rows'] ?? [];
-		if ( ! is_array( $rows ) || (int) ( $report['rowCount'] ?? 0 ) < count( $rows ) || ( ! $rows && ! empty( $report['rowCount'] ) ) ) {
+		if ( ! is_array( $rows ) || (int) ( $report['rowCount'] ?? 0 ) * $range_count < count( $rows ) || ( ! $rows && ! empty( $report['rowCount'] ) ) ) {
 			return new WP_Error( 'google_report_shape', __( 'Google returned invalid report rows.', 'stuh' ) );
 		}
 		$result = [];
@@ -832,23 +832,30 @@ final class STUH_Analytics {
 		}
 		$values = [];
 		$partial = [ 'current_mtd' => null, 'previous_mtd' => null ];
+		$range_names = array_column( $ranges, null, 'name' );
+		$seen = [];
 		foreach ( $rows as $row ) {
 			$month = $row['dimensions'][0];
 			$value = $row['metrics']['activeUsers'];
 			$range = $row['dimensions'][1] ?? 'complete';
-			if ( ! is_finite( $value ) || $value < 0 ) {
+			$key = $month . ':' . $range;
+			if ( ! is_finite( $value ) || $value < 0 || ! isset( $range_names[ $range ] ) || isset( $seen[ $key ] ) || ( ! isset( $allowed[ $month ] ) && ( 3 !== count( $ranges ) || $month !== $month_start->format( 'Ym' ) ) ) ) {
 				return new WP_Error( 'google_history', __( 'Google returned invalid or duplicate monthly active-user data.', 'stuh' ) );
 			}
-			if ( 'complete' !== $range ) {
-				$expected = 'current_mtd' === $range ? $month_start : $month_start->modify( '-12 months' );
-				if ( 3 !== count( $ranges ) || ! array_key_exists( $range, $partial ) || null !== $partial[ $range ] || $month !== $expected->format( 'Ym' ) ) {
-					return new WP_Error( 'google_history', __( 'Google returned invalid month-to-date data.', 'stuh' ) );
+			$seen[ $key ] = true;
+			$in_range = 'complete' === $range
+				? isset( $allowed[ $month ] )
+				: $month === ( 'current_mtd' === $range ? $month_start : $month_start->modify( '-12 months' ) )->format( 'Ym' );
+			if ( ! $in_range ) {
+				// Multi-range reports can include zero-filled months outside each range.
+				if ( 0.0 !== $value ) {
+					return new WP_Error( 'google_history', __( 'Google returned active-user data outside the requested date range.', 'stuh' ) );
 				}
-				$partial[ $range ] = $value;
 				continue;
 			}
-			if ( ! isset( $allowed[ $month ] ) || array_key_exists( $month, $values ) ) {
-				return new WP_Error( 'google_history', __( 'Google returned invalid or duplicate monthly active-user data.', 'stuh' ) );
+			if ( 'complete' !== $range ) {
+				$partial[ $range ] = $value;
+				continue;
 			}
 			$values[ $month ] = $value;
 		}
@@ -890,7 +897,7 @@ final class STUH_Analytics {
 			'dimensions' => [ [ 'name' => 'yearMonth' ] ],
 			'metrics' => [ [ 'name' => 'activeUsers' ] ],
 			'orderBys' => [ [ 'dimension' => [ 'dimensionName' => 'yearMonth' ] ] ],
-			'limit' => 26,
+			'limit' => 75,
 			'keepEmptyRows' => true,
 		] );
 		$data = self::api( 'properties/' . $mapping['property_id'] . ':batchRunReports', [ 'requests' => [ $totals, array_merge( $totals, [ 'dateRanges' => [ $previous ] ] ), $pages, $channels, $monthly ] ], 'data' );
@@ -908,7 +915,8 @@ final class STUH_Analytics {
 			}
 			$metrics = match ( $index ) { 0, 1 => self::METRICS, 2 => [ 'screenPageViews' ], 3 => [ 'sessions' ], 4 => [ 'activeUsers' ] };
 			$dimensions = match ( $index ) { 0, 1 => [], 2 => [ 'pagePath' ], 3 => [ 'sessionDefaultChannelGroup' ], 4 => count( $monthly['dateRanges'] ) > 1 ? [ 'yearMonth', 'dateRange' ] : [ 'yearMonth' ] };
-			$rows = self::report_rows( $report, $metrics, $dimensions );
+			$range_count = 4 === $index ? count( $monthly['dateRanges'] ) : 1;
+			$rows = self::report_rows( $report, $metrics, $dimensions, $range_count );
 			if ( is_wp_error( $rows ) ) {
 				$rows->add_data( [ 'report_diagnostics' => [
 					'report' => [ 'current_totals', 'previous_totals', 'pages', 'channels', 'monthly_active_users' ][ $index ],
@@ -924,8 +932,13 @@ final class STUH_Analytics {
 			if ( $index < 2 && count( $rows ) > 1 ) {
 				return new WP_Error( 'google_report_shape', __( 'Google returned multiple totals rows.', 'stuh' ) );
 			}
-			if ( 4 === $index && (int) ( $report['rowCount'] ?? 0 ) !== count( $rows ) ) {
-				return new WP_Error( 'google_history', __( 'Google returned an incomplete monthly active-user report.', 'stuh' ) );
+			if ( 4 === $index ) {
+				$row_count = (int) ( $report['rowCount'] ?? 0 );
+				// Google can count month groups before expanding them across date ranges.
+				$months = array_unique( array_map( static fn( array $row ): string => $row['dimensions'][0], $rows ) );
+				if ( count( $rows ) !== count( $months ) * $range_count || ( $row_count !== count( $months ) && $row_count !== count( $rows ) ) ) {
+					return new WP_Error( 'google_history', __( 'Google returned an incomplete monthly active-user report.', 'stuh' ) );
+				}
 			}
 			$parsed[] = $index < 2 ? ( $rows[0]['metrics'] ?? array_fill_keys( self::METRICS, 0.0 ) ) : $rows;
 			$metadata = $report['metadata'] ?? [];
