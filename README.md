@@ -268,6 +268,20 @@ Between the order breakdown and Gravity Forms, an hours summary shows **Uren beg
   This is the new **Real budget left to date** using the selected month's full
   allowance (whereas the live dashboard accrues the current month through today).
 
+Immediately after the closing-hours summary, the pink heading
+**Lopende projecten ten laste van het FMP** lists all active projects, including
+those without hours in the selected month. Each project occupies one row with its
+total lifetime hours through today, without product lines. The monthly product
+breakdown above the summary remains filtered by the selected month.
+
+Archived projects and projects with **Afgerond op** (`project.enddate`) set
+appear after the active-project totals and before Gravity Forms.
+Under the pink heading **Afgerond en ten laste van het FMP**, each project appears
+on one row with its total lifetime hours through today, regardless of the selected
+month, without separate product lines.
+They are excluded from the active-project breakdown; their hours already count
+in the existing balance calculations and are not deducted again.
+
 **All months** starts at zero and uses the accrued allowance through today and
 all recorded hours through today, including work outside the project dates.
 Calculations use unrounded logged hours; rounding is only for display. Summary
@@ -283,7 +297,7 @@ All referenced line pages are loaded and validated against their parent order;
 missing/inaccessible lines or API failures show an explicit error, never a
 misleading partial breakdown. The breakdown shares the active-project cache.
 Active means
-not archived in Gripp, regardless of delivery date; archived orders still count
+not archived in Gripp and without a completion date, regardless of delivery date; archived orders still count
 in the existing budget and usage calculations. Every API page is loaded, and
 the table is cached for five minutes per umbrella project and connection.
 **Refresh projects**, reconnecting and disconnecting clear this cache.

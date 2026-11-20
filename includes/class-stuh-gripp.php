@@ -590,25 +590,28 @@ final class STUH_Gripp {
 		return $totals;
 	}
 
-	private static function active_orders( string $token, int $id ) {
+	private static function project_orders( string $token, int $id ) {
 		$fingerprint = hash( 'sha256', (string) get_option( self::CONNECTION, '' ) );
 		$cache = get_transient( self::ACTIVE_ORDERS_CACHE );
-		if ( is_array( $cache ) && ( $cache['version'] ?? null ) === 6 && ( $cache['connection'] ?? '' ) === $fingerprint && ( $cache['id'] ?? null ) === $id ) {
+		if ( is_array( $cache ) && ( $cache['version'] ?? null ) === 7 && ( $cache['connection'] ?? '' ) === $fingerprint && ( $cache['id'] ?? null ) === $id ) {
 			return $cache['rows'];
 		}
 		$orders = self::fetch_all( $token, 'project', [
 			[ 'field' => 'project.umbrellaproject', 'operator' => 'equals', 'value' => $id ],
-			[ 'field' => 'project.archived', 'operator' => 'equals', 'value' => false ],
 		] );
 		if ( is_wp_error( $orders ) ) {
 			return $orders;
 		}
 		$rows = [];
 		foreach ( $orders as $order_id => $order ) {
-			if ( self::reference_id( $order['umbrellaproject'] ?? null ) !== $id || false !== ( $order['archived'] ?? null ) || ! isset( $order['name'] ) || ! is_string( $order['name'] ) || ( isset( $order['number'] ) && ! is_string( $order['number'] ) && ! is_int( $order['number'] ) ) ) {
-				return new WP_Error( 'gripp_order', __( 'Gripp returned an invalid active project or umbrella project reference.', 'stuh' ) );
+			if ( self::reference_id( $order['umbrellaproject'] ?? null ) !== $id || ! isset( $order['archived'] ) || ! is_bool( $order['archived'] ) || ! isset( $order['name'] ) || ! is_string( $order['name'] ) || ( isset( $order['number'] ) && ! is_string( $order['number'] ) && ! is_int( $order['number'] ) ) ) {
+				return new WP_Error( 'gripp_order', __( 'Gripp returned an invalid linked project or umbrella project reference.', 'stuh' ) );
 			}
-			$row = [ 'id' => $order_id, 'number' => $order['number'] ?? '', 'name' => $order['name'] ];
+			$completed_on = self::project_date( $order['enddate'] ?? null, 'project.enddate' );
+			if ( is_wp_error( $completed_on ) ) {
+				return $completed_on;
+			}
+			$row = [ 'id' => $order_id, 'number' => $order['number'] ?? '', 'name' => $order['name'], 'inactive' => $order['archived'] || '' !== $completed_on ];
 			$row['value'] = self::money_amount( $order['totalexclvat'] ?? null, 'project.totalexclvat' );
 			if ( is_wp_error( $row['value'] ) ) {
 				return $row['value'];
@@ -628,7 +631,7 @@ final class STUH_Gripp {
 		}
 		unset( $row );
 		if ( hash_equals( $fingerprint, hash( 'sha256', (string) get_option( self::CONNECTION, '' ) ) ) ) {
-			set_transient( self::ACTIVE_ORDERS_CACHE, [ 'version' => 6, 'connection' => $fingerprint, 'id' => $id, 'rows' => $rows ], 5 * MINUTE_IN_SECONDS );
+			set_transient( self::ACTIVE_ORDERS_CACHE, [ 'version' => 7, 'connection' => $fingerprint, 'id' => $id, 'rows' => $rows ], 5 * MINUTE_IN_SECONDS );
 		}
 		return $rows;
 	}
@@ -1095,6 +1098,8 @@ final class STUH_Gripp {
 	}
 
 	private static function format_monthly_export( array $rows, array $sites, int $id, string $month, array $balance ): array {
+		$active_rows = self::filter_active_orders( $rows, '' );
+		$inactive_rows = array_values( array_filter( $rows, static fn( array $row ): bool => ! empty( $row['inactive'] ) ) );
 		$rows = self::filter_active_orders( $rows, $month );
 		$period = '' === $month ? __( 'All months', 'stuh' ) : wp_date( 'F Y', ( new DateTimeImmutable( $month . '-01', wp_timezone() ) )->getTimestamp(), wp_timezone() ) . ' (' . $month . ')';
 		$lines = [
@@ -1120,19 +1125,22 @@ final class STUH_Gripp {
 		$html = '<div style="' . $font . 'line-height:1.4;color:#111111;background:#ffffff;">';
 		$html .= '<p style="' . $font . '"><strong>' . esc_html( $lines[0] ) . '</strong><br>' . esc_html( $lines[1] ) . '<br>' . esc_html( $lines[2] ) . '</p>';
 		$html .= '<p style="' . $font . '">' . esc_html__( 'Onderstaan een overzicht van de verrichte werkzaamheden.', 'stuh' ) . '</p>';
-		foreach ( $rows as $row ) {
-			$title = sprintf( __( 'Opdracht %1$s %2$s', 'stuh' ), $plain( '' === $row['number'] ? '-' : (string) $row['number'] ), $plain( $row['name'] ) );
-			$lines[] = $title;
-			$html .= $blank_line . $heading( $title ) . $table_start;
-			foreach ( $row['products'] as $product ) {
-				$label = $plain( self::product_label( $product['name'] ) );
-				$value = number_format( $product['hours'], 2, ',', '.' );
-				$lines[] = $label . "\t" . $value;
-				$html .= $html_row( $label, $value );
+		$render_orders = static function( array $orders ) use ( &$lines, &$html, $plain, $blank_line, $heading, $table_start, $table_end, $html_row ): void {
+			foreach ( $orders as $row ) {
+				$title = sprintf( __( 'Opdracht %1$s %2$s', 'stuh' ), $plain( '' === $row['number'] ? '-' : (string) $row['number'] ), $plain( $row['name'] ) );
+				$lines[] = $title;
+				$html .= $blank_line . $heading( $title ) . $table_start;
+				foreach ( $row['products'] as $product ) {
+					$label = $plain( self::product_label( $product['name'] ) );
+					$value = number_format( $product['hours'], 2, ',', '.' );
+					$lines[] = $label . "\t" . $value;
+					$html .= $html_row( $label, $value );
+				}
+				$html .= $table_end;
+				$lines[] = '';
 			}
-			$html .= $table_end;
-			$lines[] = '';
-		}
+		};
+		$render_orders( $rows );
 		if ( ! $rows ) {
 			$lines[] = '' === $month ? __( 'No active projects linked to this umbrella project.', 'stuh' ) : __( 'No active projects have recorded time in this month.', 'stuh' );
 			$html .= '<p style="' . $font . '">' . esc_html( end( $lines ) ) . '</p>';
@@ -1150,6 +1158,25 @@ final class STUH_Gripp {
 			$html .= $html_row( $label, $value, true, 'closing' === $key );
 		}
 		$html .= $table_end . '</div>';
+		foreach ( [
+			[ 'title' => __( 'Lopende projecten ten laste van het FMP', 'stuh' ), 'rows' => $active_rows ],
+			[ 'title' => __( 'Afgerond en ten laste van het FMP', 'stuh' ), 'rows' => $inactive_rows ],
+		] as $section ) {
+			if ( ! $section['rows'] ) {
+				continue;
+			}
+			$lines[] = '';
+			$title = $section['title'];
+			$lines[] = $title;
+			$html .= $blank_line . $heading( $title ) . $table_start;
+			foreach ( $section['rows'] as $row ) {
+				$label = sprintf( __( 'Opdracht %1$s %2$s', 'stuh' ), $plain( '' === $row['number'] ? '-' : (string) $row['number'] ), $plain( $row['name'] ) );
+				$value = number_format( $row['hours'], 2, ',', '.' );
+				$lines[] = $label . "\t" . $value;
+				$html .= $html_row( $label, $value );
+			}
+			$html .= $table_end;
+		}
 		if ( $sites ) {
 			$hidden_forms = self::hidden_forms( $id );
 			$export_sites = [];
@@ -1468,6 +1495,7 @@ final class STUH_Gripp {
 	}
 
 	private static function filter_active_orders( array $rows, string $month ): array {
+		$rows = array_values( array_filter( $rows, static fn( array $row ): bool => empty( $row['inactive'] ) ) );
 		if ( '' === $month ) {
 			return $rows;
 		}
@@ -1503,7 +1531,7 @@ final class STUH_Gripp {
 
 	private static function render_project_reports( string $token, int $id, string $unit ): void {
 		$month = self::selected_hours_month( $_GET );
-		$rows = self::active_orders( $token, $id );
+		$rows = self::project_orders( $token, $id );
 		$sites = self::linked_gravity_forms( $id );
 		$months = [ ( new DateTimeImmutable( 'today', wp_timezone() ) )->format( 'Y-m' ) => true ];
 		if ( ! is_wp_error( $rows ) ) {
@@ -1537,7 +1565,7 @@ final class STUH_Gripp {
 		echo '</select> <button class="button" type="submit">' . esc_html__( 'Filter', 'stuh' ) . '</button></p></form>';
 		echo '<p>' . esc_html__( 'The calendar month filters active-project hours and Gravity Forms entries together. Projects without time entries in the selected month are hidden; order values and the budget chart remain unchanged.', 'stuh' ) . '</p>';
 		echo '<h2 id="stuh-fmp-active-heading">' . esc_html__( 'Active projects', 'stuh' ) . '</h2>';
-		echo '<p>' . esc_html__( 'Non-archived projects (Opdrachten) linked to this umbrella project. Actual hours include all recorded time through today, including Concept entries and zero-value work, excluding products marked (ND / intern), and always display as hours. Sub-rows summarize hours per Gripp product, combining all order lines for the same product. Time without a product is listed separately.', 'stuh' ) . '</p>';
+		echo '<p>' . esc_html__( 'Projects (Opdrachten) linked to this umbrella project that are not archived and have no completion date. Actual hours include all recorded time through today, including Concept entries and zero-value work, excluding products marked (ND / intern), and always display as hours. Sub-rows summarize hours per Gripp product, combining all order lines for the same product. Time without a product is listed separately.', 'stuh' ) . '</p>';
 		if ( is_wp_error( $rows ) ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $rows->get_error_message() ) . '</p></div>';
 		} else {

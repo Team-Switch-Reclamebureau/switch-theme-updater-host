@@ -798,11 +798,11 @@ $GLOBALS['entity_responses']['offerprojectline.get'] = [ project_response( [
 	[ 'id' => 6005, 'offerprojectbase' => 1003, 'product' => [ 'id' => 103, 'searchname' => 'Webdevelopment (ND / intern)' ] ],
 ] ) ];
 $active_request_count = count( $GLOBALS['requests'] );
-$active_orders = invoke_gripp( 'active_orders', 'test-token', 1 );
+$active_orders = invoke_gripp( 'project_orders', 'test-token', 1 );
 expect_gripp( 251 === count( $active_orders ) && 90000 === $active_orders[0]['value'] && abs( 2.625 - $active_orders[0]['hours'] ) < 0.000001 && 4.25 === $active_orders[1]['hours'] && 0 === $active_orders[1]['value'] && -9000 === $active_orders[250]['value'] && 1.5 === $active_orders[250]['hours'], 'Load every active order and hour page, retain fractional Concept time and zero-value work, exclude future time, and batch all order IDs' );
 $active_query = json_decode( $GLOBALS['requests'][ $active_request_count ][1]['body'], true )[0];
 $active_next = json_decode( $GLOBALS['requests'][ $active_request_count + 1 ][1]['body'], true )[0];
-expect_gripp( [ [ 'field' => 'project.umbrellaproject', 'operator' => 'equals', 'value' => 1 ], [ 'field' => 'project.archived', 'operator' => 'equals', 'value' => false ] ] === $active_query['params'][0] && 250 === $active_next['params'][1]['paging']['firstresult'], 'Select only non-archived orders belonging to the exact umbrella project, without excluding past delivery dates' );
+expect_gripp( [ [ 'field' => 'project.umbrellaproject', 'operator' => 'equals', 'value' => 1 ] ] === $active_query['params'][0] && 250 === $active_next['params'][1]['paging']['firstresult'], 'Select all orders belonging to the exact umbrella project, including archived orders, without excluding past delivery dates' );
 $active_hour_requests = array_values( array_filter( array_slice( $GLOBALS['requests'], $active_request_count ), static fn( $request ): bool => 'hour.get' === json_decode( $request[1]['body'], true )[0]['method'] ) );
 $last_hour_query = json_decode( end( $active_hour_requests )[1]['body'], true )[0];
 expect_gripp( [ [ 'field' => 'hour.offerprojectbase', 'operator' => 'in', 'value' => [ 1251 ] ] ] === $last_hour_query['params'][0], 'Load actual hours for the second batch of active order IDs, rather than only the first 250 projects' );
@@ -810,7 +810,7 @@ expect_gripp( [ 'Webdevelopment', 'Project Management' ] === array_column( $acti
 expect_gripp( abs( array_sum( array_column( $active_orders[0]['products'], 'hours' ) ) - $active_orders[0]['hours'] ) < 0.000001 && ! $GLOBALS['entity_responses']['offerprojectline.get'], 'Product-hour subtotals reconcile to the project total before display rounding and use the batched line metadata' );
 expect_gripp( 0.0 === $active_orders[2]['hours'] && [] === $active_orders[2]['months'] && [] === invoke_gripp( 'filter_active_orders', $active_orders, '1999-12' ) && ! str_contains( json_encode( $active_orders ), 'ND / intern' ), 'Exclude internal products from active totals and breakdowns, and hide projects and months with only internal time' );
 $active_cached_count = count( $GLOBALS['requests'] );
-invoke_gripp( 'active_orders', 'test-token', 1 );
+invoke_gripp( 'project_orders', 'test-token', 1 );
 expect_gripp( count( $GLOBALS['requests'] ) === $active_cached_count, 'Repeated detail views reuse the matching active-project cache' );
 $detail_cache['data']['rows'] = [ array_merge( $detail_project, [ 'budget' => null ] ) ];
 $GLOBALS['transients']['stuh_gripp_projects'] = $detail_cache;
@@ -829,14 +829,14 @@ expect_gripp( '2026001' === $order_link->textContent && 1001 === $order_state['a
 $GLOBALS['transients']['stuh_gripp_active_orders']['connection'] = 'another-connection';
 $GLOBALS['entity_responses']['project.get'] = [ project_response( [ $last_active ] ) ];
 $GLOBALS['entity_responses']['hour.get'] = [ project_response( [] ) ];
-expect_gripp( 1 === count( invoke_gripp( 'active_orders', 'test-token', 1 ) ), 'Changing the connection cannot reuse another connection active-project cache' );
+expect_gripp( 1 === count( invoke_gripp( 'project_orders', 'test-token', 1 ) ), 'Changing the connection cannot reuse another connection active-project cache' );
 $GLOBALS['entity_responses']['project.get'] = [ project_response( [ array_merge( $active_order, [ 'umbrellaproject' => 2 ] ) ] ) ];
 $GLOBALS['entity_responses']['hour.get'] = [ project_response( [] ) ];
-expect_gripp( 1 === count( invoke_gripp( 'active_orders', 'test-token', 2 ) ), 'Changing umbrella project cannot reuse the previous active-project list' );
-foreach ( [ [ 'archived' => true ], [ 'archived' => null ], [ 'umbrellaproject' => 2 ], [ 'name' => [] ], [ 'totalexclvat' => 'invalid' ] ] as $invalid_order ) {
+expect_gripp( 1 === count( invoke_gripp( 'project_orders', 'test-token', 2 ) ), 'Changing umbrella project cannot reuse the previous active-project list' );
+foreach ( [ [ 'archived' => 'true' ], [ 'archived' => null ], [ 'enddate' => 'invalid' ], [ 'umbrellaproject' => 2 ], [ 'name' => [] ], [ 'totalexclvat' => 'invalid' ] ] as $invalid_order ) {
 	delete_transient( 'stuh_gripp_active_orders' );
 	$GLOBALS['entity_responses']['project.get'] = [ project_response( [ array_merge( $active_order, $invalid_order ) ] ) ];
-	expect_gripp( is_wp_error( invoke_gripp( 'active_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'Invalid, archived or unrelated active-order responses are explicit errors and never cached as a successful list' );
+	expect_gripp( is_wp_error( invoke_gripp( 'project_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'Invalid or unrelated linked-order responses are explicit errors and never cached as a successful list' );
 }
 $GLOBALS['entity_responses']['project.get'] = [ project_response( $active_page, true, 250 ), gripp_response( [], 403 ) ];
 $failed_active = gripp_render( 'render_dashboard', 250, 'eur', 1, 'reports' );
@@ -852,7 +852,7 @@ expect_gripp( str_contains( $failed_hours, 'HTTP 403' ) && ! str_contains( $fail
 $GLOBALS['transients']['stuh_gripp_active_orders'] = [ 'connection' => hash( 'sha256', $stored ), 'id' => 1, 'rows' => [ [ 'name' => 'Old date-only cache' ] ] ];
 $GLOBALS['entity_responses']['project.get'] = [ project_response( [ $active_order ] ) ];
 $GLOBALS['entity_responses']['hour.get'] = [ project_response( [] ) ];
-$without_hours = invoke_gripp( 'active_orders', 'test-token', 1 );
+$without_hours = invoke_gripp( 'project_orders', 'test-token', 1 );
 expect_gripp( 0.0 === $without_hours[0]['hours'] && 1001 === $without_hours[0]['id'], 'Invalidate date-only caches and show zero hours only after a successful empty time response' );
 foreach ( [ [ 'offerprojectbase' => 999 ], [ 'amount' => 'invalid' ], [ 'date' => null ] ] as $invalid_hour ) {
 	$GLOBALS['entity_responses']['hour.get'] = [ project_response( [ array_merge( $active_hour_page[0], $invalid_hour ) ] ) ];
@@ -1041,7 +1041,7 @@ $GLOBALS['entity_responses'] = [
 	'offerprojectline.get' => [ project_response( $breakdown_lines ) ],
 ];
 $GLOBALS['transients']['stuh_gripp_active_orders'] = [ 'version' => 4, 'connection' => hash( 'sha256', $stored ), 'id' => 1, 'rows' => [ [ 'name' => 'Old cache without monthly hours' ] ] ];
-$line_rows = invoke_gripp( 'active_orders', 'test-token', 1 );
+$line_rows = invoke_gripp( 'project_orders', 'test-token', 1 );
 expect_gripp( 6.375 === $line_rows[0]['hours'] && [ 4.625, 0.75, 1.0 ] === array_column( $line_rows[0]['products'], 'hours' ) && [ 21, 0, 22 ] === array_column( $line_rows[0]['products'], 'id' ), 'Invalidate caches without monthly hours and combine different lines sharing a product, including corrections; keep distinct same-label products separate and combine missing-line/product time without counting future time' );
 ob_start();
 $GLOBALS['transients']['stuh_gripp_balance'] = gripp_balance_cache();
@@ -1063,14 +1063,14 @@ foreach ( [
 		'hour.get' => [ project_response( [ $breakdown_hours[0] ] ) ],
 		'offerprojectline.get' => [ $line_failure ],
 	];
-	expect_gripp( is_wp_error( invoke_gripp( 'active_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'Missing, unrelated, malformed or inaccessible line/product metadata must fail explicitly and never cache a partial breakdown' );
+	expect_gripp( is_wp_error( invoke_gripp( 'project_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'Missing, unrelated, malformed or inaccessible line/product metadata must fail explicitly and never cache a partial breakdown' );
 }
 foreach ( [ [ 'unexpected' => 'reference' ], false ] as $invalid_line_reference ) {
 	$GLOBALS['entity_responses'] = [
 		'project.get' => [ project_response( [ $active_order ] ) ],
 		'hour.get' => [ project_response( [ array_merge( $breakdown_hours[0], [ 'offerprojectline' => $invalid_line_reference ] ) ] ) ],
 	];
-	expect_gripp( is_wp_error( invoke_gripp( 'active_orders', 'test-token', 1 ) ), 'Malformed nonempty line references cannot be silently grouped as unassigned time' );
+	expect_gripp( is_wp_error( invoke_gripp( 'project_orders', 'test-token', 1 ) ), 'Malformed nonempty line references cannot be silently grouped as unassigned time' );
 }
 $many_line_hours = [];
 $many_lines = [];
@@ -1083,7 +1083,7 @@ $GLOBALS['entity_responses'] = [
 	'hour.get' => [ project_response( array_slice( $many_line_hours, 0, 250 ), true, 250 ), project_response( array_slice( $many_line_hours, 250 ) ) ],
 	'offerprojectline.get' => [ project_response( array_slice( $many_lines, 0, 250 ) ), project_response( array_slice( $many_lines, 250 ) ) ],
 ];
-$many_line_rows = invoke_gripp( 'active_orders', 'test-token', 1 );
+$many_line_rows = invoke_gripp( 'project_orders', 'test-token', 1 );
 expect_gripp( 125.5 === $many_line_rows[0]['hours'] && [ 'Product 2', 'Product 1' ] === array_column( $many_line_rows[0]['products'], 'name' ) && [ 63.0, 62.5 ] === array_column( $many_line_rows[0]['products'], 'hours' ), 'Combine products across metadata batches of more than 250 order lines while retaining every paginated time entry and subtotal' );
 delete_transient( 'stuh_gripp_active_orders' );
 $GLOBALS['entity_responses'] = [
@@ -1091,7 +1091,7 @@ $GLOBALS['entity_responses'] = [
 	'hour.get' => [ project_response( array_slice( $many_line_hours, 0, 250 ), true, 250 ), project_response( array_slice( $many_line_hours, 250 ) ) ],
 	'offerprojectline.get' => [ project_response( array_slice( $many_lines, 0, 250 ) ), gripp_response( [], 403 ) ],
 ];
-expect_gripp( is_wp_error( invoke_gripp( 'active_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'A failed later line-metadata batch cannot return a successful partial breakdown' );
+expect_gripp( is_wp_error( invoke_gripp( 'project_orders', 'test-token', 1 ) ) && false === get_transient( 'stuh_gripp_active_orders' ), 'A failed later line-metadata batch cannot return a successful partial breakdown' );
 expect_gripp( ! array_filter( $GLOBALS['entity_responses'] ), 'Consume all expected breakdown responses' );
 unset( $GLOBALS['entity_responses'] );
 delete_transient( 'stuh_gripp_active_orders' );
@@ -1122,7 +1122,7 @@ $GLOBALS['entity_responses'] = [
 		[ 'id' => 15, 'offerprojectbase' => 1003, 'product' => [ 'id' => 21, 'searchname' => 'Webdevelopment' ] ],
 	] ) ],
 ];
-$monthly_rows = invoke_gripp( 'active_orders', 'test-token', 1 );
+$monthly_rows = invoke_gripp( 'project_orders', 'test-token', 1 );
 expect_gripp( 13.875 === $monthly_rows[0]['hours'] && [ '2000-01' => 1.875, '2000-02' => 5.0, '2001-01' => 7.0 ] === array_map( static fn( array $period ): float => $period['hours'], $monthly_rows[0]['months'] ), 'Partition recorded time by full calendar month and year, including leap-day and month-end entries, without changing the all-time total or counting future entries' );
 expect_gripp( [ 1.625, 0.25 ] === array_column( $monthly_rows[0]['months']['2000-01']['products'], 'hours' ) && [ 'Webdevelopment', 'No product' ] === array_column( $monthly_rows[0]['months']['2000-01']['products'], 'name' ) && 0.0 === $monthly_rows[2]['months']['2000-01']['hours'] && [] === $monthly_rows[3]['months'], 'Monthly product subtotals combine lines and corrections, retain unassigned time and distinguish cancelled time from no entries' );
 $render_monthly = static function( $month, string $unit = 'eur' ): string {
@@ -1138,10 +1138,11 @@ $render_monthly = static function( $month, string $unit = 'eur' ): string {
 };
 $monthly_request_count = count( $GLOBALS['requests'] );
 $january_html = $render_monthly( '2000-01' );
-expect_gripp( str_contains( $january_html, 'Multi-month project' ) && str_contains( $january_html, 'Corrected project' ) && ! str_contains( $january_html, 'February only' ) && ! str_contains( $january_html, 'No recorded time' ) && ! str_contains( $january_html, 'Project Management' ) && str_contains( $january_html, '1.88 h' ) && str_contains( $january_html, '1.63 h' ) && str_contains( $january_html, '€900.00' ), 'A selected month filters both parent and product hours, hides projects/products without entries, retains corrections cancelling to zero and leaves full order values unchanged' );
+$january_breakdown_html = explode( 'Lopende projecten ten laste van het FMP', $january_html )[0];
+expect_gripp( str_contains( $january_html, 'Multi-month project' ) && str_contains( $january_html, 'Corrected project' ) && ! str_contains( $january_breakdown_html, 'February only' ) && ! str_contains( $january_breakdown_html, 'No recorded time' ) && ! str_contains( $january_html, 'Project Management' ) && str_contains( $january_html, '1.88 h' ) && str_contains( $january_html, '1.63 h' ) && str_contains( $january_html, '€900.00' ), 'A selected month filters both parent and product hours, hides projects/products without entries from the monthly breakdown, retains corrections cancelling to zero and leaves full order values unchanged' );
 expect_gripp( str_contains( $january_html, '<option value="2000-01" selected>January 2000</option>' ) && str_contains( $january_html, '>January 2001</option>' ) && ! str_contains( $january_html, '3000-01' ) && str_contains( $january_html, 'name="project_id" value="1"' ) && str_contains( $january_html, 'name="offset" value="250"' ) && str_contains( $january_html, 'name="unit" value="eur"' ), 'The labelled calendar-month selector distinguishes years, excludes future entries and preserves project navigation and units on submit' );
 $february_html = $render_monthly( '2000-02' );
-expect_gripp( str_contains( $february_html, 'February only' ) && str_contains( $february_html, 'Project Management' ) && str_contains( $february_html, '5.00 h' ) && ! str_contains( $february_html, 'Corrected project' ), 'Switching month changes visibility and totals without leaking another month of the same product' );
+expect_gripp( str_contains( $february_html, 'February only' ) && str_contains( $february_html, 'Project Management' ) && str_contains( $february_html, '5.00 h' ) && ! str_contains( explode( 'Lopende projecten ten laste van het FMP', $february_html )[0], 'Corrected project' ), 'Switching month changes visibility and totals without leaking another month of the same product into the monthly breakdown' );
 $empty_month_html = $render_monthly( '2000-03' );
 expect_gripp( str_contains( $empty_month_html, 'No active projects have recorded time in this month.' ) && ! str_contains( $empty_month_html, 'stuh-fmp-order-total' ), 'A month without entries shows an explicit empty table instead of all-time totals' );
 $all_months_html = $render_monthly( '' );
@@ -1200,7 +1201,9 @@ $preview_value = static function( string $html ): string {
 	return $preview->item( 0 )->getAttribute( 'data-stuh-fmp-copy-text' );
 };
 expect_gripp( $january_export['text'] === $preview_value( $january_html ) && strpos( $january_html, 'id="stuh-fmp-active-projects"' ) < strpos( $january_html, 'data-stuh-fmp-word-preview' ), 'The formatted report and its clipboard alternative follow the monthly reports table' );
-expect_gripp( str_contains( $january_export['text'], 'January 2000 (2000-01)' ) && str_contains( $january_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t1,63\nNo product\t0,25\n" ) && str_contains( $january_export['text'], "Opdracht 2026001 Corrected project\nWebdevelopment\t0,00" ) && ! str_contains( $january_export['text'], 'February only' ) && ! str_contains( $january_export['text'], 'Project Management' ) && ! str_contains( $january_export['text'], 'No recorded time' ) && ! str_contains( $january_export['text'], '€' ), 'Editors copy order headings and decimal-comma product hours without order values or duplicate project totals' );
+$january_breakdown_text = explode( 'Lopende projecten ten laste van het FMP', $january_export['text'] )[0];
+expect_gripp( str_contains( $january_export['text'], 'January 2000 (2000-01)' ) && str_contains( $january_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t1,63\nNo product\t0,25\n" ) && str_contains( $january_export['text'], "Opdracht 2026001 Corrected project\nWebdevelopment\t0,00" ) && ! str_contains( $january_breakdown_text, 'February only' ) && ! str_contains( $january_export['text'], 'Project Management' ) && ! str_contains( $january_breakdown_text, 'No recorded time' ) && ! str_contains( $january_export['text'], '€' ), 'Editors copy order headings and decimal-comma product hours without order values or project totals in the monthly breakdown' );
+expect_gripp( str_contains( $january_export['text'], "Lopende projecten ten laste van het FMP\nOpdracht 2026001 Multi-month project\t13,88\n" ) && str_contains( $january_export['text'], "Opdracht 2026001 February only\t9,00\n" ) && str_contains( $january_export['text'], "Opdracht 2026001 No recorded time\t0,00\n" ), 'Active-project totals use lifetime hours and include projects without selected-month entries and projects without recorded time' );
 expect_gripp( ! str_contains( $january_html, 'stuh_gripp_export' ) && ! str_contains( $january_html, 'stuh-fmp-export-preview' ) && ! str_contains( $january_html, 'Export TXT' ) && str_contains( $january_html, 'data-stuh-fmp-copy-word' ) && ! in_array( [ 'admin_post_stuh_gripp_export', [ STUH_Gripp::class, 'handle_export' ] ], $GLOBALS['hooks'], true ), 'Remove the TXT preview, download form and endpoint while preserving Copy for Word' );
 $GLOBALS['capabilities'] = [ 'manage_options' ];
 $all_export = $export_document( [ 'hours_month' => '', 'unit' => 'hours' ] );
@@ -1208,7 +1211,7 @@ expect_gripp( $all_export['text'] === $preview_value( $render_monthly( '', 'hour
 expect_gripp( str_contains( $all_export['text'], 'All months' ) && str_contains( $all_export['text'], "Opdracht 2026001 Multi-month project\nWebdevelopment\t11,63\nProject Management\t2,00\nNo product\t0,25" ) && str_contains( $all_export['text'], 'February only' ) && str_contains( $all_export['text'], 'No recorded time' ) && $monthly_request_count === count( $GLOBALS['requests'] ), 'Administrators copy All months as actual hours regardless of budget-unit preference without extra requests' );
 $empty_export = $export_document( [ 'hours_month' => '2000-03' ] );
 expect_gripp( $empty_export['text'] === $preview_value( $empty_month_html ), 'Empty-period previews match the exported empty-state message' );
-expect_gripp( str_contains( $empty_export['text'], 'No active projects have recorded time in this month.' ) && ! str_contains( $empty_export['text'], 'Multi-month project' ), 'Export an explicit empty-period message instead of falling back to unfiltered data' );
+expect_gripp( str_contains( $empty_export['text'], 'No active projects have recorded time in this month.' ) && ! str_contains( explode( 'Lopende projecten ten laste van het FMP', $empty_export['text'] )[0], 'Multi-month project' ), 'Export an explicit empty-period message instead of falling back to unfiltered data in the monthly breakdown' );
 $export_cache = $GLOBALS['transients']['stuh_gripp_active_orders'];
 $GLOBALS['transients']['stuh_gripp_active_orders']['rows'][0]['name'] = "Caf\u{00E9}\tproject\r\nname";
 $GLOBALS['transients']['stuh_gripp_active_orders']['rows'][0]['months']['2000-01']['products'][0]['name'] = "Web\tdevelopment\n& design";
@@ -1409,7 +1412,7 @@ expect_gripp( 1 === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/
 expect_gripp( 1 === $forms_xpath->query( '//select[@name="hours_month"]' )->length && 1 === $forms_xpath->query( '//select[@name="hours_month"]/option[@value="1999-12"]' )->length && 0 === $forms_xpath->query( '//select[@name="hours_month"]/option[@value="1998-06" or @value="1997-01"]' )->length && str_contains( $forms_january_html, '>Calendar month</label>' ), 'One shared calendar-month filter includes months reported only by linked forms, excluding unlinked and removed-site months' );
 expect_gripp( '12' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[1]/td[2]' )->item( 0 )->textContent && '0' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[2]/td[2]' )->item( 0 )->textContent && 'Not reported' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[3]/td[2]' )->item( 0 )->textContent && '3' === $forms_xpath->query( '//table[@id="stuh-fmp-gravity-forms"]/tbody/tr[4]/td[2]' )->item( 0 )->textContent, 'Monthly form counts distinguish explicit zero from missing data and keep identical form titles/IDs separate per client site' );
 expect_gripp( str_contains( $forms_january_html, '&lt;script&gt;' ) && ! str_contains( $forms_january_html, '<script>' ) && ! str_contains( $forms_january_html, 'Unlinked private form' ) && ! str_contains( $forms_january_html, 'Removed private form' ) && str_contains( $forms_january_html, 'No Gravity Forms report received yet.' ) && str_contains( $forms_january_html, 'No forms reported.' ) && str_contains( $forms_january_html, 'Client site no longer exists.' ), 'Escape site names and form titles, isolate linked-site reports, and explicitly distinguish waiting, empty and removed sites' );
-expect_gripp( str_contains( $forms_january_html, 'Multi-month project' ) && str_contains( $forms_january_html, '1.88 h' ) && ! str_contains( $forms_january_html, 'February only' ), 'The same month selection filters active-project rows and totals alongside form counts' );
+expect_gripp( str_contains( $forms_january_html, 'Multi-month project' ) && str_contains( $forms_january_html, '1.88 h' ) && ! str_contains( explode( 'Lopende projecten ten laste van het FMP', $forms_january_html )[0], 'February only' ), 'The same month selection filters active-project rows and monthly totals alongside form counts' );
 $forms_february_html = $render_monthly( '2000-02' );
 expect_gripp( str_contains( $forms_february_html, '</th><td>8</td>' ) && str_contains( $forms_february_html, '</th><td>4</td>' ) && str_contains( $forms_february_html, 'February only' ) && str_contains( $forms_february_html, '5.00 h' ), 'Changing the shared month changes both form-entry counts and project-hour data' );
 $forms_only_html = $render_monthly( '1999-12' );
@@ -1606,6 +1609,7 @@ $layout_orders = [
 	[ 'number' => '16715', 'name' => 'Online marketing - Google Ads', 'products' => [ [ 'name' => 'Online marketing', 'hours' => 1.08 ] ] ],
 ];
 foreach ( $layout_orders as &$layout_order ) {
+	$layout_order['hours'] = array_sum( array_column( $layout_order['products'], 'hours' ) );
 	$layout_order['months'] = [ '2026-09' => [ 'hours' => array_sum( array_column( $layout_order['products'], 'hours' ) ), 'products' => $layout_order['products'] ] ];
 }
 unset( $layout_order );
@@ -1615,8 +1619,57 @@ $rich_document->loadHTML( $layout_export['html'] );
 $rich_xpath = new DOMXPath( $rich_document );
 expect_gripp( 1 === $rich_xpath->query( '//p[text()="Onderstaan een overzicht van de verrichte werkzaamheden."]/following-sibling::p[starts-with(strong,"Opdracht ")][1]' )->length && ! str_contains( $layout_export['text'], 'Onderstaan een overzicht' ), 'Include the requested introduction above the project list in Word content only' );
 expect_gripp( 0 === $rich_xpath->query( '//p[not(contains(@style,"font-family:Montserrat,Arial,sans-serif;")) or not(contains(@style,"font-size:10pt;"))] | //td[not(contains(@style,"font-family:Montserrat,Arial,sans-serif;")) or not(contains(@style,"font-size:10pt;"))]' )->length && 3 === $rich_xpath->query( '//p[starts-with(strong,"Opdracht ")]/preceding-sibling::*[1][self::p and br]' )->length && 1 === $rich_xpath->query( '//div[@style="margin-top:24px;"]/preceding-sibling::*[1][self::p and br]' )->length, 'Use Montserrat 10 pt on all Word paragraphs/cells and explicit blank paragraphs before every order and the summary' );
-expect_gripp( 3 === $rich_xpath->query( '//p[contains(@style,"color:#ff0054")]/strong' )->length && 1 === $rich_xpath->query( '//td[contains(@style,"color:#ff0054")]/strong[text()="Uren eind van de maand"]' )->length && 1 === $rich_xpath->query( '//td[@align="right" and contains(@style,"color:#ff0054")]/strong[text()="13,91"]' )->length && 1 === $rich_xpath->query( '//td[@align="right"]/strong[text()="7,83"]' )->length && 1 === $rich_xpath->query( '//td[@align="right" and text()="4,25"]' )->length, 'Render pink bold order headings, a bold hours summary, a pink closing balance and aligned unchanged numeric values using Word-friendly inline styles' );
-expect_gripp( str_contains( $layout_export['text'], "Opdracht 16780 FMP '26 - September\nWebdevelopment\t1,00\n\nOpdracht 16780 FMP '26 - Oktober\nProjectmanagement\t0,50\nOnline marketing\t1,00\nWebdevelopment\t4,25\n\nOpdracht 16715 Online marketing - Google Ads\nOnline marketing\t1,08\n" ) && str_ends_with( $layout_export['text'], "Uren begin van de maand\t5,74\nBeschikbare uren in de periode\t16,00\nTotaal gewerkt\t7,83\nUren eind van de maand\t13,91\n" ), 'Match the screenshot order/product layout and four accurately calculated summary lines, using decimal commas and putting the summary at the very bottom' );
+expect_gripp( 4 === $rich_xpath->query( '//p[contains(@style,"color:#ff0054")]/strong' )->length && 1 === $rich_xpath->query( '//td[contains(@style,"color:#ff0054")]/strong[text()="Uren eind van de maand"]' )->length && 1 === $rich_xpath->query( '//td[@align="right" and contains(@style,"color:#ff0054")]/strong[text()="13,91"]' )->length && 1 === $rich_xpath->query( '//td[@align="right"]/strong[text()="7,83"]' )->length && 1 === $rich_xpath->query( '//td[@align="right" and text()="4,25"]' )->length, 'Render pink bold order and active-total headings, a bold hours summary, a pink closing balance and aligned unchanged numeric values using Word-friendly inline styles' );
+expect_gripp( str_contains( $layout_export['text'], "Opdracht 16780 FMP '26 - September\nWebdevelopment\t1,00\n\nOpdracht 16780 FMP '26 - Oktober\nProjectmanagement\t0,50\nOnline marketing\t1,00\nWebdevelopment\t4,25\n\nOpdracht 16715 Online marketing - Google Ads\nOnline marketing\t1,08\n" ) && str_contains( $layout_export['text'], "Uren begin van de maand\t5,74\nBeschikbare uren in de periode\t16,00\nTotaal gewerkt\t7,83\nUren eind van de maand\t13,91\n\nLopende projecten ten laste van het FMP\n" ), 'Preserve the screenshot order/product layout and four summary lines, followed by the new active-project totals' );
+$saved_order_cache = get_transient( 'stuh_gripp_active_orders' );
+$GLOBALS['transients']['stuh_gripp_active_orders']['version'] = 6;
+$GLOBALS['entity_responses'] = [
+	'project.get' => [ project_response( [
+		array_merge( $active_order, [ 'name' => 'Running project', 'enddate' => [ 'date' => '-0001-11-30 00:00:00.000000' ] ] ),
+		array_merge( $active_order, [ 'id' => 1002, 'number' => '2', 'name' => 'Archived <project>', 'archived' => true ] ),
+		array_merge( $active_order, [ 'id' => 1003, 'number' => '3', 'name' => 'Completed project', 'enddate' => [ 'date' => '2026-04-29 00:00:00.000000' ] ] ),
+		array_merge( $active_order, [ 'id' => 1004, 'number' => '4', 'name' => 'Completed and archived', 'archived' => true, 'enddate' => '2026-04-29' ] ),
+	] ) ],
+	'hour.get' => [ project_response( [
+		[ 'id' => 1, 'offerprojectbase' => 1001, 'offerprojectline' => 11, 'amount' => 1, 'date' => '2026-08-01' ],
+		[ 'id' => 2, 'offerprojectbase' => 1001, 'offerprojectline' => 11, 'amount' => 2, 'date' => '2026-09-01' ],
+		[ 'id' => 3, 'offerprojectbase' => 1002, 'offerprojectline' => 12, 'amount' => 4, 'date' => '2026-08-01' ],
+		[ 'id' => 4, 'offerprojectbase' => 1002, 'offerprojectline' => 12, 'amount' => -0.5, 'date' => '2026-09-01' ],
+		[ 'id' => 5, 'offerprojectbase' => 1002, 'offerprojectline' => 12, 'amount' => 100, 'date' => '3000-01-01' ],
+		[ 'id' => 6, 'offerprojectbase' => 1002, 'offerprojectline' => 13, 'amount' => 10, 'date' => '2026-08-01' ],
+		[ 'id' => 7, 'offerprojectbase' => 1003, 'offerprojectline' => 14, 'amount' => 6, 'date' => '2026-08-01', 'status' => [ 'searchname' => 'Concept' ] ],
+		[ 'id' => 8, 'offerprojectbase' => 1002, 'amount' => 1, 'date' => '2026-08-01' ],
+	] ) ],
+	'offerprojectline.get' => [ project_response( [
+		[ 'id' => 11, 'offerprojectbase' => 1001, 'product' => [ 'id' => 21, 'searchname' => 'Webdevelopment (8026)' ] ],
+		[ 'id' => 12, 'offerprojectbase' => 1002, 'product' => [ 'id' => 21, 'searchname' => 'Webdevelopment (8026)' ] ],
+		[ 'id' => 13, 'offerprojectbase' => 1002, 'product' => [ 'id' => 22, 'searchname' => 'Webdevelopment (ND / intern)' ] ],
+		[ 'id' => 14, 'offerprojectbase' => 1003, 'product' => [ 'id' => 21, 'searchname' => 'Webdevelopment (8026)' ] ],
+	] ) ],
+];
+$completed_orders = invoke_gripp( 'project_orders', 'test-token', 1 );
+expect_gripp( [ false, true, true, true ] === array_column( $completed_orders, 'inactive' ) && 4.5 === $completed_orders[1]['hours'] && 6.0 === $completed_orders[2]['hours'] && ! array_filter( $GLOBALS['entity_responses'] ), 'Invalidate active-only caches, classify archived and completion-dated projects, and load lifetime product hours with corrections, Concept entries and internal/future exclusions' );
+$completed_sites = [ [ 'id' => 'inactive-test-site', 'name' => 'https://reports.example', 'exists' => true, 'report' => null ] ];
+$completed_export = invoke_gripp( 'format_monthly_export', $completed_orders, $completed_sites, 1, '2026-09', $september_balance );
+expect_gripp( str_contains( $completed_export['text'], "Running project\nWebdevelopment\t2,00\n" ) && str_contains( $completed_export['text'], "Uren eind van de maand\t13,91\n\nLopende projecten ten laste van het FMP\nOpdracht 2026001 Running project\t3,00\n\nAfgerond en ten laste van het FMP\nOpdracht 2 Archived <project>\t4,50\nOpdracht 3 Completed project\t6,00\nOpdracht 4 Completed and archived\t0,00\n" ) && 1 === substr_count( $completed_export['text'], 'Opdracht 4 Completed and archived' ) && strpos( $completed_export['text'], 'Completed and archived' ) < strpos( $completed_export['text'], "\nGravity Forms\n" ), 'Keep monthly hours and the summary unchanged, followed by active lifetime totals, inactive lifetime totals and Gravity Forms in that order' );
+$rich_document->loadHTML( $completed_export['html'] );
+$rich_xpath = new DOMXPath( $rich_document );
+$order_headings = $rich_xpath->query( '//p[starts-with(strong,"Opdracht ")]' );
+$inactive_heading = $rich_xpath->query( '//div[@style="margin-top:24px;"]/following-sibling::p[strong="Afgerond en ten laste van het FMP" and contains(@style,"color:#ff0054")]' );
+$inactive_table = '//p[strong="Afgerond en ten laste van het FMP"]/following-sibling::*[1][self::table]';
+$active_totals_heading = $rich_xpath->query( '//div[@style="margin-top:24px;"]/following-sibling::p[strong="Lopende projecten ten laste van het FMP" and contains(@style,"color:#ff0054")]' );
+$active_totals_table = '//p[strong="Lopende projecten ten laste van het FMP"]/following-sibling::*[1][self::table]';
+expect_gripp( 1 === $active_totals_heading->length && $active_totals_heading->item( 0 )->getAttribute( 'style' ) === $inactive_heading->item( 0 )->getAttribute( 'style' ) && 1 === $rich_xpath->query( $active_totals_table . '//tr' )->length && 1 === $rich_xpath->query( $active_totals_table . '//tr[td="Opdracht 2026001 Running project"]/td[@align="right" and text()="3,00"]' )->length && 0 === $rich_xpath->query( $active_totals_table . '//td[text()="Webdevelopment"]' )->length, 'Show a matching pink active-project heading and one right-aligned lifetime total per project, without product rows or inactive projects' );
+expect_gripp( 1 === $order_headings->length && 1 === $inactive_heading->length && 3 === $rich_xpath->query( $inactive_table . '//tr' )->length && 1 === $rich_xpath->query( $inactive_table . '//tr[td="Opdracht 2 Archived <project>"]/td[@align="right" and text()="4,50"]' )->length && 0 === $rich_xpath->query( $inactive_table . '//td[text()="Webdevelopment" or text()="No product"]' )->length && str_contains( $completed_export['html'], 'Archived &lt;project&gt;' ) && ! str_contains( $completed_export['html'], '(8026)' ), 'Use a pink section heading after the balance and one escaped project/total row per inactive project without product breakdowns' );
+ob_start();
+invoke_gripp( 'render_active_orders', $completed_orders, 'hours', '2026-09' );
+$completed_active_html = ob_get_clean();
+expect_gripp( str_contains( $completed_active_html, 'Running project' ) && ! str_contains( $completed_active_html, 'Completed project' ) && ! str_contains( $completed_active_html, 'Archived &lt;project&gt;' ), 'The active-project dashboard table excludes both archived and completion-dated projects' );
+$completed_all_export = invoke_gripp( 'format_monthly_export', $completed_orders, [], 1, '', $september_balance );
+expect_gripp( str_contains( $completed_all_export['text'], "Running project\nWebdevelopment\t3,00\n" ) && str_contains( $completed_all_export['text'], "Uren eind van de periode\t13,91\n\nLopende projecten ten laste van het FMP\nOpdracht 2026001 Running project\t3,00\n\nAfgerond en ten laste van het FMP\nOpdracht 2 Archived <project>\t4,50\n" ), 'All months retains both section headings and one-line lifetime totals' );
+expect_gripp( $export_document( [ 'hours_month' => '2026-09' ] )['text'] === $preview_value( $render_monthly( '2026-09' ) ), 'The Word preview and clipboard alternative both include the cached inactive projects' );
+$GLOBALS['transients']['stuh_gripp_active_orders'] = $saved_order_cache;
+unset( $GLOBALS['entity_responses'] );
 $partial_balance = invoke_gripp( 'calculate_monthly_balance', array_merge( $balance_project, [ 'budget' => 90000, 'startdate' => '2026-01-16', 'deadline' => '2026-02-15' ] ), [ '2026-01-31' => 2.625, '2026-02-01' => 50.0 ], '2026-01', $balance_today );
 $partial_allowance = round( 90000 * ( 16 / 31 ) / ( 16 / 31 + 15 / 28 ) ) / 9000;
 expect_gripp( 0.0 === $partial_balance['opening'] && abs( $partial_balance['allowance'] - $partial_allowance ) < 0.000001 && 2.625 === $partial_balance['worked'] && abs( $partial_balance['closing'] - ( $partial_allowance - 2.625 ) ) < 0.000001, 'Prorate a partial starting month by the existing budget schedule and keep fractional hours unrounded across calendar boundaries' );
@@ -1660,7 +1713,7 @@ invoke_gripp( 'monthly_balance', 'test-token', 1, '2026-10' );
 expect_gripp( $balance_cached_count === count( $GLOBALS['requests'] ), 'Changing the selected month reuses the full balance history cache' );
 $GLOBALS['capabilities'] = [ 'edit_others_posts' ];
 $september_export = $export_document( [ 'hours_month' => '2026-09' ] );
-expect_gripp( str_ends_with( $september_export['text'], "Uren begin van de maand\t5,74\nBeschikbare uren in de periode\t16,00\nTotaal gewerkt\t7,83\nUren eind van de maand\t13,91\n" ) && $september_export['text'] === $preview_value( $render_monthly( '2026-09' ) ), 'The authenticated download and read-only preview share the accurately loaded full-retainer summary even when the active-only table has no time in that month' );
+expect_gripp( str_contains( $september_export['text'], "Uren begin van de maand\t5,74\nBeschikbare uren in de periode\t16,00\nTotaal gewerkt\t7,83\nUren eind van de maand\t13,91\n\nLopende projecten ten laste van het FMP\n" ) && $september_export['text'] === $preview_value( $render_monthly( '2026-09' ) ), 'The authenticated download and read-only preview share the accurately loaded full-retainer summary even when the active-only table has no time in that month' );
 $GLOBALS['transients']['stuh_gripp_balance']['connection'] = 'another-connection';
 $GLOBALS['entity_responses']['umbrellaproject.get'] = [ gripp_response( [], 403 ) ];
 expect_gripp( is_wp_error( invoke_gripp( 'monthly_balance', 'test-token', 1, '2026-09' ) ), 'Another connection cannot reuse a cached budget or historical hours balance' );
