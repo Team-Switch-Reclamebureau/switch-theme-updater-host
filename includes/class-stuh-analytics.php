@@ -128,12 +128,23 @@ final class STUH_Analytics {
 	}
 
 	private static function request( string $url, array $args = [] ) {
+		$debug_gtm = defined( 'WP_DEBUG' ) && WP_DEBUG && str_starts_with( $url, 'https://tagmanager.googleapis.com/tagmanager/v2/' );
+		$endpoint = explode( '?', $url, 2 )[0];
+		if ( $debug_gtm ) {
+			error_log( '[STUH GTM] Request: ' . wp_json_encode( [ 'method' => $args['method'] ?? 'GET', 'endpoint' => $endpoint ] ) );
+		}
 		$response = wp_remote_request( $url, array_merge( [ 'timeout' => 20, 'redirection' => 0 ], $args ) );
 		if ( is_wp_error( $response ) ) {
+			if ( $debug_gtm ) {
+				error_log( '[STUH GTM] Request failed: ' . wp_json_encode( [ 'endpoint' => $endpoint, 'code' => $response->get_error_code() ] ) );
+			}
 			return new WP_Error( 'google_network', __( 'Unable to reach Google. Check server connectivity and retry.', 'stuh' ) );
 		}
 		$status = wp_remote_retrieve_response_code( $response );
 		$data = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( $debug_gtm ) {
+			error_log( '[STUH GTM] Response: ' . wp_json_encode( [ 'endpoint' => $endpoint, 'status' => $status, 'response_type' => get_debug_type( $data ) ] ) );
+		}
 		if ( $status < 200 || $status >= 300 ) {
 			$error = is_array( $data ) ? ( $data['error'] ?? '' ) : '';
 			$reason = is_array( $error ) ? ( $error['status'] ?? '' ) : $error;
@@ -899,6 +910,15 @@ final class STUH_Analytics {
 			$dimensions = match ( $index ) { 0, 1 => [], 2 => [ 'pagePath' ], 3 => [ 'sessionDefaultChannelGroup' ], 4 => count( $monthly['dateRanges'] ) > 1 ? [ 'yearMonth', 'dateRange' ] : [ 'yearMonth' ] };
 			$rows = self::report_rows( $report, $metrics, $dimensions );
 			if ( is_wp_error( $rows ) ) {
+				$rows->add_data( [ 'report_diagnostics' => [
+					'report' => [ 'current_totals', 'previous_totals', 'pages', 'channels', 'monthly_active_users' ][ $index ],
+					'expected_metrics' => $metrics,
+					'expected_dimensions' => $dimensions,
+					'rows_type' => get_debug_type( $report['rows'] ?? null ),
+					'returned_rows' => is_array( $report['rows'] ?? null ) ? count( $report['rows'] ) : null,
+					'row_count_type' => get_debug_type( $report['rowCount'] ?? null ),
+					'row_count' => is_scalar( $report['rowCount'] ?? null ) && is_numeric( $report['rowCount'] ) ? (float) $report['rowCount'] : null,
+				] ] );
 				return $rows;
 			}
 			if ( $index < 2 && count( $rows ) > 1 ) {
@@ -925,6 +945,19 @@ final class STUH_Analytics {
 		}
 		$connection = self::connection();
 		$result = is_wp_error( $connection ) ? $connection : ( $connection['id'] !== $mapping['connection_id'] ? new WP_Error( 'google_mapping', __( 'Google was reconnected. Confirm the property mapping for this site again.', 'stuh' ) ) : self::fetch_report( $mapping ) );
+		if ( is_wp_error( $result ) ) {
+			$context = [
+				'client_id' => $client_id,
+				'property_id' => $mapping['property_id'],
+				'code' => $result->get_error_code(),
+				'message' => $result->get_error_message(),
+			];
+			$details = $result->get_error_data();
+			if ( is_array( $details ) && isset( $details['report_diagnostics'] ) ) {
+				$context['report_diagnostics'] = $details['report_diagnostics'];
+			}
+			error_log( '[STUH Analytics] Report refresh failed: ' . wp_json_encode( $context ) );
+		}
 		// Do not publish a result if an administrator changed the mapping during the request.
 		if ( ( self::mappings()[ $client_id ] ?? null ) !== $mapping ) {
 			return;

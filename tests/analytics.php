@@ -5,11 +5,14 @@
 define( 'ABSPATH', __DIR__ . '/' );
 define( 'MINUTE_IN_SECONDS', 60 );
 define( 'HOUR_IN_SECONDS', 3600 );
+define( 'WP_DEBUG', true );
 
 class WP_Error {
 	public function __construct( private string $code, private string $message, private $data = null ) {}
 	public function get_error_code() { return $this->code; }
 	public function get_error_message() { return $this->message; }
+	public function get_error_data() { return $this->data; }
+	public function add_data( $data ) { $this->data = $data; }
 }
 class AnalyticsRedirect extends RuntimeException {}
 class STUH_Plugin {
@@ -606,6 +609,33 @@ $invalid[0]['rows'][0]['metricValues'][0]['value'] = 'not-a-number';
 $GLOBALS['responses'][] = google_response( [ 'reports' => $invalid ] );
 STUH_Analytics::refresh_report( 'site-1' );
 expect_analytics( '' !== get_option( $key )['error'] && $good['data'] === get_option( $key )['data'], 'Malformed metric data must not replace a good report' );
+$log_file = tempnam( sys_get_temp_dir(), 'stuh-analytics-log-' );
+$previous_error_log = ini_get( 'error_log' );
+ini_set( 'error_log', $log_file );
+try {
+	$invalid_rows = $reports;
+	$invalid_rows[2]['rowCount'] = 0;
+	$invalid_rows[2]['rows'][0]['dimensionValues'][0]['value'] = '/private-report-content';
+	$GLOBALS['responses'][] = google_response( [ 'reports' => $invalid_rows ] );
+	STUH_Analytics::refresh_report( 'site-1' );
+	$logged = file_get_contents( $log_file );
+	expect_analytics( str_contains( $logged, '[STUH Analytics] Report refresh failed:' ) && str_contains( $logged, '"client_id":"site-1"' ) && str_contains( $logged, '"property_id":' ) && str_contains( $logged, 'Google returned invalid report rows.' ), 'Log failed refreshes with client, property and error details' );
+	expect_analytics( str_contains( $logged, '"report":"pages"' ) && str_contains( $logged, '"returned_rows":1' ) && str_contains( $logged, '"row_count":0' ), 'Include safe shape diagnostics to explain invalid report rows' );
+	foreach ( [ '/private-report-content', 'metricValues', 'access_token', 'refresh_token', 'test-secret' ] as $private ) {
+		expect_analytics( ! str_contains( $logged, $private ), 'Do not log report contents or credentials' );
+	}
+	expect_analytics( $good['data'] === get_option( $key )['data'], 'Logging preserves the last successful report' );
+	$GLOBALS['responses'][] = google_response( [ 'error' => [ 'status' => 'PERMISSION_DENIED' ] ], 403 );
+	STUH_Analytics::refresh_report( 'site-1' );
+	$logged = file_get_contents( $log_file );
+	expect_analytics( str_contains( $logged, '403' ), 'Also log API failures, not only validation errors' );
+	$GLOBALS['responses'][] = google_response( [ 'reports' => $reports ] );
+	STUH_Analytics::refresh_report( 'site-1' );
+	expect_analytics( $logged === file_get_contents( $log_file ), 'Successful refreshes do not produce error log entries' );
+} finally {
+	ini_set( 'error_log', $previous_error_log );
+	unlink( $log_file );
+}
 $GLOBALS['responses'][] = google_response( [ 'reports' => [] ] );
 STUH_Analytics::refresh_report( 'site-1' );
 expect_analytics( '' !== get_option( $key )['error'], 'Reject incomplete report batches' );
@@ -664,6 +694,34 @@ update_option( $key, $good );
 $GLOBALS['scheduled']['site-1'] = time();
 expect_analytics( true === STUH_Analytics::forget_client( 'site-1' ), 'Client deletion cleanup must succeed' );
 expect_analytics( [] === get_option( 'stuh_google_mappings' ) && false === get_option( $key ) && ! isset( $GLOBALS['scheduled']['site-1'] ), 'Client deletion must remove its mapping, cached report and queued refresh' );
+
+$log_file = tempnam( sys_get_temp_dir(), 'stuh-gtm-log-' );
+$previous_error_log = ini_get( 'error_log' );
+ini_set( 'error_log', $log_file );
+try {
+	$endpoint = 'https://tagmanager.googleapis.com/tagmanager/v2/accounts/containers:lookup';
+	$args = [ 'headers' => [ 'Authorization' => 'Bearer private-token' ] ];
+	$GLOBALS['responses'][] = google_response( [ 'private_container_contents' => 'not-for-logs' ] );
+	invoke_analytics( 'request', $endpoint . '?tagId=GTM-TEST&pageToken=private-page-token', $args );
+	$logged = file_get_contents( $log_file );
+	expect_analytics( str_contains( $logged, '[STUH GTM] Request:' ) && str_contains( $logged, '[STUH GTM] Response:' ) && str_contains( $logged, '"status":200' ) && str_contains( $logged, 'containers:lookup' ), 'Log GTM request endpoints and successful HTTP responses' );
+	foreach ( [ 'private-token', 'private-page-token', 'private_container_contents', 'not-for-logs', 'Authorization' ] as $private ) {
+		expect_analytics( ! str_contains( $logged, $private ), 'Exclude request credentials, query parameters and response contents from GTM logs' );
+	}
+	$GLOBALS['responses'][] = google_response( [ 'error' => [ 'status' => 'PERMISSION_DENIED' ] ], 403 );
+	expect_analytics( is_wp_error( invoke_analytics( 'request', $endpoint, $args ) ), 'Preserve GTM HTTP failure behavior' );
+	expect_analytics( str_contains( file_get_contents( $log_file ), '"status":403' ), 'Log failing GTM HTTP statuses' );
+	$GLOBALS['responses'][] = new WP_Error( 'http_request_failed', 'private transport details' );
+	expect_analytics( is_wp_error( invoke_analytics( 'request', $endpoint, $args ) ), 'Preserve GTM network failure behavior' );
+	$logged = file_get_contents( $log_file );
+	expect_analytics( str_contains( $logged, '[STUH GTM] Request failed:' ) && str_contains( $logged, 'http_request_failed' ) && ! str_contains( $logged, 'private transport details' ), 'Log network error codes without unsafe transport details' );
+	$GLOBALS['responses'][] = google_response( [] );
+	invoke_analytics( 'request', 'https://oauth2.googleapis.com/token', $args );
+	expect_analytics( $logged === file_get_contents( $log_file ), 'Do not trace OAuth requests' );
+} finally {
+	ini_set( 'error_log', $previous_error_log );
+	unlink( $log_file );
+}
 
 // GTM diagnostics are optional, but malformed or dynamic destinations must not be guessed.
 expect_analytics( [] === invoke_analytics( 'container_ids', [ 'gtm_container_ids' => null ] ), 'Null GTM diagnostics must mean no detected containers' );

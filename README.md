@@ -658,6 +658,14 @@ retry. WP-Cron must be functioning; low-traffic hosts should run it with a real
 server scheduler. Failed refreshes preserve the last successful report and
 clearly mark it stale, rather than displaying zero traffic. Until the first
 successful report, the panel explicitly says no report is available.
+Refresh failures are logged with the `[STUH Analytics]` prefix, client/property
+IDs and error details. Invalid report rows also include the report name and
+row-count/type diagnostics, without report contents or credentials. With
+`WP_DEBUG` and `WP_DEBUG_LOG` enabled, these entries go to WordPress's configured
+debug log (normally `wp-content/debug.log`).
+With `WP_DEBUG` enabled, Tag Manager API requests also log their method,
+endpoint (without query parameters), HTTP status/response type or network
+error code under `[STUH GTM]`. Headers, tokens and container contents are not logged.
 
 Administrators and editors (`edit_others_posts`) can view reports and request
 Analytics refreshes. Editors have a standalone **Google Analytics** menu;
