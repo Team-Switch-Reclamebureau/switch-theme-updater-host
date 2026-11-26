@@ -31,8 +31,10 @@ class WP_REST_Request {
 }
 class WP_REST_Response {
 	private $data;
+	public $headers = [];
 	public function __construct( $data ) { $this->data = $data; }
 	public function get_data() { return $this->data; }
+	public function header( $name, $value ) { $this->headers[ $name ] = $value; }
 }
 class WP_REST_Server {
 	const READABLE = 'GET';
@@ -42,6 +44,7 @@ function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
 function register_activation_hook( ...$args ) {}
 function plugin_basename( $file ) { return basename( $file ); }
+function plugin_dir_url( $file ) { return 'https://host.example/wp-content/plugins/switch-theme-updater-host/'; }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function rest_ensure_response( $value ) { return new WP_REST_Response( $value ); }
 function wp_json_encode( $value ) { return json_encode( $value ); }
@@ -86,6 +89,24 @@ function expect_batch( $condition, $message ) {
 }
 $host = new STUH_Plugin();
 $host->register_rest_routes();
+expect_batch( $GLOBALS['routes']['/plugin-catalogue']['methods'] === 'GET'
+	&& $GLOBALS['routes']['/plugin-catalogue']['permission_callback'] === [ $host, 'rest_permission' ], 'Catalogue uses existing client authentication' );
+$catalogue_response = call_user_func( $GLOBALS['routes']['/plugin-catalogue']['callback'] );
+$catalogue = $catalogue_response->get_data();
+$source = json_decode( file_get_contents( dirname( __DIR__ ) . '/predefined-plugins.json' ), true, 512, JSON_THROW_ON_ERROR );
+expect_batch( $catalogue['categories'] === $source['categories'] && count( $catalogue['items'] ) === count( $source['items'] ), 'Catalogue preserves categories, order and all items' );
+expect_batch( $catalogue_response->headers['Cache-Control'] === 'no-store', 'Catalogue changes are not hidden by HTTP caching' );
+foreach ( $source['items'] as $index => $plugin ) {
+	foreach ( [ 'icon', 'image' ] as $field ) {
+		if ( ! empty( $plugin[ $field ] ) ) {
+			if ( $field === 'icon' ) {
+				expect_batch( is_file( dirname( __DIR__ ) . '/' . $plugin[ $field ] ), 'Displayed catalogue icons are bundled with the host' );
+			}
+			$plugin[ $field ] = plugin_dir_url( __FILE__ ) . $plugin[ $field ];
+		}
+	}
+	expect_batch( $catalogue['items'][ $index ] === $plugin, 'Artwork points to the host while plugin metadata stays unchanged' );
+}
 expect_batch( $GLOBALS['routes']['/version']['methods'] === 'GET', 'Legacy endpoint is retained' );
 expect_batch( $GLOBALS['routes']['/versions']['methods'] === 'POST', 'Batch endpoint accepts POST' );
 expect_batch( $GLOBALS['routes']['/versions']['permission_callback'] === [ $host, 'rest_permission' ], 'Batch endpoint uses existing authentication and telemetry' );

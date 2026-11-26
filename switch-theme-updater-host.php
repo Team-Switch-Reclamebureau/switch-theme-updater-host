@@ -3,7 +3,7 @@
  * Plugin Name: Team Switch - Theme Updater Host
  * Plugin URI: https://github.com/Team-Switch-Reclamebureau/switch-theme-updater-host
  * Description: Central update proxy that authenticates client sites and relays GitHub releases without sharing the GitHub token. Manage all client sites from one place and remotely revoke access.
- * Version: 0.9.16
+ * Version: 0.9.17
  * Author: Team Switch
  * Author URI: https://teamswitch.nl
  * GitHub Repo: Team-Switch-Reclamebureau/switch-theme-updater-host
@@ -1521,6 +1521,12 @@ class STUH_Plugin {
 	public function register_rest_routes(): void {
 		$auth = [ $this, 'rest_permission' ];
 
+		register_rest_route( STUH_REST_NS, '/plugin-catalogue', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'rest_plugin_catalogue' ],
+			'permission_callback' => $auth,
+		] );
+
 		register_rest_route( STUH_REST_NS, '/version', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'rest_version' ],
@@ -1671,6 +1677,47 @@ class STUH_Plugin {
 				'message' => [ 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ],
 			],
 		] );
+	}
+
+	// --------------------------------------------------------
+	// Host-managed plugin catalogue
+	// --------------------------------------------------------
+
+	public function rest_plugin_catalogue() {
+		$file = __DIR__ . '/predefined-plugins.json';
+		if ( ! is_readable( $file ) ) {
+			return new WP_Error( 'catalogue_unavailable', 'The plugin catalogue could not be read on the host.', [ 'status' => 500 ] );
+		}
+		$raw = file_get_contents( $file );
+		if ( $raw === false ) {
+			return new WP_Error( 'catalogue_unavailable', 'The plugin catalogue could not be read on the host.', [ 'status' => 500 ] );
+		}
+		$catalogue = json_decode( $raw, true );
+		if ( ! is_array( $catalogue ) || ! isset( $catalogue['categories'], $catalogue['items'] )
+			|| ! is_array( $catalogue['categories'] ) || ! is_array( $catalogue['items'] ) ) {
+			return new WP_Error( 'invalid_catalogue', 'The plugin catalogue is invalid on the host.', [ 'status' => 500 ] );
+		}
+		foreach ( $catalogue['items'] as &$plugin ) {
+			if ( ! is_array( $plugin ) ) {
+				return new WP_Error( 'invalid_catalogue', 'The plugin catalogue contains an invalid item.', [ 'status' => 500 ] );
+			}
+			foreach ( [ 'icon', 'image' ] as $field ) {
+				if ( ! isset( $plugin[ $field ] ) ) {
+					continue;
+				}
+				if ( ! is_string( $plugin[ $field ] ) ) {
+					return new WP_Error( 'invalid_catalogue', 'The plugin catalogue contains invalid artwork.', [ 'status' => 500 ] );
+				}
+				if ( $plugin[ $field ] !== '' && ! preg_match( '#^https?://#i', $plugin[ $field ] ) ) {
+					$plugin[ $field ] = plugin_dir_url( __FILE__ ) . ltrim( $plugin[ $field ], '/' );
+				}
+			}
+		}
+		unset( $plugin );
+
+		$response = rest_ensure_response( $catalogue );
+		$response->header( 'Cache-Control', 'no-store' );
+		return $response;
 	}
 
 	// --------------------------------------------------------

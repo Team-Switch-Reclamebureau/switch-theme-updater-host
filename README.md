@@ -4,6 +4,33 @@ The host authenticates Switch Updater clients, brokers GitHub package updates,
 and securely retains short-lived sanitized clone artifacts for authorized host
 administrators.
 
+## Plugin store catalogue
+
+`predefined-plugins.json` is the source for client plugin stores and dashboard
+recommendations. Edit and deploy this file on the host to add plugins or change
+descriptions, categories, release flags and recommendations without releasing
+another client update. Keep its top-level `categories` and `items` arrays and the
+existing item fields (`name`, `description`, `categories`, `repo`, `branch`,
+`path`, `slug`, `main_file`); `recommended`, `released`, `icon` and `image` are optional.
+
+Authenticated `GET /wp-json/stu-host/v1/plugin-catalogue` returns the catalogue
+using the same client key/access checks as package updates. Relative `icon` and
+`image` paths resolve against this host plugin; artwork lives in `img/icon/`
+and `img/banner/`. Absolute HTTP(S) artwork URLs are preserved. Clients currently
+display icons only. For new artwork use a new filename (or an absolute URL with
+a version query parameter) to avoid stale browser image caches.
+
+Deploy this host update first, then roll out the catalogue-capable client once.
+Older clients continue using their bundled catalogue until updated. Updated
+clients fetch fresh catalogue data on each store/dashboard visit; the endpoint
+sends `Cache-Control: no-store`. Missing or invalid catalogues return an error,
+and clients keep the last successful, validated catalogue persistently without
+expiry for the current host URL and client key. On fetch failure they show that
+saved catalogue with a warning, or an error if no valid matching cache exists.
+Every visit still attempts a fresh fetch; successful responses replace the cache.
+Cached listings do not bypass host authentication for downloads or updates.
+Run catalogue/API regression checks with `php tests/batch-versions.php`.
+
 ## Website details
 
 Click a website's title or domain in **Updater Host → Client Sites** to open its
